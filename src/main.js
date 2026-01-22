@@ -24,7 +24,7 @@ const DEFAULT_GRAVITY = 0.25;
 const MAX_POWER = 20;           // Increased for more dramatic full-power shots
 const CHARGE_RATE = 0.018;      // Slightly faster charge (2 sec for full)
 const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
-const VOID_RISE_PER_ROUND = 30;
+const VOID_RISE_PER_ROUND = 0;  // Disabled - was causing premature game ends
 const TANK_RADIUS = 25;
 const TURN_DELAY_MS = 800;
 
@@ -35,8 +35,310 @@ const SLOW_MO_FACTOR = 0.25;
 const CAMERA_ZOOM_AMOUNT = 0;  // Disabled for testing - may feel like lag
 const CAMERA_ZOOM_DECAY = 0.92;
 
+// Economy constants
+const STARTING_COINS = 60;
+const COINS_PER_DAMAGE = 0.2;      // 1 coin per 5 damage
+const KILL_BONUS = 50;
+const SURVIVAL_BONUS = 10;
+const UFO_DESTROY_BONUS = 30;
+const SHOP_OFFERING_COUNT = 6;
+
 // ============================================================================
-// Tank Types
+// Weapons Data
+// ============================================================================
+
+const WEAPON_TIERS = {
+    CHEAP: { min: 15, max: 30 },
+    MID: { min: 40, max: 70 },
+    PREMIUM: { min: 80, max: 120 },
+    SPECTACLE: { min: 130, max: 180 }
+};
+
+const WEAPONS = {
+    // === CHEAP TIER (15-30 coins) ===
+    BABY_SHOT: {
+        name: 'Baby Shot',
+        description: 'Weak but accurate',
+        cost: 15,
+        tier: 'CHEAP',
+        damage: 20,
+        blastRadius: 40,
+        bounces: 1,
+        projectileRadius: 5,
+        projectileSpeed: 1.0,
+        color: '#88ffff'
+    },
+    BOUNCER: {
+        name: 'Bouncer',
+        description: '4 bounces, trick shots',
+        cost: 20,
+        tier: 'CHEAP',
+        damage: 25,
+        blastRadius: 35,
+        bounces: 4,
+        projectileRadius: 5,
+        projectileSpeed: 1.1,
+        color: '#ffff44'
+    },
+    DIRT_BALL: {
+        name: 'Dirt Ball',
+        description: 'Builds terrain mound',
+        cost: 20,
+        tier: 'CHEAP',
+        damage: 5,
+        blastRadius: 45,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.75,
+        color: '#aa7744',
+        terrainEffect: 'build'
+    },
+    DIGGER: {
+        name: 'Digger',
+        description: 'Removes terrain',
+        cost: 25,
+        tier: 'CHEAP',
+        damage: 0,
+        blastRadius: 70,
+        bounces: 1,
+        projectileRadius: 6,
+        projectileSpeed: 0.9,
+        color: '#996633',
+        terrainEffect: 'dig'
+    },
+    ROLLER: {
+        name: 'Roller',
+        description: 'Rolls along terrain',
+        cost: 30,
+        tier: 'CHEAP',
+        damage: 30,
+        blastRadius: 45,
+        bounces: 1,
+        projectileRadius: 7,
+        projectileSpeed: 0.85,
+        color: '#aaaaaa',
+        behavior: 'roller'
+    },
+
+    // === MID TIER (40-70 coins) ===
+    MORTAR: {
+        name: 'Mortar',
+        description: 'Large blast, reliable',
+        cost: 40,
+        tier: 'MID',
+        damage: 40,
+        blastRadius: 80,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.95,
+        color: '#00ffff'
+    },
+    SPLITTER: {
+        name: 'Splitter',
+        description: 'Splits into 3 on bounce',
+        cost: 45,
+        tier: 'MID',
+        damage: 20,
+        blastRadius: 30,
+        bounces: 1,
+        projectileRadius: 6,
+        projectileSpeed: 1.0,
+        color: '#ff8844',
+        behavior: 'splitter',
+        splitCount: 3
+    },
+    HEAVY_SHELL: {
+        name: 'Heavy Shell',
+        description: 'Slow, massive damage',
+        cost: 50,
+        tier: 'MID',
+        damage: 70,
+        blastRadius: 60,
+        bounces: 1,
+        projectileRadius: 10,
+        projectileSpeed: 0.6,
+        color: '#ff4444'
+    },
+    DRILL: {
+        name: 'Drill',
+        description: 'Pierces terrain',
+        cost: 55,
+        tier: 'MID',
+        damage: 45,
+        blastRadius: 40,
+        bounces: 0,
+        projectileRadius: 5,
+        projectileSpeed: 1.2,
+        color: '#cccccc',
+        behavior: 'drill'
+    },
+    SHIELD: {
+        name: 'Shield',
+        description: '50% damage reduction',
+        cost: 55,
+        tier: 'MID',
+        damage: 0,
+        blastRadius: 40,
+        bounces: 0,
+        projectileRadius: 10,
+        projectileSpeed: 0.6,
+        color: '#44ffff',
+        behavior: 'shield',
+        shieldReduction: 0.5
+    },
+    SEEKER: {
+        name: 'Seeker',
+        description: 'Slight homing',
+        cost: 60,
+        tier: 'MID',
+        damage: 35,
+        blastRadius: 45,
+        bounces: 1,
+        projectileRadius: 6,
+        projectileSpeed: 0.9,
+        color: '#ff44ff',
+        behavior: 'seeker',
+        seekStrength: 0.02
+    },
+    CLUSTER: {
+        name: 'Cluster',
+        description: 'Splits into 5 bomblets',
+        cost: 65,
+        tier: 'MID',
+        damage: 15,
+        blastRadius: 35,
+        bounces: 1,
+        projectileRadius: 7,
+        projectileSpeed: 0.85,
+        color: '#ffaa00',
+        behavior: 'cluster',
+        clusterCount: 5
+    },
+
+    // === PREMIUM TIER (80-120 coins) ===
+    RAILGUN: {
+        name: 'Railgun',
+        description: 'Direct hit bonus',
+        cost: 80,
+        tier: 'PREMIUM',
+        damage: 95,
+        blastRadius: 30,
+        bounces: 2,
+        projectileRadius: 5,
+        projectileSpeed: 1.35,
+        color: '#ffffff',
+        directHitRadius: 12,
+        directHitBonus: 1.5,
+        minDamageFalloff: 0.4
+    },
+    MIRV: {
+        name: 'MIRV',
+        description: '3 clusters of 3',
+        cost: 90,
+        tier: 'PREMIUM',
+        damage: 10,
+        blastRadius: 25,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.8,
+        color: '#ff6600',
+        behavior: 'mirv',
+        splitCount: 3,
+        clusterCount: 3
+    },
+    QUAKE: {
+        name: 'Quake',
+        description: 'Hurts grounded enemies',
+        cost: 100,
+        tier: 'PREMIUM',
+        damage: 40,
+        blastRadius: 100,
+        bounces: 0,
+        projectileRadius: 9,
+        projectileSpeed: 0.7,
+        color: '#886644',
+        behavior: 'quake'
+    },
+    TELEPORTER: {
+        name: 'Teleporter',
+        description: 'Warp to impact point',
+        cost: 100,
+        tier: 'PREMIUM',
+        damage: 0,
+        blastRadius: 30,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 1.0,
+        color: '#aa44ff',
+        behavior: 'teleporter'
+    },
+    VOID_RIFT: {
+        name: 'Void Rift',
+        description: 'Raises void +60px',
+        cost: 110,
+        tier: 'PREMIUM',
+        damage: 20,
+        blastRadius: 50,
+        bounces: 1,
+        projectileRadius: 7,
+        projectileSpeed: 0.9,
+        color: '#8800ff',
+        behavior: 'voidRift',
+        voidRise: 60
+    },
+
+    // === SPECTACLE TIER (130-180 coins) ===
+    NAPALM: {
+        name: 'Napalm',
+        description: 'Burning field 8 sec',
+        cost: 130,
+        tier: 'SPECTACLE',
+        damage: 15,
+        blastRadius: 60,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.85,
+        color: '#ff4400',
+        behavior: 'napalm',
+        fieldDuration: 8,
+        fieldDamage: 10
+    },
+    CHAIN_LIGHTNING: {
+        name: 'Chain Lightning',
+        description: 'Arcs to nearby target',
+        cost: 150,
+        tier: 'SPECTACLE',
+        damage: 40,
+        blastRadius: 30,
+        bounces: 1,
+        projectileRadius: 6,
+        projectileSpeed: 1.3,
+        color: '#44ffff',
+        behavior: 'chainLightning',
+        chainDamage: 25,
+        chainRange: 200
+    },
+    NUKE: {
+        name: 'Nuke',
+        description: 'Massive blast, 3s fuse',
+        cost: 180,
+        tier: 'SPECTACLE',
+        damage: 80,
+        blastRadius: 150,
+        bounces: 0,
+        projectileRadius: 12,
+        projectileSpeed: 0.5,
+        color: '#ffff00',
+        behavior: 'nuke',
+        fuseTime: 3
+    }
+};
+
+// Weapon keys for iteration
+const WEAPON_KEYS = Object.keys(WEAPONS);
+
+// ============================================================================
+// Tank Types (kept for visual shapes, will use WEAPONS for stats)
 // ============================================================================
 
 const TANK_TYPES = {
@@ -126,16 +428,22 @@ const TANK_TYPES = {
 
 const state = {
     players: [
-        { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0 },
-        { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: false, shield: 0 }
+        { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' },
+        { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' }
     ],
     currentPlayer: 0,
     turnCount: 0,
-    phase: 'title',  // 'title' | 'mode_select' | 'select_p1' | 'select_p2' | 'aiming' | 'firing' | 'resolving' | 'gameover'
+    phase: 'title',  // 'title' | 'mode_select' | 'select_p1' | 'select_p2' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
     selectIndex: 0,  // Current selection in menus
     gameMode: null,  // '1p' | '2p'
     projectile: null,
     projectiles: [],  // For cluster bombs (multiple projectiles)
+    // Shop state
+    shopOfferings: [],     // Array of weapon keys available this round
+    shopSelections: [0, 0], // Selected index for each player in shop
+    shopReady: [false, false], // Whether each player is ready
+    // Persistent fields (napalm, etc.)
+    fields: [],  // { x, y, radius, duration, damagePerSec, color, type, timer }
     voidY: CANVAS_HEIGHT + 50,
     winner: null,
     time: 0,
@@ -197,8 +505,8 @@ function resetGame() {
     terrain.generate(CANVAS_WIDTH);
 
     const isP2AI = state.gameMode === '1p';
-    state.players[0] = { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0 };
-    state.players[1] = { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: isP2AI, shield: 0 };
+    state.players[0] = { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' };
+    state.players[1] = { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: isP2AI, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' };
 
     // Position tanks on terrain
     state.players.forEach(p => {
@@ -234,6 +542,12 @@ function resetGame() {
         { damage: 0, blast: 0, bounces: 0 }
     ];
     state.buffNotification = null;
+    // Reset shop state
+    state.shopOfferings = [];
+    state.shopSelections = [0, 0];
+    state.shopReady = [false, false];
+    // Reset persistent fields
+    state.fields = [];
 }
 
 function startGame() {
@@ -265,13 +579,16 @@ function chargeToPower(linearCharge) {
 
 function fireProjectile() {
     const player = getCurrentPlayer();
-    const tankType = TANK_TYPES[player.tankType];
+    // Use weapon data from WEAPONS object
+    const weapon = WEAPONS[player.weapon];
+    if (!weapon) return;  // Safety check
+
     const angleRad = degToRad(180 - player.angle);
 
     // Apply nonlinear charge curve for better range at high charge
     const effectivePower = chargeToPower(player.power);
     // Apply velocity multiplier from events (TIME DILATION, MUZZLE OVERCHARGE/DAMPEN)
-    const speed = effectivePower * MAX_POWER * tankType.projectileSpeed * state.velocityMultiplier;
+    const speed = effectivePower * MAX_POWER * weapon.projectileSpeed * state.velocityMultiplier;
 
     // Get UFO buffs for current player
     const buffs = state.ufoBuffs[state.currentPlayer];
@@ -284,13 +601,14 @@ function fireProjectile() {
         y: player.y - 20,
         vx: Math.cos(angleRad) * speed,
         vy: -Math.sin(angleRad) * speed,
-        radius: tankType.projectileRadius,
-        color: player.color,
+        radius: weapon.projectileRadius,
+        color: weapon.color || player.color,
         bounces: 0,
         // Apply extra bounces from ELASTIC WORLD event + UFO buff
-        maxBounces: tankType.bounces + state.extraBounces + bounceBonus,
+        maxBounces: weapon.bounces + state.extraBounces + bounceBonus,
         trail: [],
-        tankType: player.tankType,
+        weaponKey: player.weapon,  // Store weapon key for explosion handling
+        tankType: player.tankType, // Keep for backwards compatibility
         isCluster: false,  // Main projectile, not a bomblet
         // Store buffed stats for explosion
         buffedDamageMultiplier: damageMultiplier,
@@ -401,6 +719,9 @@ function checkUFOCollision(px, py, radius) {
 
     const result = ambient.checkProjectileHitUFO(px, py, radius, state.currentPlayer);
     if (result) {
+        // Award coins for UFO destruction
+        state.players[state.currentPlayer].coins += UFO_DESTROY_BONUS;
+
         // Grant buff to current player
         const buffType = result.buffType;
         const playerBuffs = state.ufoBuffs[state.currentPlayer];
@@ -419,13 +740,14 @@ function checkUFOCollision(px, py, radius) {
         renderer.flash(result.color, 0.3);
         audio.playExplosion(0.8);
 
-        // Show buff notification
+        // Show buff notification (now includes coin bonus)
         state.buffNotification = {
             playerIndex: state.currentPlayer,
             buffType: buffType,
             timer: 2.0,
             x: result.x,
-            y: result.y
+            y: result.y,
+            coins: UFO_DESTROY_BONUS
         };
     }
 }
@@ -446,10 +768,12 @@ function onBounce(proj) {
 }
 
 function onExplode(proj) {
-    const tankType = TANK_TYPES[proj.tankType];
+    // Get weapon data - prefer weaponKey (new system), fallback to tankType (legacy)
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : TANK_TYPES[proj.tankType];
+    if (!weapon) return;
 
-    // Check if this is CHAOS and should spawn cluster bombs (only for main projectile)
-    if (proj.tankType === 'CHAOS' && !proj.isCluster) {
+    // Check if this is CLUSTER and should spawn cluster bombs (only for main projectile)
+    if (weapon.behavior === 'cluster' && !proj.isCluster) {
         spawnClusterBombs(proj);
         // Don't end turn yet - wait for cluster bombs
         return;
@@ -458,12 +782,12 @@ function onExplode(proj) {
     // Apply UFO buffs to damage and blast radius
     const damageMultiplier = proj.buffedDamageMultiplier || 1;
     const blastBonus = proj.buffedBlastBonus || 0;
-    const effectiveBlastRadius = tankType.blastRadius + blastBonus;
-    const effectiveDamage = tankType.damage * damageMultiplier;
+    const effectiveBlastRadius = weapon.blastRadius + blastBonus;
+    const effectiveDamage = weapon.damage * damageMultiplier;
 
     // ENHANCED Visual effects - scale with blast radius
-    // PHANTOM (Railgun) gets special high-impact visuals
-    const isRailgun = proj.tankType === 'PHANTOM';
+    // RAILGUN gets special high-impact visuals
+    const isRailgun = proj.weaponKey === 'RAILGUN' || proj.tankType === 'PHANTOM';
 
     if (isRailgun) {
         // Railgun: Focused, intense impact - bright white core with colored burst
@@ -473,9 +797,9 @@ function onExplode(proj) {
         renderer.addScreenShake(20);  // Punchy shake
         renderer.flash(COLORS.white, 0.35);  // Bright flash
         renderer.flash(proj.color, 0.2);  // Colored afterflash
-    } else if (tankType.isTerrainWeapon) {
+    } else if (weapon.terrainEffect) {
         // Terrain weapons: Unique visual effects
-        if (tankType.terrainEffect === 'dig') {
+        if (weapon.terrainEffect === 'dig') {
             // DIGGER: Brown/orange digging effect
             particles.explosion(proj.x, proj.y, 60, '#aa6633', effectiveBlastRadius);
             particles.sparks(proj.x, proj.y, 40, '#886622');
@@ -488,21 +812,18 @@ function onExplode(proj) {
             renderer.addScreenShake(12);
             renderer.flash('#442211', 0.15);
         }
-    } else if (tankType.isUtilityWeapon) {
-        // Utility weapons: Special effects based on utility type
-        if (tankType.utilityEffect === 'shield') {
-            // SHIELD: Cyan forcefield effect at player position (not impact point)
-            const owner = state.players[state.currentPlayer];
-            // Grant shield to the player who fired
-            owner.shield = tankType.shieldReduction;
-            // Visual effect at owner's position
-            particles.explosion(owner.x, owner.y, 60, COLORS.cyan, 50);
-            particles.sparks(owner.x, owner.y, 30, COLORS.white);
-            renderer.addScreenShake(8);
-            renderer.flash(COLORS.cyan, 0.25);
-            // Also small effect at impact point
-            particles.sparks(proj.x, proj.y, 20, COLORS.cyan);
-        }
+    } else if (weapon.behavior === 'shield') {
+        // SHIELD: Cyan forcefield effect at player position (not impact point)
+        const owner = state.players[proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer];
+        // Grant shield to the player who fired
+        owner.shield = weapon.shieldReduction || 0.5;
+        // Visual effect at owner's position
+        particles.explosion(owner.x, owner.y, 60, COLORS.cyan, 50);
+        particles.sparks(owner.x, owner.y, 30, COLORS.white);
+        renderer.addScreenShake(8);
+        renderer.flash(COLORS.cyan, 0.25);
+        // Also small effect at impact point
+        particles.sparks(proj.x, proj.y, 20, COLORS.cyan);
     } else {
         // Normal explosion for other weapons
         const particleCount = Math.floor(effectiveBlastRadius * 1.5);
@@ -512,8 +833,8 @@ function onExplode(proj) {
     }
 
     // Handle terrain modification based on weapon type
-    if (tankType.isTerrainWeapon && tankType.terrainEffect === 'build') {
-        // BUILDER: Add terrain mound
+    if (weapon.terrainEffect === 'build') {
+        // BUILDER/DIRT_BALL: Add terrain mound
         terrain.raise(proj.x, proj.y, effectiveBlastRadius);
     } else {
         // Normal weapons and DIGGER: Destroy terrain
@@ -525,13 +846,19 @@ function onExplode(proj) {
     let killingBlow = false;
     let hitPlayer = null;
 
-    // Apply damage to all players (including self-damage)
-    // PHANTOM (Railgun) has special damage mechanics (isRailgun defined above)
-    const directHitRadius = tankType.directHitRadius || 0;
-    const directHitBonus = tankType.directHitBonus || 1;
-    const minDamageFalloff = tankType.minDamageFalloff || 0;
+    // Track damage dealt for coin rewards
+    const firingPlayerIndex = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    const firingPlayer = state.players[firingPlayerIndex];
+    let totalEnemyDamage = 0;
 
-    for (const player of state.players) {
+    // Apply damage to all players (including self-damage)
+    // Railgun has special damage mechanics (isRailgun defined above)
+    const directHitRadius = weapon.directHitRadius || 0;
+    const directHitBonus = weapon.directHitBonus || 1;
+    const minDamageFalloff = weapon.minDamageFalloff || 0;
+
+    for (let i = 0; i < state.players.length; i++) {
+        const player = state.players[i];
         const dist = distance(proj.x, proj.y, player.x, player.y);
         if (dist < effectiveBlastRadius) {
             // Calculate base damage with falloff
@@ -567,9 +894,18 @@ function onExplode(proj) {
                     player.shield = 0;
                 }
 
+                // Track enemy damage for coins (not self-damage)
+                if (i !== firingPlayerIndex) {
+                    totalEnemyDamage += damage;
+                }
+
                 // Check if this will be a killing blow (after shield reduction)
                 if (player.health > 0 && player.health - damage <= 0) {
                     killingBlow = true;
+                    // Award kill bonus (only for enemy kills, not suicide)
+                    if (i !== firingPlayerIndex) {
+                        firingPlayer.coins += KILL_BONUS;
+                    }
                 }
 
                 // Railgun direct hit feedback
@@ -581,6 +917,12 @@ function onExplode(proj) {
             }
             player.health = Math.max(0, player.health - damage);
         }
+    }
+
+    // Award coins for damage dealt to enemies
+    if (totalEnemyDamage > 0) {
+        const coinsEarned = Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
+        firingPlayer.coins += coinsEarned;
     }
 
     // Play explosion sound (scale intensity with blast radius)
@@ -595,7 +937,7 @@ function onExplode(proj) {
         particles.sparks(proj.x, proj.y, 30, COLORS.white);
 
         // Strong screen shake for hits
-        renderer.addScreenShake(18 + tankType.damage / 4);
+        renderer.addScreenShake(18 + weapon.damage / 4);
 
         // Bright flash on hit
         renderer.flash(COLORS.white, 0.3);
@@ -633,8 +975,9 @@ function onExplode(proj) {
 }
 
 function spawnClusterBombs(proj) {
-    const tankType = TANK_TYPES.CHAOS;
-    const count = tankType.clusterCount;
+    // Get weapon data (prefer new system, fallback to legacy)
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : TANK_TYPES.CHAOS;
+    const count = weapon.clusterCount || 5;
 
     // Clear main projectile
     state.projectile = null;
@@ -655,9 +998,10 @@ function spawnClusterBombs(proj) {
             color: proj.color,
             bounces: 0,
             // Apply extra bounces from ELASTIC WORLD event + UFO buff (inherited from parent)
-            maxBounces: tankType.bounces + state.extraBounces + (proj.buffedBlastBonus ? Math.floor(proj.buffedBlastBonus / UFO_BUFF_TYPES.BLAST.bonus) : 0),
+            maxBounces: (weapon.bounces || 1) + state.extraBounces + (proj.buffedBlastBonus ? Math.floor(proj.buffedBlastBonus / UFO_BUFF_TYPES.BLAST.bonus) : 0),
             trail: [],
-            tankType: 'CHAOS',
+            weaponKey: proj.weaponKey,  // Inherit weapon key
+            tankType: 'CHAOS',  // Keep for backwards compatibility
             isCluster: true,
             // Inherit buffed stats from parent projectile
             buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
@@ -714,10 +1058,23 @@ function endTurn() {
         if (state.turnCount % 2 === 0) {
             state.voidY -= VOID_RISE_PER_ROUND;
 
+            // Award survival bonus to both players
+            state.players.forEach(p => {
+                if (p.health > 0) {
+                    p.coins += SURVIVAL_BONUS;
+                }
+            });
+
             // Revert previous round's event
             if (state.activeEvent) {
                 events.revertEvent(state);
                 state.activeEvent = null;
+            }
+
+            // Transition to shop phase (skip shop on round 1)
+            if (state.turnCount >= 2) {
+                enterShopPhase();
+                return;  // Don't continue to aiming yet
             }
 
             // Roll new glitch event for this round (both players will share it)
@@ -744,6 +1101,169 @@ function rollNewGlitchEvent() {
         state.activeEvent = { name: event.name, color: event.color, timer: 2.5 };
         audio.playGlitch();
         renderer.flash(event.color, 0.3);
+    }
+}
+
+// ============================================================================
+// Shop System
+// ============================================================================
+
+/**
+ * Generate random weapon offerings for the shop
+ * Ensures mix of tiers: 1 cheap, 2 mid, 2 premium, 1 spectacle
+ */
+function generateShopOfferings() {
+    const offerings = [];
+    const byTier = {
+        CHEAP: [],
+        MID: [],
+        PREMIUM: [],
+        SPECTACLE: []
+    };
+
+    // Sort weapons by tier
+    for (const key of WEAPON_KEYS) {
+        const weapon = WEAPONS[key];
+        byTier[weapon.tier].push(key);
+    }
+
+    // Shuffle each tier
+    for (const tier in byTier) {
+        byTier[tier].sort(() => Math.random() - 0.5);
+    }
+
+    // Pick: 1 cheap, 2 mid, 2 premium, 1 spectacle
+    if (byTier.CHEAP.length > 0) offerings.push(byTier.CHEAP[0]);
+    if (byTier.MID.length > 0) offerings.push(byTier.MID[0]);
+    if (byTier.MID.length > 1) offerings.push(byTier.MID[1]);
+    if (byTier.PREMIUM.length > 0) offerings.push(byTier.PREMIUM[0]);
+    if (byTier.PREMIUM.length > 1) offerings.push(byTier.PREMIUM[1]);
+    if (byTier.SPECTACLE.length > 0) offerings.push(byTier.SPECTACLE[0]);
+
+    // Sort by cost for display
+    offerings.sort((a, b) => WEAPONS[a].cost - WEAPONS[b].cost);
+
+    return offerings;
+}
+
+/**
+ * Enter the shop phase between rounds
+ */
+function enterShopPhase() {
+    state.phase = 'shop';
+    state.shopOfferings = generateShopOfferings();
+    state.shopSelections = [0, 0];
+    state.shopReady = [false, false];
+
+    // AI auto-selects in shop
+    if (state.players[1].isAI) {
+        aiShopSelect();
+    }
+}
+
+/**
+ * AI weapon selection (simple: pick best affordable weapon)
+ */
+function aiShopSelect() {
+    const ai = state.players[1];
+    let bestIndex = -1;
+    let bestCost = 0;
+
+    // Find most expensive weapon AI can afford
+    for (let i = 0; i < state.shopOfferings.length; i++) {
+        const weapon = WEAPONS[state.shopOfferings[i]];
+        if (weapon.cost <= ai.coins && weapon.cost > bestCost) {
+            bestCost = weapon.cost;
+            bestIndex = i;
+        }
+    }
+
+    // If found affordable weapon, buy it
+    if (bestIndex >= 0) {
+        state.shopSelections[1] = bestIndex;
+        const weaponKey = state.shopOfferings[bestIndex];
+        ai.coins -= WEAPONS[weaponKey].cost;
+        ai.weapon = weaponKey;
+    }
+
+    state.shopReady[1] = true;
+    checkShopComplete();
+}
+
+/**
+ * Handle player shop input
+ */
+function handleShopInput() {
+    const playerIndex = 0;  // Only P1 uses manual shop (P2 is auto if AI)
+    const player = state.players[playerIndex];
+
+    if (state.shopReady[playerIndex]) return;
+
+    // Navigate selection
+    if (input.wasPressed('ArrowUp')) {
+        state.shopSelections[playerIndex]--;
+        if (state.shopSelections[playerIndex] < 0) {
+            state.shopSelections[playerIndex] = state.shopOfferings.length;  // +1 for "Keep Current"
+        }
+        audio.playSelect();
+    }
+    if (input.wasPressed('ArrowDown')) {
+        state.shopSelections[playerIndex]++;
+        if (state.shopSelections[playerIndex] > state.shopOfferings.length) {
+            state.shopSelections[playerIndex] = 0;
+        }
+        audio.playSelect();
+    }
+
+    // Confirm selection with Space or Enter
+    if (input.spaceReleased || input.enter) {
+        const selection = state.shopSelections[playerIndex];
+
+        if (selection < state.shopOfferings.length) {
+            // Buying a weapon
+            const weaponKey = state.shopOfferings[selection];
+            const weapon = WEAPONS[weaponKey];
+
+            if (player.coins >= weapon.cost) {
+                player.coins -= weapon.cost;
+                player.weapon = weaponKey;
+                state.shopReady[playerIndex] = true;
+                audio.playConfirm();
+            } else {
+                // Can't afford - play error sound
+                audio.playSelect();
+            }
+        } else {
+            // Keep current weapon
+            state.shopReady[playerIndex] = true;
+            audio.playConfirm();
+        }
+
+        checkShopComplete();
+    }
+}
+
+/**
+ * Check if all players are ready to exit shop
+ */
+function checkShopComplete() {
+    if (state.shopReady[0] && state.shopReady[1]) {
+        exitShopPhase();
+    }
+}
+
+/**
+ * Exit shop and continue to next round
+ */
+function exitShopPhase() {
+    // Roll new glitch event for this round
+    rollNewGlitchEvent();
+
+    state.phase = 'aiming';
+
+    // Prepare AI if next player is AI
+    if (getCurrentPlayer().isAI) {
+        prepareAITurn();
     }
 }
 
@@ -952,6 +1472,13 @@ function update(dt) {
 
     // AI selecting state (just wait)
     if (state.phase === 'ai_selecting') {
+        input.endFrame();
+        return;
+    }
+
+    // Shop phase
+    if (state.phase === 'shop') {
+        handleShopInput();
         input.endFrame();
         return;
     }
@@ -1239,6 +1766,13 @@ function render() {
         return;
     }
 
+    // Shop phase
+    if (state.phase === 'shop') {
+        renderShop();
+        renderer.endFrame();
+        return;
+    }
+
     // Apply camera zoom (punch-in effect on hits)
     if (state.cameraZoom > 0) {
         const zoomScale = 1 + state.cameraZoom;
@@ -1402,11 +1936,15 @@ function render() {
     renderer.drawText(`Round ${getCurrentRound()}`, CANVAS_WIDTH - 20, 30, COLORS.white, 14, 'right', false);
     renderer.drawText(`FPS: ${fpsCounter.fps}`, CANVAS_WIDTH - 20, 50, fpsCounter.fps < 50 ? COLORS.magenta : '#666666', 10, 'right', false);
 
-    // Player stats with tank type
-    const p1Type = state.players[0].tankType ? TANK_TYPES[state.players[0].tankType].weapon : '';
-    const p2Type = state.players[1].tankType ? TANK_TYPES[state.players[1].tankType].weapon : '';
-    renderer.drawText(`P1: ${Math.round(state.players[0].health)}% [${p1Type}]`, 20, 60, state.players[0].color, 14, 'left', false);
-    renderer.drawText(`P2: ${Math.round(state.players[1].health)}% [${p2Type}]`, 20, 80, state.players[1].color, 14, 'left', false);
+    // Player stats with weapon and coins
+    const p1Weapon = state.players[0].weapon ? WEAPONS[state.players[0].weapon]?.name : '';
+    const p2Weapon = state.players[1].weapon ? WEAPONS[state.players[1].weapon]?.name : '';
+    renderer.drawText(`P1: ${Math.round(state.players[0].health)}% [${p1Weapon}]`, 20, 60, state.players[0].color, 14, 'left', false);
+    renderer.drawText(`P2: ${Math.round(state.players[1].health)}% [${p2Weapon}]`, 20, 80, state.players[1].color, 14, 'left', false);
+
+    // Coin display
+    renderer.drawText(`${state.players[0].coins}`, 180, 60, COLORS.yellow, 12, 'left', false);
+    renderer.drawText(`${state.players[1].coins}`, 180, 80, COLORS.yellow, 12, 'left', false);
 
     // Draw active UFO buffs for each player
     drawPlayerBuffs(0, 200, 60);
@@ -1506,13 +2044,14 @@ function drawPlayerBuffs(playerIndex, x, y) {
  */
 function drawTracerPreview() {
     const player = getCurrentPlayer();
-    const tankType = TANK_TYPES[player.tankType];
-    if (!tankType) return;
+    // Use weapon data for speed, fallback to tank type
+    const weapon = WEAPONS[player.weapon];
+    if (!weapon) return;
 
     // Calculate launch velocity (same as fireProjectile)
     const angleRad = degToRad(180 - player.angle);
     const effectivePower = chargeToPower(player.power);
-    const speed = effectivePower * MAX_POWER * tankType.projectileSpeed * state.velocityMultiplier;
+    const speed = effectivePower * MAX_POWER * weapon.projectileSpeed * state.velocityMultiplier;
 
     // Initial position and velocity
     let x = player.x;
@@ -1803,6 +2342,95 @@ function renderTankSelect() {
 
     // Controls hint (at bottom with padding)
     renderer.drawText('↑↓ SELECT   SPACE CONFIRM', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
+}
+
+function renderShop() {
+    // Background
+    renderer.drawGrid(50, '#0a0a15');
+
+    // Draw ambient background
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+        ambient.drawForeground(renderer);
+    }
+
+    const round = getCurrentRound();
+    const p1 = state.players[0];
+    const p2 = state.players[1];
+
+    // Header
+    renderer.setGlow(COLORS.yellow, 15);
+    renderer.drawText('SHOP', CANVAS_WIDTH / 2, 50, COLORS.yellow, 36, 'center', true);
+    renderer.clearGlow();
+    renderer.drawText(`ROUND ${round}`, CANVAS_WIDTH / 2, 85, '#888888', 16, 'center', false);
+
+    // Player info panels
+    // P1 (left side)
+    renderer.drawText('P1', 100, 50, COLORS.cyan, 20, 'center', true);
+    renderer.drawText(`${p1.coins} coins`, 100, 75, COLORS.yellow, 14, 'center', false);
+    const p1WeaponName = WEAPONS[p1.weapon]?.name || 'None';
+    renderer.drawText(`[${p1WeaponName}]`, 100, 95, '#888888', 11, 'center', false);
+    if (state.shopReady[0]) {
+        renderer.drawText('READY', 100, 120, COLORS.green, 14, 'center', true);
+    }
+
+    // P2 (right side)
+    renderer.drawText(p2.isAI ? 'AI' : 'P2', CANVAS_WIDTH - 100, 50, COLORS.magenta, 20, 'center', true);
+    renderer.drawText(`${p2.coins} coins`, CANVAS_WIDTH - 100, 75, COLORS.yellow, 14, 'center', false);
+    const p2WeaponName = WEAPONS[p2.weapon]?.name || 'None';
+    renderer.drawText(`[${p2WeaponName}]`, CANVAS_WIDTH - 100, 95, '#888888', 11, 'center', false);
+    if (state.shopReady[1]) {
+        renderer.drawText('READY', CANVAS_WIDTH - 100, 120, COLORS.green, 14, 'center', true);
+    }
+
+    // Weapon list
+    const startY = 150;
+    const spacing = 70;
+    const offerings = state.shopOfferings;
+    const selection = state.shopSelections[0];
+
+    for (let i = 0; i < offerings.length; i++) {
+        const weaponKey = offerings[i];
+        const weapon = WEAPONS[weaponKey];
+        const y = startY + i * spacing;
+        const isSelected = i === selection;
+        const canAfford = p1.coins >= weapon.cost;
+
+        // Selection highlight
+        if (isSelected) {
+            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 25, 500, 55, COLORS.cyan, 2, true);
+        }
+
+        // Weapon name
+        let nameColor = isSelected ? COLORS.white : '#888888';
+        if (!canAfford) nameColor = '#444444';
+        renderer.drawText(weapon.name, CANVAS_WIDTH / 2 - 200, y - 5, nameColor, isSelected ? 20 : 16, 'left', isSelected);
+
+        // Weapon description
+        const descColor = isSelected ? '#aaaaaa' : '#555555';
+        renderer.drawText(weapon.description, CANVAS_WIDTH / 2 - 200, y + 15, canAfford ? descColor : '#333333', 11, 'left', false);
+
+        // Cost
+        const costColor = canAfford ? COLORS.yellow : '#663333';
+        renderer.drawText(`${weapon.cost}`, CANVAS_WIDTH / 2 + 200, y, costColor, 18, 'right', canAfford && isSelected);
+
+        // Stats
+        const statsColor = canAfford ? '#666666' : '#333333';
+        renderer.drawText(`DMG:${weapon.damage} BLS:${weapon.blastRadius} BNC:${weapon.bounces}`, CANVAS_WIDTH / 2 + 200, y + 18, statsColor, 9, 'right', false);
+    }
+
+    // "Keep Current" option
+    const keepY = startY + offerings.length * spacing;
+    const isKeepSelected = selection === offerings.length;
+    if (isKeepSelected) {
+        renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, keepY - 25, 500, 55, COLORS.cyan, 2, true);
+    }
+    renderer.drawText('Keep Current Weapon', CANVAS_WIDTH / 2, keepY, isKeepSelected ? COLORS.white : '#888888', isKeepSelected ? 20 : 16, 'center', isKeepSelected);
+    renderer.drawText('(Save your coins)', CANVAS_WIDTH / 2, keepY + 20, '#555555', 11, 'center', false);
+
+    // Controls hint
+    renderer.drawText('↑↓ SELECT   SPACE BUY   ENTER KEEP', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
 }
 
 // ============================================================================
