@@ -21,8 +21,8 @@ import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 const CANVAS_WIDTH = 1280;
 const CANVAS_HEIGHT = 720;
 const DEFAULT_GRAVITY = 0.25;
-const MAX_POWER = 20;           // Increased for more dramatic full-power shots
-const CHARGE_RATE = 0.018;      // Slightly faster charge (2 sec for full)
+const MAX_POWER = 28;           // Strong shots that can reach across the map
+const CHARGE_RATE = 0.012;      // Slower charge for more precise timing (~3 sec for full)
 const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
 const VOID_RISE_PER_ROUND = 0;  // Disabled - was causing premature game ends
 const TANK_RADIUS = 25;
@@ -39,7 +39,7 @@ const CAMERA_ZOOM_DECAY = 0.92;
 const STARTING_COINS = 60;
 const COINS_PER_DAMAGE = 0.2;      // 1 coin per 5 damage
 const KILL_BONUS = 50;
-const SURVIVAL_BONUS = 10;
+const SURVIVAL_BONUS = 25;  // Per turn, both players
 const UFO_DESTROY_BONUS = 30;
 const SHOP_OFFERING_COUNT = 6;
 
@@ -656,6 +656,73 @@ function updateProjectile(dt) {
         proj.vx += state.wind;
     }
 
+    // SEEKER behavior - slight homing toward nearest enemy
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    if (weapon && weapon.behavior === 'seeker' && !proj.isRolling) {
+        const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+        const targetPlayer = state.players[1 - firingPlayer];
+        if (targetPlayer && targetPlayer.health > 0) {
+            const dx = targetPlayer.x - proj.x;
+            const dy = targetPlayer.y - proj.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 0) {
+                const seekStrength = weapon.seekStrength || 0.02;
+                proj.vx += (dx / dist) * seekStrength;
+                proj.vy += (dy / dist) * seekStrength;
+            }
+        }
+    }
+
+    // ROLLER behavior - roll along terrain surface
+    if (proj.isRolling) {
+        // Apply friction
+        proj.vx *= 0.98;
+
+        // Follow terrain slope
+        const terrainY = terrain.getHeightAt(proj.x);
+        const slopeAhead = terrain.getHeightAt(proj.x + Math.sign(proj.vx || 1) * 5);
+        const slopeDiff = slopeAhead - terrainY;
+        proj.vx += slopeDiff * 0.1; // Roll downhill
+
+        // Actually move the roller!
+        proj.x += proj.vx;
+
+        // Keep on terrain surface
+        proj.y = terrain.getHeightAt(proj.x) - proj.radius;
+        proj.vy = 0;
+
+        // Check for player collision while rolling
+        for (const player of state.players) {
+            const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
+            if (dist < proj.radius + TANK_RADIUS) {
+                onExplode(proj);
+                state.projectile = null;
+                return;
+            }
+        }
+
+        // Stop rolling if slow enough
+        if (Math.abs(proj.vx) < 0.5) {
+            proj.rollTimer = (proj.rollTimer || 0) + dt;
+            if (proj.rollTimer > 0.5) {
+                onExplode(proj);
+                state.projectile = null;
+                return;
+            }
+        } else {
+            proj.rollTimer = 0;
+        }
+
+        // Wall collision while rolling
+        if (proj.x < proj.radius || proj.x > CANVAS_WIDTH - proj.radius) {
+            onExplode(proj);
+            state.projectile = null;
+            return;
+        }
+
+        return; // Skip normal physics while rolling
+    }
+
     // Move
     proj.x += proj.vx;
     proj.y += proj.vy;
@@ -690,9 +757,56 @@ function updateProjectile(dt) {
     // Check projectile termination conditions (Codex suggestion)
     // 1. Hits terrain
     if (terrain.isPointBelowTerrain(proj.x, proj.y)) {
+        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+
+        // ROLLER behavior - start rolling on terrain instead of exploding
+        if (projWeapon && projWeapon.behavior === 'roller' && !proj.isRolling) {
+            proj.isRolling = true;
+            // Preserve horizontal momentum, kill vertical
+            proj.vy = 0;
+            // Place on surface
+            proj.y = terrain.getHeightAt(proj.x) - proj.radius;
+            // Visual feedback
+            particles.sparks(proj.x, proj.y, 15, proj.color);
+            audio.playBounce();
+            return;
+        }
+
+        // DRILL behavior - pierce through terrain
+        if (projWeapon && projWeapon.behavior === 'drill') {
+            // Track that we're in terrain
+            proj.inTerrain = true;
+            // Slow down slightly while drilling
+            proj.vx *= 0.99;
+            proj.vy *= 0.99;
+            // Spawn drill particles
+            if (Math.random() < 0.5) {
+                particles.sparks(proj.x, proj.y, 3, '#886644');
+            }
+            // Check for player collision while drilling (instant kill zone)
+            for (const player of state.players) {
+                const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
+                if (dist < proj.radius + TANK_RADIUS * 0.5) {
+                    onExplode(proj);
+                    state.projectile = null;
+                    return;
+                }
+            }
+            return; // Don't explode, keep drilling
+        }
+
         onExplode(proj);
         state.projectile = null;
         return;
+    } else {
+        // DRILL behavior - explode when exiting terrain into open air
+        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+        if (projWeapon && projWeapon.behavior === 'drill' && proj.inTerrain) {
+            // Just exited terrain - explode
+            onExplode(proj);
+            state.projectile = null;
+            return;
+        }
     }
 
     // 2. Hits void
@@ -754,6 +868,15 @@ function checkUFOCollision(px, py, radius) {
 
 function onBounce(proj) {
     proj.bounces++;
+
+    // SPLITTER behavior - split into multiple projectiles on first bounce
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    if (weapon && weapon.behavior === 'splitter' && proj.bounces === 1 && !proj.isSplit) {
+        spawnSplitProjectiles(proj, weapon.splitCount || 3);
+        state.projectile = null;
+        return;
+    }
+
     // Enhanced bounce feedback - more sparks, small flash
     particles.sparks(proj.x, proj.y, 25, COLORS.yellow);
     renderer.addScreenShake(8);
@@ -777,6 +900,25 @@ function onExplode(proj) {
         spawnClusterBombs(proj);
         // Don't end turn yet - wait for cluster bombs
         return;
+    }
+
+    // MIRV behavior - split into 3, then each splits into 3 more
+    if (weapon.behavior === 'mirv') {
+        // Main projectile spawns first stage
+        if (!proj.isCluster && !proj.isMIRVStage1 && !proj.isMIRVStage2) {
+            spawnMIRVProjectiles(proj);
+            return;
+        }
+        // Stage 1 projectiles spawn stage 2
+        if (proj.isMIRVStage1) {
+            spawnMIRVStage2(proj);
+            // Check if any projectiles left
+            if (state.projectiles.length === 0) {
+                endTurn();
+            }
+            return;
+        }
+        // Stage 2 projectiles explode normally (fall through)
     }
 
     // Apply UFO buffs to damage and blast radius
@@ -919,6 +1061,151 @@ function onExplode(proj) {
         }
     }
 
+    // QUAKE behavior - damage grounded enemies (even outside blast radius)
+    if (weapon.behavior === 'quake') {
+        for (let i = 0; i < state.players.length; i++) {
+            const player = state.players[i];
+            if (player.health <= 0) continue;
+
+            // Check if player is on terrain (grounded)
+            const terrainY = terrain.getHeightAt(player.x);
+            const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 10;
+
+            if (isGrounded) {
+                // Already damaged by normal explosion? Add bonus ground damage
+                const dist = distance(proj.x, proj.y, player.x, player.y);
+                if (dist >= effectiveBlastRadius) {
+                    // Outside blast radius but grounded - apply quake damage
+                    const quakeDamage = effectiveDamage * 0.5;
+                    player.health = Math.max(0, player.health - quakeDamage);
+                    hitOccurred = true;
+
+                    // Track damage for coins
+                    if (i !== firingPlayerIndex) {
+                        totalEnemyDamage += quakeDamage;
+                    }
+
+                    // Visual feedback
+                    particles.sparks(player.x, player.y, 20, '#886644');
+                    renderer.addScreenShake(8);
+                }
+            }
+        }
+
+        // Quake visual - ground ripple effect
+        particles.explosion(proj.x, proj.y + 20, 30, '#886644', 150);
+        renderer.addScreenShake(20);
+    }
+
+    // TELEPORTER behavior - warp firing player to impact point
+    if (weapon.behavior === 'teleporter') {
+        const owner = state.players[firingPlayerIndex];
+        if (owner && owner.health > 0) {
+            // Find safe landing position on terrain
+            const landingY = terrain.getHeightAt(proj.x) - TANK_RADIUS;
+
+            // Visual effect at old position
+            particles.explosion(owner.x, owner.y, 40, weapon.color, 30);
+
+            // Teleport
+            owner.x = proj.x;
+            owner.y = landingY;
+
+            // Visual effect at new position
+            particles.explosion(owner.x, owner.y, 50, weapon.color, 40);
+            particles.sparks(owner.x, owner.y, 30, COLORS.white);
+            renderer.flash(weapon.color, 0.3);
+            renderer.addScreenShake(15);
+        }
+    }
+
+    // VOID RIFT behavior - raise the void
+    if (weapon.behavior === 'voidRift') {
+        const voidRiseAmount = weapon.voidRise || 60;
+        state.voidY -= voidRiseAmount;
+
+        // Visual feedback - ominous void pulse
+        particles.explosion(proj.x, state.voidY, 60, '#8800ff', 80);
+        renderer.flash('#8800ff', 0.4);
+        renderer.addScreenShake(18);
+
+        // Consume terrain below the new void level
+        // (This happens naturally when void renders over terrain)
+    }
+
+    // NAPALM behavior - spawn persistent fire field
+    if (weapon.behavior === 'napalm') {
+        state.fields.push({
+            x: proj.x,
+            y: terrain.getHeightAt(proj.x),  // Sit on terrain surface
+            radius: effectiveBlastRadius * 1.2,
+            duration: weapon.fieldDuration || 8,
+            timer: weapon.fieldDuration || 8,
+            damagePerSec: weapon.fieldDamage || 10,
+            color: weapon.color,
+            type: 'fire',
+            firedByPlayer: firingPlayerIndex
+        });
+
+        // Extra fire particles on spawn
+        particles.explosion(proj.x, proj.y, 80, '#ff6600', effectiveBlastRadius);
+        particles.explosion(proj.x, proj.y, 40, '#ffaa00', effectiveBlastRadius * 0.6);
+    }
+
+    // CHAIN LIGHTNING behavior - arc to secondary target
+    if (weapon.behavior === 'chainLightning') {
+        const chainRange = weapon.chainRange || 200;
+        const chainDamage = weapon.chainDamage || 25;
+
+        // Find nearest enemy that wasn't the primary target (or any enemy if primary missed)
+        let secondaryTarget = null;
+        let minDist = chainRange;
+
+        for (const player of state.players) {
+            if (player.health <= 0) continue;
+            const dist = distance(proj.x, proj.y, player.x, player.y);
+            if (dist < minDist && dist > 0) {
+                minDist = dist;
+                secondaryTarget = player;
+            }
+        }
+
+        if (secondaryTarget) {
+            // Deal chain damage
+            secondaryTarget.health = Math.max(0, secondaryTarget.health - chainDamage);
+
+            // Track for coins
+            const targetIndex = state.players.indexOf(secondaryTarget);
+            if (targetIndex !== firingPlayerIndex) {
+                totalEnemyDamage += chainDamage;
+            }
+
+            // Store lightning arc for rendering
+            state.lightningArc = {
+                x1: proj.x,
+                y1: proj.y,
+                x2: secondaryTarget.x,
+                y2: secondaryTarget.y,
+                timer: 0.5,  // Display for 0.5 seconds
+                color: weapon.color
+            };
+
+            // Visual feedback
+            particles.sparks(secondaryTarget.x, secondaryTarget.y, 30, weapon.color);
+            particles.sparks(secondaryTarget.x, secondaryTarget.y, 20, COLORS.white);
+            renderer.flash(weapon.color, 0.25);
+
+            // Check for killing blow
+            if (secondaryTarget.health <= 0) {
+                killingBlow = true;
+                hitPlayer = secondaryTarget;
+                if (targetIndex !== firingPlayerIndex) {
+                    firingPlayer.coins += KILL_BONUS;
+                }
+            }
+        }
+    }
+
     // Award coins for damage dealt to enemies
     if (totalEnemyDamage > 0) {
         const coinsEarned = Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
@@ -1018,6 +1305,135 @@ function spawnClusterBombs(proj) {
     audio.playBounce();  // Satisfying pop sound
 }
 
+/**
+ * Spawn split projectiles for SPLITTER weapon (on first bounce)
+ */
+function spawnSplitProjectiles(proj, count) {
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+
+    // Clear main projectile
+    state.projectile = null;
+
+    // Spawn split projectiles in a spread pattern
+    for (let i = 0; i < count; i++) {
+        const spreadAngle = ((i / (count - 1)) - 0.5) * Math.PI * 0.5;  // Spread 45 degrees
+        const baseAngle = Math.atan2(proj.vy, proj.vx);
+        const angle = baseAngle + spreadAngle;
+        const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.85;
+
+        state.projectiles.push({
+            x: proj.x,
+            y: proj.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            radius: proj.radius * 0.8,
+            color: proj.color,
+            bounces: 1,  // Already bounced once
+            maxBounces: proj.maxBounces + 1,  // Allow one more bounce after split
+            trail: [],
+            weaponKey: proj.weaponKey,
+            isSplit: true,  // Mark as split so it doesn't split again
+            isCluster: true,  // Use cluster system for multi-projectile handling
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            firedByPlayer: proj.firedByPlayer
+        });
+    }
+
+    // Visual feedback for split
+    particles.sparks(proj.x, proj.y, 35, proj.color);
+    particles.sparks(proj.x, proj.y, 20, COLORS.white);
+    renderer.addScreenShake(10);
+    renderer.flash(proj.color, 0.12);
+    audio.playBounce();
+}
+
+/**
+ * Spawn MIRV projectiles - first stage (3 projectiles that will each split into 3 more)
+ */
+function spawnMIRVProjectiles(proj) {
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    const count = weapon ? weapon.splitCount || 3 : 3;
+
+    // Clear main projectile
+    state.projectile = null;
+
+    // Spawn first-stage MIRV projectiles
+    for (let i = 0; i < count; i++) {
+        const spreadAngle = ((i / (count - 1)) - 0.5) * Math.PI * 0.4;  // Spread 36 degrees
+        const baseAngle = Math.atan2(proj.vy, proj.vx);
+        const angle = baseAngle + spreadAngle;
+        const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.8;
+
+        state.projectiles.push({
+            x: proj.x,
+            y: proj.y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            radius: proj.radius * 0.7,
+            color: proj.color,
+            bounces: 0,
+            maxBounces: 1,
+            trail: [],
+            weaponKey: proj.weaponKey,
+            isMIRVStage1: true,  // First stage - will split again
+            isCluster: true,
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            firedByPlayer: proj.firedByPlayer
+        });
+    }
+
+    // Visual feedback for MIRV deployment
+    particles.sparks(proj.x, proj.y, 40, proj.color);
+    particles.sparks(proj.x, proj.y, 30, COLORS.yellow);
+    renderer.addScreenShake(12);
+    renderer.flash(proj.color, 0.15);
+    audio.playBounce();
+}
+
+/**
+ * Spawn MIRV stage 2 projectiles (the final bomblets)
+ */
+function spawnMIRVStage2(proj) {
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    const count = weapon ? weapon.clusterCount || 3 : 3;
+
+    // Remove this stage 1 projectile from array
+    const idx = state.projectiles.indexOf(proj);
+    if (idx > -1) state.projectiles.splice(idx, 1);
+
+    // Spawn final bomblets
+    for (let i = 0; i < count; i++) {
+        const spreadAngle = ((i / (count - 1)) - 0.5) * Math.PI * 0.5;
+        const baseAngle = Math.atan2(proj.vy, proj.vx);
+        const angle = baseAngle + spreadAngle;
+        const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.7;
+
+        state.projectiles.push({
+            x: proj.x,
+            y: proj.y,
+            vx: Math.cos(angle) * speed + (Math.random() - 0.5) * 2,
+            vy: Math.sin(angle) * speed + (Math.random() - 0.5) * 2,
+            radius: 4,
+            color: proj.color,
+            bounces: 0,
+            maxBounces: 1,
+            trail: [],
+            weaponKey: proj.weaponKey,
+            isMIRVStage2: true,  // Final stage
+            isCluster: true,
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            firedByPlayer: proj.firedByPlayer
+        });
+    }
+
+    // Small pop effect
+    particles.sparks(proj.x, proj.y, 20, proj.color);
+    audio.playBounce();
+}
+
 // ============================================================================
 // Turn System
 // ============================================================================
@@ -1053,17 +1469,17 @@ function endTurn() {
         state.turnCount++;
         state.currentPlayer = 1 - state.currentPlayer;
 
+        // Award survival bonus to both players every turn
+        state.players.forEach(p => {
+            if (p.health > 0) {
+                p.coins += SURVIVAL_BONUS;
+            }
+        });
+
         // Void rises every full round (after both players fire)
         // Also: new glitch event at the start of each round (when P1's turn begins)
         if (state.turnCount % 2 === 0) {
             state.voidY -= VOID_RISE_PER_ROUND;
-
-            // Award survival bonus to both players
-            state.players.forEach(p => {
-                if (p.health > 0) {
-                    p.coins += SURVIVAL_BONUS;
-                }
-            });
 
             // Revert previous round's event
             if (state.activeEvent) {
@@ -1184,6 +1600,7 @@ function aiShopSelect() {
         const weaponKey = state.shopOfferings[bestIndex];
         ai.coins -= WEAPONS[weaponKey].cost;
         ai.weapon = weaponKey;
+        audio.playPurchase();
     }
 
     state.shopReady[1] = true;
@@ -1228,10 +1645,10 @@ function handleShopInput() {
                 player.coins -= weapon.cost;
                 player.weapon = weaponKey;
                 state.shopReady[playerIndex] = true;
-                audio.playConfirm();
+                audio.playPurchase();
             } else {
                 // Can't afford - play error sound
-                audio.playSelect();
+                audio.playError();
             }
         } else {
             // Keep current weapon
@@ -1496,14 +1913,25 @@ function update(dt) {
             if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
             if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
 
-            // Charge with space
+            // Charge with space (oscillates up and down for skill-based timing)
             if (input.space && !state.projectile && state.projectiles.length === 0) {
                 // Start charge sound when beginning to charge
                 if (!player.charging) {
                     audio.startCharge();
+                    player.chargeDir = 1;  // Start going up
                 }
                 player.charging = true;
-                player.power = clamp(player.power + CHARGE_RATE, 0, 1);
+
+                // Oscillate power up and down
+                player.power += CHARGE_RATE * player.chargeDir;
+                if (player.power >= 1) {
+                    player.power = 1;
+                    player.chargeDir = -1;  // Reverse to go down
+                } else if (player.power <= 0.1) {
+                    player.power = 0.1;  // Don't go below 10%
+                    player.chargeDir = 1;   // Reverse to go up
+                }
+
                 // Update charge sound pitch
                 audio.updateCharge(player.power);
             }
@@ -1575,8 +2003,76 @@ function update(dt) {
         updateAnomalyProjectile(dt);
     }
 
+    // Update fire fields (Napalm)
+    updateFields(dt);
+
+    // Update lightning arc display timer
+    if (state.lightningArc) {
+        state.lightningArc.timer -= dt;
+        if (state.lightningArc.timer <= 0) {
+            state.lightningArc = null;
+        }
+    }
+
     // Clear input state for next frame
     input.endFrame();
+}
+
+/**
+ * Update fire fields (Napalm) - tick damage and expire
+ */
+function updateFields(dt) {
+    for (let i = state.fields.length - 1; i >= 0; i--) {
+        const field = state.fields[i];
+
+        // Decrement timer
+        field.timer -= dt;
+
+        // Remove expired fields or fields consumed by void
+        if (field.timer <= 0 || field.y > state.voidY) {
+            state.fields.splice(i, 1);
+            continue;
+        }
+
+        // Spawn fire particles
+        if (Math.random() < 0.3) {
+            const px = field.x + (Math.random() - 0.5) * field.radius * 1.5;
+            const py = field.y - Math.random() * 30;
+            particles.trail(px, py, Math.random() < 0.5 ? '#ff4400' : '#ffaa00');
+        }
+
+        // Deal damage to players standing in the field
+        for (let p = 0; p < state.players.length; p++) {
+            const player = state.players[p];
+            if (player.health <= 0) continue;
+
+            const dist = Math.abs(player.x - field.x);
+            if (dist < field.radius) {
+                // Apply damage over time (scaled by dt)
+                const damage = field.damagePerSec * dt;
+                player.health = Math.max(0, player.health - damage);
+
+                // Award coins if damaging enemy
+                if (p !== field.firedByPlayer && damage > 0) {
+                    state.players[field.firedByPlayer].coins += Math.floor(damage * COINS_PER_DAMAGE);
+                }
+
+                // Visual feedback (occasional sparks on player)
+                if (Math.random() < 0.1) {
+                    particles.sparks(player.x, player.y, 5, '#ff6600');
+                }
+
+                // Check for kill
+                if (player.health <= 0) {
+                    if (p !== field.firedByPlayer) {
+                        state.players[field.firedByPlayer].coins += KILL_BONUS;
+                    }
+                    particles.explosion(player.x, player.y, 80, player.color, 80);
+                    audio.playKill();
+                }
+            }
+        }
+    }
 }
 
 function updateClusterBomblet(proj, dt) {
@@ -1806,6 +2302,11 @@ function render() {
     // Draw void
     renderer.drawVoid(state.voidY);
 
+    // Draw fire fields (Napalm)
+    for (const field of state.fields) {
+        drawFireField(field);
+    }
+
     // Draw both tanks
     for (let i = 0; i < state.players.length; i++) {
         const player = state.players[i];
@@ -1903,6 +2404,11 @@ function render() {
     // Draw anomaly projectile (from VOID ANOMALY event)
     if (state.anomalyProjectile) {
         drawProjectile(state.anomalyProjectile);
+    }
+
+    // Draw lightning arc (Chain Lightning)
+    if (state.lightningArc) {
+        drawLightningArc(state.lightningArc);
     }
 
     // Draw particles
@@ -2186,6 +2692,95 @@ function drawProjectile(proj) {
     }
 }
 
+/**
+ * Draw a fire field (Napalm)
+ */
+function drawFireField(field) {
+    const ctx = renderer.ctx;
+    const progress = field.timer / field.duration;  // 1 = full, 0 = expired
+
+    // Flickering fire effect
+    const flicker = 0.7 + Math.random() * 0.3;
+    const currentRadius = field.radius * (0.5 + progress * 0.5);
+
+    // Draw gradient fire glow
+    const gradient = ctx.createRadialGradient(
+        field.x, field.y, 0,
+        field.x, field.y, currentRadius
+    );
+    gradient.addColorStop(0, `rgba(255, 100, 0, ${0.6 * flicker * progress})`);
+    gradient.addColorStop(0.4, `rgba(255, 60, 0, ${0.4 * flicker * progress})`);
+    gradient.addColorStop(1, 'rgba(255, 30, 0, 0)');
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.ellipse(field.x, field.y - 10, currentRadius, currentRadius * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Glowing edge
+    renderer.setGlow('#ff4400', 20 * flicker);
+    ctx.strokeStyle = `rgba(255, 170, 0, ${0.5 * progress})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(field.x, field.y - 10, currentRadius * 0.8, currentRadius * 0.3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    renderer.clearGlow();
+}
+
+/**
+ * Draw a lightning arc (Chain Lightning)
+ */
+function drawLightningArc(arc) {
+    const ctx = renderer.ctx;
+    const segments = 8;
+    const jitter = 15;
+
+    // Multiple passes for glow effect
+    for (let pass = 0; pass < 3; pass++) {
+        const width = pass === 0 ? 6 : (pass === 1 ? 3 : 1);
+        const alpha = pass === 0 ? 0.3 : (pass === 1 ? 0.6 : 1);
+        const color = pass === 2 ? COLORS.white : arc.color;
+
+        ctx.save();
+        ctx.globalAlpha = alpha * (arc.timer / 0.5);  // Fade out
+        renderer.setGlow(arc.color, 30);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        ctx.beginPath();
+        ctx.moveTo(arc.x1, arc.y1);
+
+        // Draw jagged lightning path
+        for (let i = 1; i <= segments; i++) {
+            const t = i / segments;
+            const baseX = arc.x1 + (arc.x2 - arc.x1) * t;
+            const baseY = arc.y1 + (arc.y2 - arc.y1) * t;
+
+            if (i < segments) {
+                // Add random jitter to middle points
+                const offsetX = (Math.random() - 0.5) * jitter * 2;
+                const offsetY = (Math.random() - 0.5) * jitter * 2;
+                ctx.lineTo(baseX + offsetX, baseY + offsetY);
+            } else {
+                // End at target
+                ctx.lineTo(arc.x2, arc.y2);
+            }
+        }
+
+        ctx.stroke();
+        renderer.clearGlow();
+        ctx.restore();
+    }
+
+    // Bright flash at endpoints
+    renderer.setGlow(COLORS.white, 20);
+    renderer.drawCircle(arc.x1, arc.y1, 8, arc.color, true);
+    renderer.drawCircle(arc.x2, arc.y2, 10, arc.color, true);
+    renderer.clearGlow();
+}
+
 function renderTitle() {
     // Background with subtle animation
     renderer.drawGrid(50, '#0a0a15');
@@ -2400,6 +2995,25 @@ function renderShop() {
         // Selection highlight
         if (isSelected) {
             renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 25, 500, 55, COLORS.cyan, 2, true);
+
+            // Animated projectile preview
+            const previewX = CANVAS_WIDTH / 2 - 230;
+            const bounce = Math.sin(state.time * 8) * 3;
+            const pulse = 0.8 + Math.sin(state.time * 6) * 0.2;
+            const previewRadius = (weapon.projectileRadius || 6) * pulse;
+
+            renderer.setGlow(weapon.color, 15);
+            renderer.drawCircle(previewX, y + bounce, previewRadius, weapon.color, true);
+            renderer.clearGlow();
+
+            // Trail effect
+            for (let t = 1; t <= 3; t++) {
+                const trailX = previewX - t * 8;
+                const alpha = 0.4 - t * 0.1;
+                renderer.ctx.globalAlpha = alpha;
+                renderer.drawCircle(trailX, y + bounce, previewRadius * (1 - t * 0.2), weapon.color, true);
+            }
+            renderer.ctx.globalAlpha = 1;
         }
 
         // Weapon name

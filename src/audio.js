@@ -333,6 +333,61 @@ class AudioSystem {
         osc.stop(now + 0.35);
     }
 
+    playPurchase() {
+        if (!this.initialized) return;
+        this.resume();
+
+        const now = this.ctx.currentTime;
+
+        // Coin/cash register sound - bright ascending arpeggio
+        const notes = [523, 659, 784, 1047];  // C5, E5, G5, C6
+        notes.forEach((freq, i) => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+
+            const startTime = now + i * 0.05;
+            gain.gain.setValueAtTime(0, startTime);
+            gain.gain.linearRampToValueAtTime(0.2, startTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.01, startTime + 0.15);
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+
+            osc.start(startTime);
+            osc.stop(startTime + 0.2);
+        });
+
+        // Add sparkle noise
+        this.playNoiseBurst(0.08, 0.1);
+    }
+
+    playError() {
+        if (!this.initialized) return;
+        this.resume();
+
+        const now = this.ctx.currentTime;
+
+        // Buzzer/error sound - low dissonant tone
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.setValueAtTime(100, now + 0.1);
+
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+
+        osc.start(now);
+        osc.stop(now + 0.25);
+    }
+
     // ========================================================================
     // Glitch Event Sound
     // ========================================================================
