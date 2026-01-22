@@ -334,6 +334,52 @@ class AudioSystem {
     }
 
     // ========================================================================
+    // Glitch Event Sound
+    // ========================================================================
+
+    playGlitch() {
+        if (!this.initialized) return;
+        this.resume();
+
+        const now = this.ctx.currentTime;
+
+        // Create a distorted, glitchy sound with rapid frequency changes
+        // Multiple detuned oscillators for digital corruption effect
+        for (let i = 0; i < 3; i++) {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+
+            osc.type = i === 0 ? 'square' : 'sawtooth';
+
+            // Rapid frequency jumps for glitchy effect
+            const baseFreq = 200 + i * 150;
+            osc.frequency.setValueAtTime(baseFreq, now);
+            osc.frequency.setValueAtTime(baseFreq * 1.5, now + 0.05);
+            osc.frequency.setValueAtTime(baseFreq * 0.5, now + 0.1);
+            osc.frequency.setValueAtTime(baseFreq * 2, now + 0.15);
+            osc.frequency.setValueAtTime(baseFreq * 0.75, now + 0.2);
+
+            // Detune for dissonance
+            osc.detune.value = (i - 1) * 25;
+
+            gain.gain.setValueAtTime(0.12, now);
+            gain.gain.setValueAtTime(0.08, now + 0.05);
+            gain.gain.setValueAtTime(0.15, now + 0.1);
+            gain.gain.setValueAtTime(0.05, now + 0.15);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+
+            osc.start(now);
+            osc.stop(now + 0.35);
+        }
+
+        // Add noise burst for digital static
+        this.playNoiseBurst(0.15, 0.25);
+    }
+
+    // ========================================================================
     // Noise Generator Helper
     // ========================================================================
 

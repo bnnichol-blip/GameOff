@@ -11,6 +11,8 @@ import { particles } from './particles.js';
 import { terrain } from './terrain.js';
 import { audio } from './audio.js';
 import { degToRad, clamp, distance } from './utils.js';
+import * as events from './events.js';
+import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 
 // ============================================================================
 // Game Constants
@@ -18,18 +20,19 @@ import { degToRad, clamp, distance } from './utils.js';
 
 const CANVAS_WIDTH = 1280;
 const CANVAS_HEIGHT = 720;
-const GRAVITY = 0.3;
-const MAX_POWER = 15;
-const CHARGE_RATE = 0.02;
+const DEFAULT_GRAVITY = 0.25;
+const MAX_POWER = 20;           // Increased for more dramatic full-power shots
+const CHARGE_RATE = 0.018;      // Slightly faster charge (2 sec for full)
+const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
 const VOID_RISE_PER_ROUND = 30;
 const TANK_RADIUS = 25;
 const TURN_DELAY_MS = 800;
 
 // Juice constants
-const FREEZE_FRAME_MS = 60;
-const SLOW_MO_DURATION_MS = 600;
+const FREEZE_FRAME_MS = 0;  // Disabled - felt like lag
+const SLOW_MO_DURATION_MS = 0;  // Disabled - felt like lag
 const SLOW_MO_FACTOR = 0.25;
-const CAMERA_ZOOM_AMOUNT = 0.05;
+const CAMERA_ZOOM_AMOUNT = 0;  // Disabled for testing - may feel like lag
 const CAMERA_ZOOM_DECAY = 0.92;
 
 // ============================================================================
@@ -45,19 +48,23 @@ const TANK_TYPES = {
         blastRadius: 80,
         bounces: 1,
         projectileRadius: 8,
-        projectileSpeed: 1.0,
+        projectileSpeed: 0.95,  // Slightly slower for lobbed mortar feel
         shape: 6  // hexagon
     },
     PHANTOM: {
         name: 'PHANTOM',
-        description: 'Railgun - Direct hit, high damage',
+        description: 'Railgun - Devastating direct hits',
         weapon: 'Railgun',
-        damage: 70,
-        blastRadius: 15,  // Small blast, essentially direct hit
+        damage: 95,           // High base damage
+        blastRadius: 30,      // Slightly larger for more forgiving hits
         bounces: 2,
-        projectileRadius: 4,
-        projectileSpeed: 1.3,
-        shape: 3  // triangle
+        projectileRadius: 5,  // Slightly larger projectile
+        projectileSpeed: 1.35, // Fast but not overwhelming
+        shape: 3,             // triangle
+        // Railgun-specific properties
+        directHitRadius: 12,  // "Core" zone for bonus damage
+        directHitBonus: 1.5,  // 50% bonus damage on direct hits
+        minDamageFalloff: 0.4 // Minimum 40% damage even at edge (reduced falloff)
     },
     CHAOS: {
         name: 'CHAOS',
@@ -67,9 +74,49 @@ const TANK_TYPES = {
         blastRadius: 35,
         bounces: 1,
         projectileRadius: 7,
-        projectileSpeed: 0.9,
+        projectileSpeed: 0.85, // Slower cluster for spread visibility
         shape: 5,  // pentagon
         clusterCount: 5
+    },
+    DIGGER: {
+        name: 'DIGGER',
+        description: 'Excavator - Removes terrain, no damage',
+        weapon: 'Excavator',
+        damage: 0,            // No damage
+        blastRadius: 70,      // Large dig radius
+        bounces: 1,
+        projectileRadius: 6,
+        projectileSpeed: 0.9, // Utility speed
+        shape: 4,             // square/diamond
+        isTerrainWeapon: true,
+        terrainEffect: 'dig'
+    },
+    BUILDER: {
+        name: 'BUILDER',
+        description: 'Dirt Bomb - Adds terrain mound',
+        weapon: 'Dirt Bomb',
+        damage: 5,            // Tiny damage (dirt impact)
+        blastRadius: 55,      // Mound size
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.75, // Heavy lobbed projectile
+        shape: 4,             // square/diamond
+        isTerrainWeapon: true,
+        terrainEffect: 'build'
+    },
+    SHIELD: {
+        name: 'SHIELD',
+        description: 'Force Field - 50% damage reduction next hit',
+        weapon: 'Force Field',
+        damage: 0,            // No damage
+        blastRadius: 40,      // Shield visual radius
+        bounces: 0,           // Doesn't bounce - deploys on impact
+        projectileRadius: 10,
+        projectileSpeed: 0.6, // Slow deploy - defensive choice
+        shape: 8,             // Octagon (shield-like)
+        isUtilityWeapon: true,
+        utilityEffect: 'shield',
+        shieldReduction: 0.5  // 50% damage reduction
     }
 };
 
@@ -79,8 +126,8 @@ const TANK_TYPES = {
 
 const state = {
     players: [
-        { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false },
-        { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: false }
+        { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0 },
+        { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: false, shield: 0 }
     ],
     currentPlayer: 0,
     turnCount: 0,
@@ -100,7 +147,27 @@ const state = {
     // AI state
     aiThinkTime: 0,      // Delay before AI acts
     aiTargetAngle: 0,    // Angle AI is aiming for
-    aiTargetPower: 0     // Power AI will use
+    aiTargetPower: 0,    // Power AI will use
+    // Physics
+    gravity: DEFAULT_GRAVITY,
+    // Glitch event state
+    activeEvent: null,        // { name, color, timer }
+    originalTankType: null,   // For ARSENAL GLITCH revert
+    originalGravity: undefined,// For GRAVITY FLUX revert
+    anomalyProjectile: null,  // For VOID ANOMALY
+    // New physics event state
+    velocityMultiplier: 1.0,  // For TIME DILATION, MUZZLE OVERCHARGE/DAMPEN
+    wind: 0,                  // For WIND BLAST (horizontal force)
+    extraBounces: 0,          // For ELASTIC WORLD
+    recoilPending: false,     // For RECOIL KICK
+    voidSurgePending: false,  // For VOID SURGE
+    // UFO buff state (per player, stackable, one-turn duration)
+    ufoBuffs: [
+        { damage: 0, blast: 0, bounces: 0 },  // Player 1 buffs
+        { damage: 0, blast: 0, bounces: 0 }   // Player 2 buffs
+    ],
+    // UFO buff notification
+    buffNotification: null  // { playerIndex, buffType, timer }
 };
 
 // Tank type keys for selection
@@ -130,8 +197,8 @@ function resetGame() {
     terrain.generate(CANVAS_WIDTH);
 
     const isP2AI = state.gameMode === '1p';
-    state.players[0] = { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false };
-    state.players[1] = { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: isP2AI };
+    state.players[0] = { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0 };
+    state.players[1] = { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: isP2AI, shield: 0 };
 
     // Position tanks on terrain
     state.players.forEach(p => {
@@ -149,11 +216,32 @@ function resetGame() {
     state.aiThinkTime = 0;
     state.aiTargetAngle = 0;
     state.aiTargetPower = 0;
+    // Reset event state
+    state.gravity = DEFAULT_GRAVITY;
+    state.activeEvent = null;
+    state.originalTankType = null;
+    state.originalGravity = undefined;
+    state.anomalyProjectile = null;
+    // Reset new physics event state
+    state.velocityMultiplier = 1.0;
+    state.wind = 0;
+    state.extraBounces = 0;
+    state.recoilPending = false;
+    state.voidSurgePending = false;
+    // Reset UFO buffs
+    state.ufoBuffs = [
+        { damage: 0, blast: 0, bounces: 0 },
+        { damage: 0, blast: 0, bounces: 0 }
+    ];
+    state.buffNotification = null;
 }
 
 function startGame() {
     // Called after both players select tanks
     state.phase = 'aiming';
+
+    // Roll initial glitch event for round 1 (both players will share it)
+    rollNewGlitchEvent();
 
     // If AI's turn first (shouldn't happen normally), prepare AI
     if (getCurrentPlayer().isAI) {
@@ -165,11 +253,31 @@ function startGame() {
 // Projectile
 // ============================================================================
 
+/**
+ * Convert linear charge (0-1) to nonlinear power curve
+ * Gives more velocity boost in the upper charge range
+ */
+function chargeToPower(linearCharge) {
+    // Quadratic curve: more power at high charge
+    // At 0.5 charge: 0.35 power, at 1.0 charge: 1.0 power
+    return linearCharge * (0.4 + 0.6 * linearCharge);
+}
+
 function fireProjectile() {
     const player = getCurrentPlayer();
     const tankType = TANK_TYPES[player.tankType];
     const angleRad = degToRad(180 - player.angle);
-    const speed = player.power * MAX_POWER * tankType.projectileSpeed;
+
+    // Apply nonlinear charge curve for better range at high charge
+    const effectivePower = chargeToPower(player.power);
+    // Apply velocity multiplier from events (TIME DILATION, MUZZLE OVERCHARGE/DAMPEN)
+    const speed = effectivePower * MAX_POWER * tankType.projectileSpeed * state.velocityMultiplier;
+
+    // Get UFO buffs for current player
+    const buffs = state.ufoBuffs[state.currentPlayer];
+    const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
+    const blastBonus = buffs.blast * UFO_BUFF_TYPES.BLAST.bonus;
+    const bounceBonus = buffs.bounces * UFO_BUFF_TYPES.BOUNCES.bonus;
 
     state.projectile = {
         x: player.x,
@@ -179,11 +287,29 @@ function fireProjectile() {
         radius: tankType.projectileRadius,
         color: player.color,
         bounces: 0,
-        maxBounces: tankType.bounces,
+        // Apply extra bounces from ELASTIC WORLD event + UFO buff
+        maxBounces: tankType.bounces + state.extraBounces + bounceBonus,
         trail: [],
         tankType: player.tankType,
-        isCluster: false  // Main projectile, not a bomblet
+        isCluster: false,  // Main projectile, not a bomblet
+        // Store buffed stats for explosion
+        buffedDamageMultiplier: damageMultiplier,
+        buffedBlastBonus: blastBonus,
+        firedByPlayer: state.currentPlayer  // Track who fired for buff clearing
     };
+
+    // Clear buffs NOW (after applying to projectile) - buffs gained mid-flight persist until next shot
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    // Apply RECOIL KICK - push tank backward from shot direction
+    if (state.recoilPending) {
+        const recoilForce = 8;
+        // Recoil is opposite to shot direction
+        player.x -= Math.cos(angleRad) * recoilForce;
+        // Add some visual feedback
+        particles.sparks(player.x, player.y, 15, player.color);
+        renderer.addScreenShake(8);
+    }
 
     // Reset charge and switch to firing phase
     player.power = 0;
@@ -205,7 +331,12 @@ function updateProjectile(dt) {
     }
 
     // Apply gravity
-    proj.vy += GRAVITY;
+    proj.vy += state.gravity;
+
+    // Apply wind (WIND BLAST event)
+    if (state.wind !== 0) {
+        proj.vx += state.wind;
+    }
 
     // Move
     proj.x += proj.vx;
@@ -215,6 +346,9 @@ function updateProjectile(dt) {
     if (Math.random() < 0.3) {
         particles.trail(proj.x, proj.y, proj.color);
     }
+
+    // Check for UFO collision (grants buffs)
+    checkUFOCollision(proj.x, proj.y, proj.radius);
 
     // Bounce off walls
     if (proj.x < proj.radius) {
@@ -258,10 +392,50 @@ function updateProjectile(dt) {
     }
 }
 
+/**
+ * Check if projectile hits any UFO and grant buffs to current player
+ */
+function checkUFOCollision(px, py, radius) {
+    const ambient = getAmbient();
+    if (!ambient) return;
+
+    const result = ambient.checkProjectileHitUFO(px, py, radius, state.currentPlayer);
+    if (result) {
+        // Grant buff to current player
+        const buffType = result.buffType;
+        const playerBuffs = state.ufoBuffs[state.currentPlayer];
+
+        if (buffType === 'DAMAGE') {
+            playerBuffs.damage += 1;  // Stack count
+        } else if (buffType === 'BLAST') {
+            playerBuffs.blast += 1;
+        } else if (buffType === 'BOUNCES') {
+            playerBuffs.bounces += 1;
+        }
+
+        // Visual feedback
+        particles.explosion(result.x, result.y, 60, result.color, 50);
+        renderer.addScreenShake(15);
+        renderer.flash(result.color, 0.3);
+        audio.playExplosion(0.8);
+
+        // Show buff notification
+        state.buffNotification = {
+            playerIndex: state.currentPlayer,
+            buffType: buffType,
+            timer: 2.0,
+            x: result.x,
+            y: result.y
+        };
+    }
+}
+
 function onBounce(proj) {
     proj.bounces++;
-    particles.sparks(proj.x, proj.y, 15, COLORS.yellow);
-    renderer.addScreenShake(5);
+    // Enhanced bounce feedback - more sparks, small flash
+    particles.sparks(proj.x, proj.y, 25, COLORS.yellow);
+    renderer.addScreenShake(8);
+    renderer.flash(COLORS.yellow, 0.08);  // Subtle flash
     audio.playBounce();
 
     // Destroy if out of bounces
@@ -281,32 +455,128 @@ function onExplode(proj) {
         return;
     }
 
-    // Visual effects - scale with blast radius
-    const particleCount = Math.floor(tankType.blastRadius * 0.8);
-    particles.explosion(proj.x, proj.y, particleCount, proj.color);
-    renderer.addScreenShake(tankType.blastRadius / 4);
-    renderer.flash(proj.color, 0.15);
+    // Apply UFO buffs to damage and blast radius
+    const damageMultiplier = proj.buffedDamageMultiplier || 1;
+    const blastBonus = proj.buffedBlastBonus || 0;
+    const effectiveBlastRadius = tankType.blastRadius + blastBonus;
+    const effectiveDamage = tankType.damage * damageMultiplier;
 
-    // Destroy terrain
-    terrain.destroy(proj.x, proj.y, tankType.blastRadius);
+    // ENHANCED Visual effects - scale with blast radius
+    // PHANTOM (Railgun) gets special high-impact visuals
+    const isRailgun = proj.tankType === 'PHANTOM';
+
+    if (isRailgun) {
+        // Railgun: Focused, intense impact - bright white core with colored burst
+        particles.explosion(proj.x, proj.y, 80, COLORS.white, effectiveBlastRadius * 0.6);
+        particles.explosion(proj.x, proj.y, 50, proj.color, effectiveBlastRadius);
+        particles.sparks(proj.x, proj.y, 60, COLORS.cyan);
+        renderer.addScreenShake(20);  // Punchy shake
+        renderer.flash(COLORS.white, 0.35);  // Bright flash
+        renderer.flash(proj.color, 0.2);  // Colored afterflash
+    } else if (tankType.isTerrainWeapon) {
+        // Terrain weapons: Unique visual effects
+        if (tankType.terrainEffect === 'dig') {
+            // DIGGER: Brown/orange digging effect
+            particles.explosion(proj.x, proj.y, 60, '#aa6633', effectiveBlastRadius);
+            particles.sparks(proj.x, proj.y, 40, '#886622');
+            renderer.addScreenShake(15);
+            renderer.flash('#553311', 0.2);
+        } else {
+            // BUILDER: Earthy mound effect
+            particles.explosion(proj.x, proj.y, 50, '#996644', effectiveBlastRadius * 0.7);
+            particles.sparks(proj.x, proj.y, 30, '#664422');
+            renderer.addScreenShake(12);
+            renderer.flash('#442211', 0.15);
+        }
+    } else if (tankType.isUtilityWeapon) {
+        // Utility weapons: Special effects based on utility type
+        if (tankType.utilityEffect === 'shield') {
+            // SHIELD: Cyan forcefield effect at player position (not impact point)
+            const owner = state.players[state.currentPlayer];
+            // Grant shield to the player who fired
+            owner.shield = tankType.shieldReduction;
+            // Visual effect at owner's position
+            particles.explosion(owner.x, owner.y, 60, COLORS.cyan, 50);
+            particles.sparks(owner.x, owner.y, 30, COLORS.white);
+            renderer.addScreenShake(8);
+            renderer.flash(COLORS.cyan, 0.25);
+            // Also small effect at impact point
+            particles.sparks(proj.x, proj.y, 20, COLORS.cyan);
+        }
+    } else {
+        // Normal explosion for other weapons
+        const particleCount = Math.floor(effectiveBlastRadius * 1.5);
+        particles.explosion(proj.x, proj.y, particleCount, proj.color, effectiveBlastRadius);
+        renderer.addScreenShake(effectiveBlastRadius / 2.5);
+        renderer.flash(proj.color, 0.25);
+    }
+
+    // Handle terrain modification based on weapon type
+    if (tankType.isTerrainWeapon && tankType.terrainEffect === 'build') {
+        // BUILDER: Add terrain mound
+        terrain.raise(proj.x, proj.y, effectiveBlastRadius);
+    } else {
+        // Normal weapons and DIGGER: Destroy terrain
+        terrain.destroy(proj.x, proj.y, effectiveBlastRadius);
+    }
 
     // Track if anyone was hit for juice effects
     let hitOccurred = false;
     let killingBlow = false;
+    let hitPlayer = null;
 
     // Apply damage to all players (including self-damage)
+    // PHANTOM (Railgun) has special damage mechanics (isRailgun defined above)
+    const directHitRadius = tankType.directHitRadius || 0;
+    const directHitBonus = tankType.directHitBonus || 1;
+    const minDamageFalloff = tankType.minDamageFalloff || 0;
+
     for (const player of state.players) {
         const dist = distance(proj.x, proj.y, player.x, player.y);
-        if (dist < tankType.blastRadius) {
-            // Linear falloff, clamped to 0
-            const damage = Math.max(0, tankType.damage * (1 - dist / tankType.blastRadius));
+        if (dist < effectiveBlastRadius) {
+            // Calculate base damage with falloff
+            let falloffMultiplier = 1 - dist / effectiveBlastRadius;
+
+            // Railgun: minimum damage falloff (stays powerful even at edge)
+            if (minDamageFalloff > 0) {
+                falloffMultiplier = Math.max(minDamageFalloff, falloffMultiplier);
+            }
+
+            let damage = effectiveDamage * falloffMultiplier;
+
+            // Railgun: Direct hit bonus for close-range precision
+            let isDirectHit = false;
+            if (isRailgun && dist < directHitRadius) {
+                damage *= directHitBonus;
+                isDirectHit = true;
+            }
+
             if (damage > 0) {
                 hitOccurred = true;
+                hitPlayer = player;
                 state.lastHitPos = { x: proj.x, y: proj.y };
 
-                // Check if this will be a killing blow
+                // Apply shield damage reduction if player has a shield
+                if (player.shield > 0) {
+                    const reducedDamage = damage * (1 - player.shield);
+                    // Visual feedback for shield absorption
+                    particles.sparks(player.x, player.y, 25, COLORS.cyan);
+                    renderer.flash(COLORS.cyan, 0.15);
+                    damage = reducedDamage;
+                    // Shield is consumed after blocking
+                    player.shield = 0;
+                }
+
+                // Check if this will be a killing blow (after shield reduction)
                 if (player.health > 0 && player.health - damage <= 0) {
                     killingBlow = true;
+                }
+
+                // Railgun direct hit feedback
+                if (isDirectHit) {
+                    particles.sparks(player.x, player.y, 40, COLORS.white);
+                    renderer.flash(COLORS.white, 0.4);
+                    renderer.addScreenShake(25);
                 }
             }
             player.health = Math.max(0, player.health - damage);
@@ -314,27 +584,33 @@ function onExplode(proj) {
     }
 
     // Play explosion sound (scale intensity with blast radius)
-    const explosionIntensity = tankType.blastRadius / 60;
+    const explosionIntensity = effectiveBlastRadius / 50;  // Slightly louder
     audio.playExplosion(explosionIntensity);
 
-    // Juice effects on hit
+    // ENHANCED Juice effects on hit (no freeze frames - they feel like lag)
     if (hitOccurred) {
         const now = performance.now();
 
-        // Freeze frame - brief pause for impact
-        state.freezeUntil = now + FREEZE_FRAME_MS;
+        // Extra explosion particles at hit location
+        particles.sparks(proj.x, proj.y, 30, COLORS.white);
 
-        // Extra screen shake for hits
-        renderer.addScreenShake(15);
+        // Strong screen shake for hits
+        renderer.addScreenShake(18 + tankType.damage / 4);
+
+        // Bright flash on hit
+        renderer.flash(COLORS.white, 0.3);
 
         // Camera punch zoom
-        state.cameraZoom = CAMERA_ZOOM_AMOUNT;
+        state.cameraZoom = CAMERA_ZOOM_AMOUNT * 1.3;
 
-        // Slow-mo for killing blow
-        if (killingBlow) {
+        // Death effects for killing blow
+        if (killingBlow && hitPlayer) {
+            // Brief slow-mo for kills only
             state.slowMoUntil = now + SLOW_MO_DURATION_MS;
-            renderer.addScreenShake(25);
-            renderer.flash(COLORS.white, 0.4);
+            // Extra explosion at player position
+            particles.explosion(hitPlayer.x, hitPlayer.y, 100, hitPlayer.color, 100);
+            renderer.addScreenShake(35);
+            renderer.flash(COLORS.white, 0.5);
             audio.playKill();
         }
     }
@@ -378,16 +654,24 @@ function spawnClusterBombs(proj) {
             radius: 4,
             color: proj.color,
             bounces: 0,
-            maxBounces: tankType.bounces,
+            // Apply extra bounces from ELASTIC WORLD event + UFO buff (inherited from parent)
+            maxBounces: tankType.bounces + state.extraBounces + (proj.buffedBlastBonus ? Math.floor(proj.buffedBlastBonus / UFO_BUFF_TYPES.BLAST.bonus) : 0),
             trail: [],
             tankType: 'CHAOS',
-            isCluster: true
+            isCluster: true,
+            // Inherit buffed stats from parent projectile
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            firedByPlayer: proj.firedByPlayer
         });
     }
 
-    // Visual feedback for split
-    particles.sparks(proj.x, proj.y, 20, COLORS.yellow);
-    renderer.addScreenShake(8);
+    // ENHANCED Visual feedback for cluster split - satisfying pop!
+    particles.sparks(proj.x, proj.y, 40, COLORS.yellow);
+    particles.sparks(proj.x, proj.y, 25, proj.color);
+    renderer.addScreenShake(12);
+    renderer.flash(COLORS.yellow, 0.15);
+    audio.playBounce();  // Satisfying pop sound
 }
 
 // ============================================================================
@@ -397,11 +681,26 @@ function spawnClusterBombs(proj) {
 function endTurn() {
     state.phase = 'resolving';
 
+    // Note: UFO buffs are cleared in fireProjectile() after being applied to the shot
+    // This allows buffs gained mid-flight to persist until the player's next turn
+
+    // Apply VOID SURGE - extra void rise after shot resolves
+    if (state.voidSurgePending) {
+        state.voidY -= VOID_RISE_PER_ROUND * 2;  // Double the normal rise
+        renderer.flash('#aa00aa', 0.3);
+        renderer.addScreenShake(12);
+    }
+
     // Check win conditions before switching
     const winResult = checkWinCondition();
     if (winResult) {
         state.winner = winResult.winner;
         state.phase = 'gameover';
+        // Revert event on game over
+        if (state.activeEvent) {
+            events.revertEvent(state);
+            state.activeEvent = null;
+        }
         return;
     }
 
@@ -411,9 +710,20 @@ function endTurn() {
         state.currentPlayer = 1 - state.currentPlayer;
 
         // Void rises every full round (after both players fire)
+        // Also: new glitch event at the start of each round (when P1's turn begins)
         if (state.turnCount % 2 === 0) {
             state.voidY -= VOID_RISE_PER_ROUND;
+
+            // Revert previous round's event
+            if (state.activeEvent) {
+                events.revertEvent(state);
+                state.activeEvent = null;
+            }
+
+            // Roll new glitch event for this round (both players will share it)
+            rollNewGlitchEvent();
         }
+        // Note: If turnCount is odd (P2's turn), keep the same glitch from P1's turn
 
         state.phase = 'aiming';
 
@@ -422,6 +732,19 @@ function endTurn() {
             prepareAITurn();
         }
     }, TURN_DELAY_MS);
+}
+
+/**
+ * Roll and apply a new glitch event
+ */
+function rollNewGlitchEvent() {
+    const event = events.rollForEvent();
+    if (event) {
+        events.applyEvent(state, event, TANK_TYPES, terrain, CANVAS_WIDTH, TANK_RADIUS);
+        state.activeEvent = { name: event.name, color: event.color, timer: 2.5 };
+        audio.playGlitch();
+        renderer.flash(event.color, 0.3);
+    }
 }
 
 // ============================================================================
@@ -450,9 +773,10 @@ function prepareAITurn() {
     state.aiTargetAngle = clamp(180 - baseAngle + randomError, 10, 170);
 
     // Power based on distance with some randomness
-    const basePower = clamp(dist / 800, 0.3, 0.95);
-    const powerError = (Math.random() - 0.5) * 0.2;
-    state.aiTargetPower = clamp(basePower + powerError, 0.25, 1.0);
+    // AI needs to charge higher due to nonlinear curve (0.7 charge ≈ 0.5 effective)
+    const basePower = clamp(dist / 600, 0.5, 0.98);
+    const powerError = (Math.random() - 0.5) * 0.15;
+    state.aiTargetPower = clamp(basePower + powerError, 0.4, 1.0);
 
     // Think time before acting (1-2 seconds)
     state.aiThinkTime = 1000 + Math.random() * 1000;
@@ -522,7 +846,7 @@ function updateTankPhysics(player) {
 
     if (tankBottom < groundY) {
         // Tank is above ground — fall
-        player.vy += GRAVITY;
+        player.vy += state.gravity;
         player.y += player.vy;
 
         // Check if landed
@@ -543,6 +867,12 @@ function updateTankPhysics(player) {
 
 function update(dt) {
     state.time += dt;
+
+    // Always update ambient world systems (clouds, UFOs, weather) for all phases
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.update(dt, state.voidY);
+    }
 
     // Title screen
     if (state.phase === 'title') {
@@ -703,6 +1033,21 @@ function update(dt) {
     // Update particles
     particles.update(dt);
 
+    // Decay event notification timer
+    if (state.activeEvent && state.activeEvent.timer > 0) {
+        state.activeEvent.timer -= dt;
+    }
+
+    // Decay UFO buff notification timer
+    if (state.buffNotification && state.buffNotification.timer > 0) {
+        state.buffNotification.timer -= dt;
+    }
+
+    // Update anomaly projectile (from VOID ANOMALY event)
+    if (state.anomalyProjectile) {
+        updateAnomalyProjectile(dt);
+    }
+
     // Clear input state for next frame
     input.endFrame();
 }
@@ -713,11 +1058,19 @@ function updateClusterBomblet(proj, dt) {
     if (proj.trail.length > 10) proj.trail.shift();
 
     // Apply gravity
-    proj.vy += GRAVITY;
+    proj.vy += state.gravity;
+
+    // Apply wind (WIND BLAST event)
+    if (state.wind !== 0) {
+        proj.vx += state.wind;
+    }
 
     // Move
     proj.x += proj.vx;
     proj.y += proj.vy;
+
+    // Check for UFO collision (grants buffs)
+    checkUFOCollision(proj.x, proj.y, proj.radius);
 
     // Trail particles
     if (Math.random() < 0.2) {
@@ -747,6 +1100,115 @@ function updateClusterBomblet(proj, dt) {
         proj.bounces >= proj.maxBounces) {
         onExplode(proj);
     }
+}
+
+function updateAnomalyProjectile(dt) {
+    const proj = state.anomalyProjectile;
+    if (!proj) return;
+
+    // Store trail position
+    proj.trail.push({ x: proj.x, y: proj.y, age: 0 });
+    if (proj.trail.length > 15) proj.trail.shift();
+
+    // Age trail
+    for (const point of proj.trail) {
+        point.age += dt;
+    }
+
+    // Apply gravity
+    proj.vy += state.gravity;
+
+    // Apply wind (WIND BLAST event)
+    if (state.wind !== 0) {
+        proj.vx += state.wind;
+    }
+
+    // Move
+    proj.x += proj.vx;
+    proj.y += proj.vy;
+
+    // Spawn trail particles (purple for anomaly)
+    if (Math.random() < 0.4) {
+        particles.trail(proj.x, proj.y, proj.color);
+    }
+
+    // Bounce off walls
+    if (proj.x < proj.radius) {
+        proj.x = proj.radius;
+        proj.vx = -proj.vx * 0.9;
+        onAnomalyBounce(proj);
+    }
+    if (proj.x > CANVAS_WIDTH - proj.radius) {
+        proj.x = CANVAS_WIDTH - proj.radius;
+        proj.vx = -proj.vx * 0.9;
+        onAnomalyBounce(proj);
+    }
+
+    // Bounce off ceiling
+    if (proj.y < proj.radius) {
+        proj.y = proj.radius;
+        proj.vy = -proj.vy * 0.9;
+        onAnomalyBounce(proj);
+    }
+
+    // Check termination: terrain, void, or out of bounds
+    if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
+        proj.y > state.voidY ||
+        proj.y > CANVAS_HEIGHT + 100) {
+        onAnomalyExplode(proj);
+    }
+}
+
+function onAnomalyBounce(proj) {
+    proj.bounces++;
+    // Enhanced anomaly bounce - eerie purple sparks
+    particles.sparks(proj.x, proj.y, 20, '#8800ff');
+    renderer.addScreenShake(7);
+    renderer.flash('#8800ff', 0.06);
+    audio.playBounce();
+
+    // Destroy if out of bounces
+    if (proj.bounces >= proj.maxBounces) {
+        onAnomalyExplode(proj);
+    }
+}
+
+function onAnomalyExplode(proj) {
+    const tankType = TANK_TYPES.SIEGE;  // Uses SIEGE explosion stats
+
+    // ENHANCED Visual effects - anomaly has eerie purple explosion
+    particles.explosion(proj.x, proj.y, 80, proj.color, tankType.blastRadius);
+    renderer.addScreenShake(25);
+    renderer.flash(proj.color, 0.35);
+
+    // Destroy terrain
+    terrain.destroy(proj.x, proj.y, tankType.blastRadius);
+
+    // Apply damage to ALL players (neutral projectile)
+    let hitOccurred = false;
+    for (const player of state.players) {
+        const dist = distance(proj.x, proj.y, player.x, player.y);
+        if (dist < tankType.blastRadius) {
+            const damage = Math.max(0, tankType.damage * (1 - dist / tankType.blastRadius));
+            if (damage > 0) {
+                hitOccurred = true;
+                state.lastHitPos = { x: proj.x, y: proj.y };
+                // Extra sparks at player position
+                particles.sparks(player.x, player.y, 25, proj.color);
+                renderer.addScreenShake(15);
+            }
+            player.health = Math.max(0, player.health - damage);
+        }
+    }
+
+    if (hitOccurred) {
+        renderer.flash(COLORS.white, 0.25);
+    }
+
+    audio.playExplosion(1.0);
+
+    // Clear the anomaly projectile
+    state.anomalyProjectile = null;
 }
 
 // ============================================================================
@@ -793,8 +1255,19 @@ function render() {
     // Background grid
     renderer.drawGrid(50, '#0a0a15');
 
+    // Draw ambient background (far clouds, dust particles)
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+    }
+
     // Draw terrain
     terrain.draw(renderer);
+
+    // Draw ambient midground (near clouds - after terrain for depth)
+    if (ambient) {
+        ambient.drawMidground(renderer);
+    }
 
     // Draw void
     renderer.drawVoid(state.voidY);
@@ -808,6 +1281,29 @@ function render() {
 
         // Tank body (shape based on tank type)
         renderer.drawRegularPolygon(player.x, player.y, TANK_RADIUS, shape, 0, player.color, true);
+
+        // Shield indicator (glowing ring around tank when shielded)
+        if (player.shield > 0) {
+            const shieldRadius = TANK_RADIUS + 10;
+            const ctx = renderer.ctx;
+            ctx.save();
+            // Pulsing glow effect
+            const pulse = 0.7 + Math.sin(state.time * 6) * 0.3;
+            renderer.setGlow(COLORS.cyan, 15 * pulse);
+            ctx.globalAlpha = 0.6 * pulse;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, shieldRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = COLORS.cyan;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            // Inner ring
+            ctx.globalAlpha = 0.3 * pulse;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, shieldRadius - 4, 0, Math.PI * 2);
+            ctx.stroke();
+            renderer.clearGlow();
+            ctx.restore();
+        }
 
         // Turret
         const turretLength = 40;
@@ -826,6 +1322,13 @@ function render() {
             renderer.drawRectOutline(meterX, meterY, meterWidth, meterHeight, '#333333', 1, false);
             const fillColor = player.power > 0.8 ? COLORS.orange : COLORS.yellow;
             renderer.drawRect(meterX + 1, meterY + 1, (meterWidth - 2) * player.power, meterHeight - 2, fillColor, true);
+
+            // Debug velocity display
+            if (DEBUG_SHOW_VELOCITY && tankType) {
+                const effectivePower = chargeToPower(player.power);
+                const velocity = effectivePower * MAX_POWER * tankType.projectileSpeed;
+                renderer.drawText(`v=${velocity.toFixed(1)}`, player.x, meterY - 12, '#ffff00', 10, 'center', false);
+            }
         }
 
         // Health bar above tank
@@ -847,6 +1350,11 @@ function render() {
         }
     }
 
+    // Draw tracer preview arc (only during aiming phase)
+    if (state.phase === 'aiming') {
+        drawTracerPreview();
+    }
+
     // Draw projectile
     const proj = state.projectile;
     if (proj) {
@@ -858,8 +1366,20 @@ function render() {
         drawProjectile(bomblet);
     }
 
+    // Draw anomaly projectile (from VOID ANOMALY event)
+    if (state.anomalyProjectile) {
+        drawProjectile(state.anomalyProjectile);
+    }
+
     // Draw particles
     particles.draw(renderer);
+
+    // Draw ambient foreground (UFOs, weather, glitch specks)
+    if (ambient) {
+        ambient.drawForeground(renderer);
+        // Occasional lightning flash during rain
+        ambient.triggerLightning(renderer);
+    }
 
     // Restore from camera zoom before HUD
     if (state.cameraZoom > 0) {
@@ -878,14 +1398,65 @@ function render() {
         : getCurrentPlayer().color;
     renderer.drawText(turnText, CANVAS_WIDTH / 2, 30, turnColor, 20, 'center', true);
 
-    // Round indicator
+    // Round indicator + FPS (for debugging)
     renderer.drawText(`Round ${getCurrentRound()}`, CANVAS_WIDTH - 20, 30, COLORS.white, 14, 'right', false);
+    renderer.drawText(`FPS: ${fpsCounter.fps}`, CANVAS_WIDTH - 20, 50, fpsCounter.fps < 50 ? COLORS.magenta : '#666666', 10, 'right', false);
 
     // Player stats with tank type
     const p1Type = state.players[0].tankType ? TANK_TYPES[state.players[0].tankType].weapon : '';
     const p2Type = state.players[1].tankType ? TANK_TYPES[state.players[1].tankType].weapon : '';
     renderer.drawText(`P1: ${Math.round(state.players[0].health)}% [${p1Type}]`, 20, 60, state.players[0].color, 14, 'left', false);
     renderer.drawText(`P2: ${Math.round(state.players[1].health)}% [${p2Type}]`, 20, 80, state.players[1].color, 14, 'left', false);
+
+    // Draw active UFO buffs for each player
+    drawPlayerBuffs(0, 200, 60);
+    drawPlayerBuffs(1, 200, 80);
+
+    // Event notification (glitch events)
+    if (state.activeEvent && state.activeEvent.timer > 0) {
+        const alpha = Math.min(1, state.activeEvent.timer);
+        renderer.ctx.globalAlpha = alpha;
+        // Draw "ROUND GLITCH" banner (glitch persists for both players this round)
+        renderer.drawText('ROUND GLITCH', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 110, '#666666', 14, 'center', false);
+        // Draw event name with glow
+        renderer.drawText(state.activeEvent.name, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 80, state.activeEvent.color, 36, 'center', true);
+
+        // Draw event-specific info
+        const eventName = state.activeEvent.name;
+        let infoText = '';
+        if (eventName === 'GRAVITY FLUX' || eventName === 'HYPER GRAVITY' || eventName === 'ZERO-G' || eventName === 'INVERTED GRAVITY') {
+            infoText = `Gravity: ${state.gravity.toFixed(2)}`;
+        } else if (eventName === 'WIND BLAST') {
+            const dir = state.wind > 0 ? '>>>' : '<<<';
+            infoText = `Wind: ${dir} ${Math.abs(state.wind).toFixed(2)}`;
+        } else if (eventName === 'TIME DILATION' || eventName === 'MUZZLE OVERCHARGE' || eventName === 'MUZZLE DAMPEN') {
+            infoText = `Velocity: ${Math.round(state.velocityMultiplier * 100)}%`;
+        } else if (eventName === 'ELASTIC WORLD') {
+            infoText = `+${state.extraBounces} bounces`;
+        } else if (eventName === 'VOID SURGE') {
+            infoText = 'Void will surge after shot!';
+        } else if (eventName === 'RECOIL KICK') {
+            infoText = 'Firing will push you back!';
+        }
+        if (infoText) {
+            renderer.drawText(infoText, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 40, '#888888', 16, 'center', false);
+        }
+        renderer.ctx.globalAlpha = 1;
+    }
+
+    // UFO buff notification (when a UFO is destroyed)
+    if (state.buffNotification && state.buffNotification.timer > 0) {
+        const notif = state.buffNotification;
+        const alpha = Math.min(1, notif.timer);
+        const buffInfo = UFO_BUFF_TYPES[notif.buffType];
+        const playerColor = state.players[notif.playerIndex].color;
+
+        renderer.ctx.globalAlpha = alpha;
+        // Float upward animation
+        const floatY = notif.y - (2 - notif.timer) * 30;
+        renderer.drawText(`P${notif.playerIndex + 1} ${buffInfo.name}`, notif.x, floatY, buffInfo.color, 18, 'center', true);
+        renderer.ctx.globalAlpha = 1;
+    }
 
     // Controls hint
     if (state.phase === 'aiming') {
@@ -898,28 +1469,203 @@ function render() {
     renderer.endFrame();
 }
 
+/**
+ * Draw active buff icons for a player
+ */
+function drawPlayerBuffs(playerIndex, x, y) {
+    const buffs = state.ufoBuffs[playerIndex];
+    let offsetX = 0;
+
+    // Draw damage buff stacks
+    if (buffs.damage > 0) {
+        renderer.setGlow(UFO_BUFF_TYPES.DAMAGE.color, 8);
+        renderer.drawText(`DMG×${buffs.damage}`, x + offsetX, y, UFO_BUFF_TYPES.DAMAGE.color, 10, 'left', false);
+        renderer.clearGlow();
+        offsetX += 50;
+    }
+
+    // Draw blast buff stacks
+    if (buffs.blast > 0) {
+        renderer.setGlow(UFO_BUFF_TYPES.BLAST.color, 8);
+        renderer.drawText(`BLT×${buffs.blast}`, x + offsetX, y, UFO_BUFF_TYPES.BLAST.color, 10, 'left', false);
+        renderer.clearGlow();
+        offsetX += 50;
+    }
+
+    // Draw bounce buff stacks
+    if (buffs.bounces > 0) {
+        renderer.setGlow(UFO_BUFF_TYPES.BOUNCES.color, 8);
+        renderer.drawText(`BNC×${buffs.bounces}`, x + offsetX, y, UFO_BUFF_TYPES.BOUNCES.color, 10, 'left', false);
+        renderer.clearGlow();
+    }
+}
+
+/**
+ * Draw a faint preview arc showing the projectile trajectory
+ * Uses exact same physics as actual projectiles: gravity, wind, velocity multiplier
+ */
+function drawTracerPreview() {
+    const player = getCurrentPlayer();
+    const tankType = TANK_TYPES[player.tankType];
+    if (!tankType) return;
+
+    // Calculate launch velocity (same as fireProjectile)
+    const angleRad = degToRad(180 - player.angle);
+    const effectivePower = chargeToPower(player.power);
+    const speed = effectivePower * MAX_POWER * tankType.projectileSpeed * state.velocityMultiplier;
+
+    // Initial position and velocity
+    let x = player.x;
+    let y = player.y - 20;
+    let vx = Math.cos(angleRad) * speed;
+    let vy = -Math.sin(angleRad) * speed;
+
+    // Simulation parameters
+    const maxSteps = 300;  // Maximum simulation steps
+    const stepSize = 1;    // Physics step (lower = smoother but slower)
+    const dotSpacing = 8;  // Pixels between dots
+    let distanceTraveled = 0;
+
+    // Collect points along the arc
+    const points = [];
+    points.push({ x, y });
+
+    for (let step = 0; step < maxSteps; step++) {
+        // Apply gravity (same as updateProjectile)
+        vy += state.gravity * stepSize;
+
+        // Apply wind (same as updateProjectile)
+        if (state.wind !== 0) {
+            vx += state.wind * stepSize;
+        }
+
+        // Move
+        const prevX = x;
+        const prevY = y;
+        x += vx * stepSize;
+        y += vy * stepSize;
+
+        // Track distance for dot spacing
+        distanceTraveled += distance(prevX, prevY, x, y);
+
+        // Add point at regular intervals
+        if (distanceTraveled >= dotSpacing) {
+            points.push({ x, y });
+            distanceTraveled = 0;
+        }
+
+        // Stop conditions:
+        // 1. Hit terrain
+        if (terrain.isPointBelowTerrain(x, y)) {
+            break;
+        }
+
+        // 2. Hit left/right walls (could bounce, but we show ballistic only)
+        if (x < 0 || x > CANVAS_WIDTH) {
+            break;
+        }
+
+        // 3. Hit ceiling
+        if (y < 0) {
+            break;
+        }
+
+        // 4. Hit void
+        if (y > state.voidY) {
+            break;
+        }
+
+        // 5. Gone way off screen
+        if (y > CANVAS_HEIGHT + 100) {
+            break;
+        }
+    }
+
+    // Draw the arc as faint dots
+    const ctx = renderer.ctx;
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+
+    // Use player color for the tracer
+    const tracerColor = player.color;
+    renderer.setGlow(tracerColor, 6);
+
+    for (let i = 1; i < points.length; i++) {
+        const point = points[i];
+        // Fade dots further along the arc
+        const fadeT = i / points.length;
+        ctx.globalAlpha = 0.4 * (1 - fadeT * 0.5);
+
+        // Draw small dot
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = tracerColor;
+        ctx.fill();
+    }
+
+    renderer.clearGlow();
+    ctx.restore();
+}
+
 function drawProjectile(proj) {
+    const isRailgun = proj.tankType === 'PHANTOM';
+
     // Trail
     for (let i = 0; i < proj.trail.length; i++) {
         const point = proj.trail[i];
-        const alpha = (i / proj.trail.length) * 0.5;
-        const radius = proj.radius * (i / proj.trail.length) * 0.7;
-        renderer.ctx.globalAlpha = alpha;
-        renderer.drawCircle(point.x, point.y, radius, proj.color, true);
+        const t = i / proj.trail.length;
+
+        if (isRailgun) {
+            // Railgun: Bright, streaky trail with white core
+            const alpha = t * 0.7;
+            const radius = proj.radius * t * 0.5;
+            renderer.ctx.globalAlpha = alpha;
+            // Outer colored glow
+            renderer.drawCircle(point.x, point.y, radius * 1.5, proj.color, true);
+            // Inner white core
+            renderer.ctx.globalAlpha = alpha * 0.8;
+            renderer.drawCircle(point.x, point.y, radius * 0.8, COLORS.white, true);
+        } else {
+            // Normal trail
+            const alpha = t * 0.5;
+            const radius = proj.radius * t * 0.7;
+            renderer.ctx.globalAlpha = alpha;
+            renderer.drawCircle(point.x, point.y, radius, proj.color, true);
+        }
     }
     renderer.ctx.globalAlpha = 1;
 
     // Main projectile
-    renderer.drawCircle(proj.x, proj.y, proj.radius, proj.color, true);
+    if (isRailgun) {
+        // Railgun: Bright white core with colored outer ring
+        renderer.setGlow(COLORS.white, 25);
+        renderer.drawCircle(proj.x, proj.y, proj.radius * 1.3, proj.color, false);
+        renderer.drawCircle(proj.x, proj.y, proj.radius * 0.7, COLORS.white, false);
+        renderer.clearGlow();
+    } else {
+        renderer.drawCircle(proj.x, proj.y, proj.radius, proj.color, true);
+    }
 }
 
 function renderTitle() {
     // Background with subtle animation
     renderer.drawGrid(50, '#0a0a15');
 
+    // Draw ambient background (far clouds, dust)
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+    }
+
     // Animated void at bottom
     const voidY = CANVAS_HEIGHT - 100 + Math.sin(state.time * 2) * 20;
     renderer.drawVoid(voidY);
+
+    // Draw ambient foreground (UFOs, weather)
+    if (ambient) {
+        ambient.drawForeground(renderer);
+        ambient.triggerLightning(renderer);
+    }
 
     // Main title with glow
     renderer.drawText('VOID', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 80, COLORS.magenta, 72, 'center', true);
@@ -940,6 +1686,13 @@ function renderTitle() {
 
 function renderModeSelect() {
     renderer.drawGrid(50, '#0a0a15');
+
+    // Draw ambient background
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+        ambient.drawForeground(renderer);
+    }
 
     // Title
     renderer.drawText('VOID ARTILLERY', CANVAS_WIDTH / 2, 80, COLORS.cyan, 40, 'center', true);
@@ -982,47 +1735,74 @@ function renderTankSelect() {
     const playerNum = isP1 ? 1 : 2;
     const playerColor = isP1 ? COLORS.cyan : COLORS.magenta;
 
-    // Title
-    renderer.drawText('VOID ARTILLERY', CANVAS_WIDTH / 2, 60, COLORS.cyan, 32, 'center', true);
-    const subtitle = isAISelecting ? 'AI IS CHOOSING...' : `PLAYER ${playerNum} - SELECT YOUR TANK`;
-    renderer.drawText(subtitle, CANVAS_WIDTH / 2, 120, playerColor, 24, 'center', true);
+    // Background
+    renderer.drawGrid(50, '#0a0a15');
 
-    // Tank options
-    const startY = 200;
-    const spacing = 150;
-
-    for (let i = 0; i < TANK_TYPE_KEYS.length; i++) {
-        const key = TANK_TYPE_KEYS[i];
-        const tankType = TANK_TYPES[key];
-        const y = startY + i * spacing;
-        const isSelected = i === state.selectIndex;
-
-        // Selection highlight
-        if (isSelected) {
-            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 50, 500, 120, playerColor, 3, true);
-        }
-
-        // Tank preview shape
-        const previewX = CANVAS_WIDTH / 2 - 180;
-        const previewColor = isSelected ? playerColor : '#666666';
-        renderer.drawRegularPolygon(previewX, y, 35, tankType.shape, 0, previewColor, true);
-
-        // Tank name
-        const textColor = isSelected ? COLORS.white : '#888888';
-        renderer.drawText(tankType.name, CANVAS_WIDTH / 2 - 100, y - 15, textColor, 24, 'left', isSelected);
-
-        // Tank description (constrained to not overlap stats)
-        renderer.drawText(tankType.description, CANVAS_WIDTH / 2 - 100, y + 15, '#666666', 14, 'left', false);
-
-        // Stats (right-aligned at box edge to avoid overlap)
-        const statsX = CANVAS_WIDTH / 2 + 230;
-        renderer.drawText(`DMG: ${tankType.damage}`, statsX, y - 20, '#888888', 12, 'right', false);
-        renderer.drawText(`BLAST: ${tankType.blastRadius}`, statsX, y, '#888888', 12, 'right', false);
-        renderer.drawText(`BOUNCES: ${tankType.bounces}`, statsX, y + 20, '#888888', 12, 'right', false);
+    // Draw ambient background
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+        ambient.drawForeground(renderer);
     }
 
-    // Controls hint
-    renderer.drawText('↑↓ to select, SPACE to confirm', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+    // Title
+    renderer.drawText('VOID ARTILLERY', CANVAS_WIDTH / 2, 50, COLORS.cyan, 28, 'center', true);
+    const subtitle = isAISelecting ? 'AI IS CHOOSING...' : `PLAYER ${playerNum} - SELECT YOUR TANK`;
+    renderer.drawText(subtitle, CANVAS_WIDTH / 2, 90, playerColor, 20, 'center', true);
+
+    // Calculate adaptive layout based on number of tanks
+    const headerHeight = 120;  // Space for title + subtitle
+    const footerHeight = 50;   // Space for controls hint
+    const availableHeight = CANVAS_HEIGHT - headerHeight - footerHeight;
+    const tankCount = TANK_TYPE_KEYS.length;
+
+    // Calculate spacing to fit all tanks, with max cap for readability
+    const itemHeight = 80;  // Height of each selection box
+    const maxSpacing = 95;  // Max spacing between items
+    const minSpacing = 70;  // Min spacing to prevent crowding
+    const calculatedSpacing = Math.min(maxSpacing, Math.max(minSpacing, availableHeight / tankCount));
+
+    // Center the list vertically in available space
+    const totalListHeight = (tankCount - 1) * calculatedSpacing;
+    const startY = headerHeight + (availableHeight - totalListHeight) / 2;
+
+    for (let i = 0; i < tankCount; i++) {
+        const key = TANK_TYPE_KEYS[i];
+        const tankType = TANK_TYPES[key];
+        const y = startY + i * calculatedSpacing;
+        const isSelected = i === state.selectIndex;
+
+        // Selection highlight box (compact)
+        if (isSelected) {
+            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 280, y - 32, 560, 64, playerColor, 2, true);
+        }
+
+        // Tank preview shape (moved left for more text space)
+        const previewX = CANVAS_WIDTH / 2 - 220;
+        const previewColor = isSelected ? playerColor : '#555555';
+        const previewSize = isSelected ? 28 : 24;
+        renderer.drawRegularPolygon(previewX, y, previewSize, tankType.shape, 0, previewColor, true);
+
+        // Tank name (moved right to avoid preview overlap)
+        const textColor = isSelected ? COLORS.white : '#777777';
+        const nameX = CANVAS_WIDTH / 2 - 150;
+        renderer.drawText(tankType.name, nameX, y - 8, textColor, isSelected ? 20 : 18, 'left', isSelected);
+
+        // Tank description (below name, smaller font)
+        const descColor = isSelected ? '#aaaaaa' : '#555555';
+        renderer.drawText(tankType.description, nameX, y + 14, descColor, 11, 'left', false);
+
+        // Stats (compact, right-aligned)
+        const statsX = CANVAS_WIDTH / 2 + 265;
+        const statsColor = isSelected ? '#999999' : '#555555';
+        const statsFontSize = 10;
+        renderer.drawText(`DMG ${tankType.damage}`, statsX, y - 12, statsColor, statsFontSize, 'right', false);
+        renderer.drawText(`BLS ${tankType.blastRadius}`, statsX, y + 2, statsColor, statsFontSize, 'right', false);
+        renderer.drawText(`BNC ${tankType.bounces}`, statsX, y + 16, statsColor, statsFontSize, 'right', false);
+    }
+
+    // Controls hint (at bottom with padding)
+    renderer.drawText('↑↓ SELECT   SPACE CONFIRM', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
 }
 
 // ============================================================================
@@ -1031,11 +1811,20 @@ function renderTankSelect() {
 
 let renderer;
 let lastTime = 0;
+let fpsCounter = { frames: 0, lastCheck: 0, fps: 60 };
 
 function gameLoop(currentTime) {
     const now = performance.now();
     let dt = Math.min((currentTime - lastTime) / 1000, 0.1);
     lastTime = currentTime;
+
+    // FPS counter
+    fpsCounter.frames++;
+    if (now - fpsCounter.lastCheck >= 1000) {
+        fpsCounter.fps = fpsCounter.frames;
+        fpsCounter.frames = 0;
+        fpsCounter.lastCheck = now;
+    }
 
     // Freeze frame - skip update entirely
     if (now < state.freezeUntil) {
@@ -1070,6 +1859,9 @@ function init() {
     const canvas = document.getElementById('game');
     renderer = new Renderer(canvas);
     renderer.resize(CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Initialize ambient world systems (clouds, UFOs, weather, particles)
+    initAmbient(CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Generate terrain for title screen background
     terrain.generate(CANVAS_WIDTH);

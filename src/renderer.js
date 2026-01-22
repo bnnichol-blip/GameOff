@@ -81,7 +81,8 @@ export class Renderer {
     // ========================================================================
     
     addScreenShake(intensity) {
-        this.shake.intensity = Math.min(this.shake.intensity + intensity, 30);
+        // Increased max shake for more impactful explosions
+        this.shake.intensity = Math.min(this.shake.intensity + intensity, 50);
     }
     
     flash(color = COLORS.white, alpha = 0.3) {
