@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VOID ARTILLERY</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        
+        canvas {
+            display: block;
+            /* Crisp pixels, no antialiasing on scale */
+            image-rendering: pixelated;
+        }
+        
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ffff;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            text-shadow: 0 0 10px #00ffff;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <div>VOID ARTILLERY</div>
+        <div id="debug-info"></div>
+    </div>
+    <canvas id="game"></canvas>
+    
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>
