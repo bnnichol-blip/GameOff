@@ -6,17 +6,12 @@
 import { COLORS } from './renderer.js';
 
 // ============================================================================
-// Constants
-// ============================================================================
-
-const CANVAS_HEIGHT = 720;  // Must match main.js
-
-// ============================================================================
 // Terrain State
 // ============================================================================
 
 let heights = null;
 let width = 0;
+let canvasHeight = 900;  // Updated by generate()
 
 // ============================================================================
 // Generation
@@ -25,12 +20,15 @@ let width = 0;
 /**
  * Generate rolling hills terrain using randomized layered sine waves
  * @param {number} terrainWidth - Width of terrain (should match canvas width)
+ * @param {number} terrainHeight - Height of canvas (for clamping)
+ * @param {number[]} spawnXs - Array of X positions to balance for spawns
  */
-export function generate(terrainWidth) {
+export function generate(terrainWidth, terrainHeight = 900, spawnXs = []) {
     width = terrainWidth;
+    canvasHeight = terrainHeight;
     heights = new Float32Array(width);
 
-    const baseY = 500;
+    const baseY = canvasHeight * 0.6;  // 60% down the screen
 
     // Randomize phase offsets for each sine layer
     const phase1 = Math.random() * Math.PI * 2;
@@ -54,12 +52,19 @@ export function generate(terrainWidth) {
             + amp3 * Math.sin(x * freq3 + phase3);
 
         // Clamp to valid range
-        y = Math.max(200, Math.min(y, CANVAS_HEIGHT - 80));
+        y = Math.max(canvasHeight * 0.25, Math.min(y, canvasHeight - 100));
         heights[x] = y;
     }
 
-    // Balance spawn areas for fairness
-    balanceSpawnAreas(200, 1080, 70);
+    // Balance spawn areas for fairness (if spawn positions provided)
+    if (spawnXs.length >= 2) {
+        for (const spawnX of spawnXs) {
+            smoothSpawnArea(spawnX, 70);
+        }
+    } else {
+        // Legacy fallback for 2 players
+        balanceSpawnAreas(200, terrainWidth - 200, 70);
+    }
 }
 
 /**
@@ -161,7 +166,7 @@ function smoothSpawnArea(centerX, radius) {
  */
 export function getHeightAt(x) {
     if (!heights || x < 0 || x >= width) {
-        return CANVAS_HEIGHT;  // Return bottom if out of bounds
+        return canvasHeight;  // Return bottom if out of bounds
     }
 
     const x0 = Math.floor(x);
@@ -234,7 +239,7 @@ export function raise(cx, cy, radius) {
     // Minimum Y to prevent terrain going above safe zone
     const minTerrainY = 150;
     // Maximum Y to prevent terrain going below void zone
-    const maxTerrainY = CANVAS_HEIGHT - 50;
+    const maxTerrainY = canvasHeight - 50;
 
     for (let x = startX; x <= endX; x++) {
         const dx = x - cx;
@@ -278,8 +283,8 @@ export function draw(renderer) {
     }
 
     // Close path along bottom of screen
-    ctx.lineTo(width, CANVAS_HEIGHT + 50);
-    ctx.lineTo(0, CANVAS_HEIGHT + 50);
+    ctx.lineTo(width, canvasHeight + 50);
+    ctx.lineTo(0, canvasHeight + 50);
     ctx.closePath();
 
     // Dark fill

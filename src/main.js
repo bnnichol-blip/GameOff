@@ -18,10 +18,18 @@ import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 // Game Constants
 // ============================================================================
 
-const CANVAS_WIDTH = 1280;
-const CANVAS_HEIGHT = 720;
-const DEFAULT_GRAVITY = 0.25;
-const MAX_POWER = 28;           // Strong shots that can reach across the map
+// Display canvas (actual screen size)
+const CANVAS_WIDTH = 1920;
+const CANVAS_HEIGHT = 900;
+
+// Virtual world dimensions (2x larger, rendered at 0.5x scale)
+const VIRTUAL_WIDTH = 3840;
+const VIRTUAL_HEIGHT = 1800;
+const WORLD_SCALE = CANVAS_WIDTH / VIRTUAL_WIDTH;  // 0.5
+
+const NUM_PLAYERS = 5;  // Support 5-6 players
+const DEFAULT_GRAVITY = 0.15;   // Lower gravity for longer flight paths in larger world
+const MAX_POWER = 28;           // Adjusted for 2x world size
 const CHARGE_RATE = 0.012;      // Slower charge for more precise timing (~3 sec for full)
 const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
 const VOID_RISE_PER_ROUND = 0;  // Disabled - was causing premature game ends
@@ -39,9 +47,60 @@ const CAMERA_ZOOM_DECAY = 0.92;
 const STARTING_COINS = 60;
 const COINS_PER_DAMAGE = 0.2;      // 1 coin per 5 damage
 const KILL_BONUS = 50;
-const SURVIVAL_BONUS = 25;  // Per turn, both players
+const SURVIVAL_BONUS = 25;  // Per turn, all players
 const UFO_DESTROY_BONUS = 30;
 const SHOP_OFFERING_COUNT = 6;
+
+// Player colors for up to 6 players
+const PLAYER_COLORS = [
+    '#00ffff',  // Cyan - P1
+    '#ff00ff',  // Magenta - P2
+    '#00ff00',  // Green - P3
+    '#ffaa00',  // Orange - P4
+    '#ff4444',  // Red - P5
+    '#8888ff'   // Blue - P6
+];
+
+/**
+ * Generate spawn X positions evenly spaced across the virtual world
+ */
+function getSpawnPositions(numPlayers) {
+    const margin = 800;  // Large margin for 2x world (keeps tanks away from edges)
+    const spacing = (VIRTUAL_WIDTH - margin * 2) / (numPlayers - 1);
+    const positions = [];
+    for (let i = 0; i < numPlayers; i++) {
+        positions.push(margin + i * spacing);
+    }
+    return positions;
+}
+
+/**
+ * Create initial player objects
+ */
+function createPlayers(numPlayers, isAIGame = false) {
+    const spawnXs = getSpawnPositions(numPlayers);
+    const players = [];
+    for (let i = 0; i < numPlayers; i++) {
+        players.push({
+            x: spawnXs[i],
+            y: 0,  // Will be set by terrain
+            vy: 0,
+            angle: i < numPlayers / 2 ? 45 : 135,  // Left side aims right, right side aims left
+            power: 0,
+            charging: false,
+            health: 100,
+            color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+            archetype: null,      // Tank archetype (ability)
+            tankType: null,       // Legacy - kept for compatibility
+            isAI: isAIGame && i > 0,  // In AI mode, all except P1 are AI
+            shield: 0,
+            coins: STARTING_COINS,
+            weapon: 'BABY_SHOT',
+            voidGraceTimer: 0     // For VOIDBORN ability
+        });
+    }
+    return players;
+}
 
 // ============================================================================
 // Weapons Data
@@ -56,12 +115,13 @@ const WEAPON_TIERS = {
 
 const WEAPONS = {
     // === CHEAP TIER (15-30 coins) ===
+    // NOTE: All damage values doubled (×2) for increased lethality, except Napalm
     BABY_SHOT: {
         name: 'Baby Shot',
         description: 'Weak but accurate',
         cost: 15,
         tier: 'CHEAP',
-        damage: 20,
+        damage: 40,        // Was 20, doubled
         blastRadius: 40,
         bounces: 1,
         projectileRadius: 5,
@@ -73,7 +133,7 @@ const WEAPONS = {
         description: '4 bounces, trick shots',
         cost: 20,
         tier: 'CHEAP',
-        damage: 25,
+        damage: 50,        // Was 25, doubled
         blastRadius: 35,
         bounces: 4,
         projectileRadius: 5,
@@ -85,7 +145,7 @@ const WEAPONS = {
         description: 'Builds terrain mound',
         cost: 20,
         tier: 'CHEAP',
-        damage: 5,
+        damage: 10,        // Was 5, doubled
         blastRadius: 45,
         bounces: 1,
         projectileRadius: 8,
@@ -98,7 +158,7 @@ const WEAPONS = {
         description: 'Removes terrain',
         cost: 25,
         tier: 'CHEAP',
-        damage: 0,
+        damage: 0,         // No damage, unchanged
         blastRadius: 70,
         bounces: 1,
         projectileRadius: 6,
@@ -111,7 +171,7 @@ const WEAPONS = {
         description: 'Rolls along terrain',
         cost: 30,
         tier: 'CHEAP',
-        damage: 30,
+        damage: 60,        // Was 30, doubled
         blastRadius: 45,
         bounces: 1,
         projectileRadius: 7,
@@ -126,7 +186,7 @@ const WEAPONS = {
         description: 'Large blast, reliable',
         cost: 40,
         tier: 'MID',
-        damage: 40,
+        damage: 80,        // Was 40, doubled
         blastRadius: 80,
         bounces: 1,
         projectileRadius: 8,
@@ -138,7 +198,7 @@ const WEAPONS = {
         description: 'Splits into 3 on bounce',
         cost: 45,
         tier: 'MID',
-        damage: 20,
+        damage: 40,        // Was 20, doubled
         blastRadius: 30,
         bounces: 1,
         projectileRadius: 6,
@@ -152,7 +212,7 @@ const WEAPONS = {
         description: 'Slow, massive damage',
         cost: 50,
         tier: 'MID',
-        damage: 70,
+        damage: 140,       // Was 70, doubled
         blastRadius: 60,
         bounces: 1,
         projectileRadius: 10,
@@ -164,7 +224,7 @@ const WEAPONS = {
         description: 'Pierces terrain',
         cost: 55,
         tier: 'MID',
-        damage: 45,
+        damage: 90,        // Was 45, doubled
         blastRadius: 40,
         bounces: 0,
         projectileRadius: 5,
@@ -177,7 +237,7 @@ const WEAPONS = {
         description: '50% damage reduction',
         cost: 55,
         tier: 'MID',
-        damage: 0,
+        damage: 0,         // No damage, unchanged
         blastRadius: 40,
         bounces: 0,
         projectileRadius: 10,
@@ -191,7 +251,7 @@ const WEAPONS = {
         description: 'Slight homing',
         cost: 60,
         tier: 'MID',
-        damage: 35,
+        damage: 70,        // Was 35, doubled
         blastRadius: 45,
         bounces: 1,
         projectileRadius: 6,
@@ -205,7 +265,7 @@ const WEAPONS = {
         description: 'Splits into 5 bomblets',
         cost: 65,
         tier: 'MID',
-        damage: 15,
+        damage: 30,        // Was 15, doubled
         blastRadius: 35,
         bounces: 1,
         projectileRadius: 7,
@@ -221,7 +281,7 @@ const WEAPONS = {
         description: 'Direct hit bonus',
         cost: 80,
         tier: 'PREMIUM',
-        damage: 95,
+        damage: 190,       // Was 95, doubled
         blastRadius: 30,
         bounces: 2,
         projectileRadius: 5,
@@ -236,7 +296,7 @@ const WEAPONS = {
         description: '3 clusters of 3',
         cost: 90,
         tier: 'PREMIUM',
-        damage: 10,
+        damage: 20,        // Was 10, doubled
         blastRadius: 25,
         bounces: 1,
         projectileRadius: 8,
@@ -251,7 +311,7 @@ const WEAPONS = {
         description: 'Hurts grounded enemies',
         cost: 100,
         tier: 'PREMIUM',
-        damage: 40,
+        damage: 80,        // Was 40, doubled
         blastRadius: 100,
         bounces: 0,
         projectileRadius: 9,
@@ -264,7 +324,7 @@ const WEAPONS = {
         description: 'Warp to impact point',
         cost: 100,
         tier: 'PREMIUM',
-        damage: 0,
+        damage: 0,         // No damage, unchanged
         blastRadius: 30,
         bounces: 1,
         projectileRadius: 8,
@@ -277,7 +337,7 @@ const WEAPONS = {
         description: 'Raises void +60px',
         cost: 110,
         tier: 'PREMIUM',
-        damage: 20,
+        damage: 40,        // Was 20, doubled
         blastRadius: 50,
         bounces: 1,
         projectileRadius: 7,
@@ -293,7 +353,7 @@ const WEAPONS = {
         description: 'Burning field 8 sec',
         cost: 130,
         tier: 'SPECTACLE',
-        damage: 15,
+        damage: 15,        // UNCHANGED - Napalm exempt from damage boost
         blastRadius: 60,
         bounces: 1,
         projectileRadius: 8,
@@ -308,14 +368,14 @@ const WEAPONS = {
         description: 'Arcs to nearby target',
         cost: 150,
         tier: 'SPECTACLE',
-        damage: 40,
+        damage: 80,        // Was 40, doubled
         blastRadius: 30,
         bounces: 1,
         projectileRadius: 6,
         projectileSpeed: 1.3,
         color: '#44ffff',
         behavior: 'chainLightning',
-        chainDamage: 25,
+        chainDamage: 50,   // Was 25, doubled
         chainRange: 200
     },
     NUKE: {
@@ -323,8 +383,8 @@ const WEAPONS = {
         description: 'Massive blast, 3s fuse',
         cost: 180,
         tier: 'SPECTACLE',
-        damage: 80,
-        blastRadius: 150,
+        damage: 160,       // Was 80, doubled
+        blastRadius: 350,  // Was 150, more than doubled for cinematic effect
         bounces: 0,
         projectileRadius: 12,
         projectileSpeed: 0.5,
@@ -423,14 +483,108 @@ const TANK_TYPES = {
 };
 
 // ============================================================================
+// Tank Archetypes (Abilities + Visuals)
+// ============================================================================
+
+const TANK_ARCHETYPES = {
+    GUARDIAN: {
+        name: 'GUARDIAN',
+        description: 'Defensive specialist',
+        abilityName: 'Energy Shield',
+        abilityDesc: 'Start with 25 shield, +5 per turn (max 50)',
+        abilityRules: { startShield: 25, shieldPerTurn: 5, maxShield: 50 },
+        palette: { base: '#00aaff', glow: '#00ddff' },  // Light blue
+        chassisShape: 8,   // Octagon - defensive
+        turretLength: 30,
+        turretWidth: 6
+    },
+    STRIKER: {
+        name: 'STRIKER',
+        description: 'Offensive powerhouse',
+        abilityName: 'Overdrive',
+        abilityDesc: '+20% damage on all weapons',
+        abilityRules: { damageBonus: 0.20 },
+        palette: { base: '#ff4444', glow: '#ff6666' },  // Red
+        chassisShape: 3,   // Triangle - aggressive
+        turretLength: 38,
+        turretWidth: 5
+    },
+    SPECTER: {
+        name: 'SPECTER',
+        description: 'Aerial mobility',
+        abilityName: 'Hover Jets',
+        abilityDesc: 'Fall 50% slower, reduced fall damage',
+        abilityRules: { fallSpeedMult: 0.5, fallDamageReduction: 0.5 },
+        palette: { base: '#aa44ff', glow: '#cc66ff' },  // Purple
+        chassisShape: 5,   // Pentagon - floaty
+        turretLength: 32,
+        turretWidth: 4
+    },
+    FORTRESS: {
+        name: 'FORTRESS',
+        description: 'Immovable anchor',
+        abilityName: 'Stabilizers',
+        abilityDesc: 'Immune to knockback and recoil',
+        abilityRules: { knockbackImmune: true },
+        palette: { base: '#888888', glow: '#aaaaaa' },  // Gray
+        chassisShape: 4,   // Square - solid
+        turretLength: 28,
+        turretWidth: 8
+    },
+    HUNTER: {
+        name: 'HUNTER',
+        description: 'Precision tracker',
+        abilityName: 'Target Lock',
+        abilityDesc: 'All projectiles have slight homing',
+        abilityRules: { homingStrength: 0.015 },
+        palette: { base: '#ffaa00', glow: '#ffcc00' },  // Orange
+        chassisShape: 6,   // Hexagon - tactical
+        turretLength: 35,
+        turretWidth: 4
+    },
+    RICOCHET: {
+        name: 'RICOCHET',
+        description: 'Bounce master',
+        abilityName: 'Elastic Rounds',
+        abilityDesc: '+1 bounce on all weapons',
+        abilityRules: { bonusBounces: 1 },
+        palette: { base: '#00ff88', glow: '#44ffaa' },  // Teal/green
+        chassisShape: 5,   // Pentagon
+        turretLength: 34,
+        turretWidth: 5
+    },
+    VOIDBORN: {
+        name: 'VOIDBORN',
+        description: 'Void-touched survivor',
+        abilityName: 'Void Resistance',
+        abilityDesc: 'Survive void contact for 1 second',
+        abilityRules: { voidGracePeriod: 1.0 },  // seconds
+        palette: { base: '#ff00ff', glow: '#ff44ff' },  // Magenta
+        chassisShape: 6,   // Hexagon
+        turretLength: 30,
+        turretWidth: 6
+    },
+    MERCHANT: {
+        name: 'MERCHANT',
+        description: 'Economic advantage',
+        abilityName: 'Trade Routes',
+        abilityDesc: '+15 bonus coins per turn',
+        abilityRules: { bonusCoins: 15 },
+        palette: { base: '#ffff00', glow: '#ffff66' },  // Yellow/gold
+        chassisShape: 4,   // Square - merchant cart
+        turretLength: 26,
+        turretWidth: 7
+    }
+};
+
+const ARCHETYPE_KEYS = Object.keys(TANK_ARCHETYPES);
+
+// ============================================================================
 // Game State
 // ============================================================================
 
 const state = {
-    players: [
-        { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' },
-        { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' }
-    ],
+    players: createPlayers(NUM_PLAYERS),
     currentPlayer: 0,
     turnCount: 0,
     phase: 'title',  // 'title' | 'mode_select' | 'select_p1' | 'select_p2' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
@@ -440,11 +594,15 @@ const state = {
     projectiles: [],  // For cluster bombs (multiple projectiles)
     // Shop state
     shopOfferings: [],     // Array of weapon keys available this round
-    shopSelections: [0, 0], // Selected index for each player in shop
-    shopReady: [false, false], // Whether each player is ready
+    shopSelections: new Array(NUM_PLAYERS).fill(0), // Selected index for each player in shop
+    shopReady: new Array(NUM_PLAYERS).fill(false), // Whether each player is ready
     // Persistent fields (napalm, etc.)
     fields: [],  // { x, y, radius, duration, damagePerSec, color, type, timer }
-    voidY: CANVAS_HEIGHT + 50,
+    // Active nukes with fuse timers
+    nukes: [],   // { x, y, fuseTimer, firedByPlayer, weaponKey, color }
+    // Nuke shockwave effect
+    nukeShockwave: null,  // { x, y, radius, maxRadius, timer, duration }
+    voidY: VIRTUAL_HEIGHT + 100,
     winner: null,
     time: 0,
     // Juice state
@@ -470,10 +628,7 @@ const state = {
     recoilPending: false,     // For RECOIL KICK
     voidSurgePending: false,  // For VOID SURGE
     // UFO buff state (per player, stackable, one-turn duration)
-    ufoBuffs: [
-        { damage: 0, blast: 0, bounces: 0 },  // Player 1 buffs
-        { damage: 0, blast: 0, bounces: 0 }   // Player 2 buffs
-    ],
+    ufoBuffs: Array.from({ length: NUM_PLAYERS }, () => ({ damage: 0, blast: 0, bounces: 0 })),
     // UFO buff notification
     buffNotification: null  // { playerIndex, buffType, timer }
 };
@@ -483,12 +638,177 @@ const TANK_TYPE_KEYS = Object.keys(TANK_TYPES);
 
 // Derived value (Codex suggestion)
 function getCurrentRound() {
-    return Math.floor(state.turnCount / 2) + 1;
+    const playersAlive = state.players.filter(p => p.health > 0).length;
+    return Math.floor(state.turnCount / Math.max(playersAlive, 1)) + 1;
 }
 
 // Get current player object
 function getCurrentPlayer() {
     return state.players[state.currentPlayer];
+}
+
+// ============================================================================
+// Archetype Ability Helpers
+// ============================================================================
+
+/**
+ * Get a player's archetype data (or null if none selected)
+ */
+function getArchetype(player) {
+    return player.archetype ? TANK_ARCHETYPES[player.archetype] : null;
+}
+
+/**
+ * Apply turn-start abilities (GUARDIAN shield regen, MERCHANT coins)
+ */
+function applyTurnStartAbilities(player) {
+    const arch = getArchetype(player);
+    if (!arch) return;
+
+    // GUARDIAN: Shield regeneration
+    if (arch.abilityRules.shieldPerTurn) {
+        const maxShield = arch.abilityRules.maxShield || 50;
+        player.shield = Math.min(player.shield + arch.abilityRules.shieldPerTurn, maxShield);
+    }
+
+    // MERCHANT: Bonus coins
+    if (arch.abilityRules.bonusCoins) {
+        player.coins += arch.abilityRules.bonusCoins;
+    }
+}
+
+/**
+ * Apply initial abilities when game starts (GUARDIAN starting shield)
+ */
+function applyGameStartAbilities(player) {
+    const arch = getArchetype(player);
+    if (!arch) return;
+
+    // GUARDIAN: Starting shield
+    if (arch.abilityRules.startShield) {
+        player.shield = arch.abilityRules.startShield;
+    }
+}
+
+/**
+ * Get damage multiplier from archetype (STRIKER)
+ */
+function getArchetypeDamageMultiplier(player) {
+    const arch = getArchetype(player);
+    if (arch && arch.abilityRules.damageBonus) {
+        return 1 + arch.abilityRules.damageBonus;
+    }
+    return 1;
+}
+
+/**
+ * Get bonus bounces from archetype (RICOCHET)
+ */
+function getArchetypeBonusBounces(player) {
+    const arch = getArchetype(player);
+    if (arch && arch.abilityRules.bonusBounces) {
+        return arch.abilityRules.bonusBounces;
+    }
+    return 0;
+}
+
+/**
+ * Get homing strength from archetype (HUNTER)
+ */
+function getArchetypeHomingStrength(player) {
+    const arch = getArchetype(player);
+    if (arch && arch.abilityRules.homingStrength) {
+        return arch.abilityRules.homingStrength;
+    }
+    return 0;
+}
+
+/**
+ * Get fall speed multiplier from archetype (SPECTER)
+ */
+function getArchetypeFallSpeedMult(player) {
+    const arch = getArchetype(player);
+    if (arch && arch.abilityRules.fallSpeedMult) {
+        return arch.abilityRules.fallSpeedMult;
+    }
+    return 1;
+}
+
+/**
+ * Check if player is immune to knockback (FORTRESS)
+ */
+function isKnockbackImmune(player) {
+    const arch = getArchetype(player);
+    return arch && arch.abilityRules.knockbackImmune;
+}
+
+/**
+ * Get void grace period from archetype (VOIDBORN)
+ */
+function getVoidGracePeriod(player) {
+    const arch = getArchetype(player);
+    if (arch && arch.abilityRules.voidGracePeriod) {
+        return arch.abilityRules.voidGracePeriod;
+    }
+    return 0;
+}
+
+/**
+ * Trigger brilliant tank death explosion with terrain destruction
+ * @param {Object} player - The player who died
+ * @param {boolean} isVoidDeath - True if death was from void contact
+ */
+function triggerDeathExplosion(player, isVoidDeath = false) {
+    const x = player.x;
+    const y = player.y;
+    const color = player.color;
+
+    // SAVAGE TERRAIN DESTRUCTION
+    const deathBlastRadius = isVoidDeath ? 80 : 120;
+    terrain.destroy(x, y, deathBlastRadius);
+
+    // MULTI-STAGE EXPLOSION
+    if (isVoidDeath) {
+        // Void death: purple/magenta themed explosion being sucked into void
+        particles.explosion(x, y, 150, COLORS.magenta, 100);
+        particles.explosion(x, y, 100, '#8800ff', 80);
+        particles.explosion(x, y, 80, color, 60);
+        particles.sparks(x, y, 60, COLORS.magenta);
+        // Downward particle trail as if being pulled into void
+        for (let i = 0; i < 20; i++) {
+            setTimeout(() => {
+                particles.sparks(x + (Math.random() - 0.5) * 40, y + i * 5, 5, '#8800ff');
+            }, i * 20);
+        }
+    } else {
+        // Combat death: brilliant white-hot explosion
+        particles.explosion(x, y, 200, COLORS.white, 150);
+        particles.explosion(x, y, 150, color, 120);
+        particles.explosion(x, y, 100, COLORS.orange, 80);
+        particles.sparks(x, y, 80, COLORS.yellow);
+        particles.sparks(x, y, 60, color);
+    }
+
+    // Delayed secondary explosions (debris)
+    setTimeout(() => {
+        particles.explosion(x - 30, y - 20, 40, COLORS.orange, 40);
+        particles.sparks(x + 40, y, 30, COLORS.yellow);
+    }, 100);
+    setTimeout(() => {
+        particles.explosion(x + 25, y + 15, 35, color, 35);
+        terrain.destroy(x, y + 30, 40);  // Additional terrain damage
+    }, 200);
+
+    // Screen effects
+    renderer.addScreenShake(isVoidDeath ? 40 : 50);
+    renderer.flash(isVoidDeath ? COLORS.magenta : COLORS.white, 0.5);
+    setTimeout(() => renderer.flash(color, 0.25), 100);
+
+    // Audio
+    audio.playKill();
+    if (isVoidDeath) {
+        audio.playVoidTouch();
+    }
 }
 
 // ============================================================================
@@ -502,16 +822,23 @@ function resetToTitle() {
 }
 
 function resetGame() {
-    terrain.generate(CANVAS_WIDTH);
+    const isAIGame = state.gameMode === '1p';
 
-    const isP2AI = state.gameMode === '1p';
-    state.players[0] = { x: 200, y: 0, vy: 0, angle: 45, power: 0, charging: false, health: 100, color: COLORS.cyan, tankType: null, isAI: false, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' };
-    state.players[1] = { x: 1080, y: 0, vy: 0, angle: 135, power: 0, charging: false, health: 100, color: COLORS.magenta, tankType: null, isAI: isP2AI, shield: 0, coins: STARTING_COINS, weapon: 'BABY_SHOT' };
+    // Create players and get spawn positions
+    state.players = createPlayers(NUM_PLAYERS, isAIGame);
+    const spawnXs = getSpawnPositions(NUM_PLAYERS);
+
+    // Generate terrain with spawn positions for balancing (use virtual dimensions)
+    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, spawnXs);
 
     // Position tanks on terrain
     state.players.forEach(p => {
         p.y = terrain.getHeightAt(p.x) - TANK_RADIUS;
     });
+
+    // Reset shop arrays for N players
+    state.shopSelections = new Array(NUM_PLAYERS).fill(0);
+    state.shopReady = new Array(NUM_PLAYERS).fill(false);
 
     state.currentPlayer = 0;
     state.turnCount = 0;
@@ -519,7 +846,7 @@ function resetGame() {
     state.selectIndex = 0;
     state.projectile = null;
     state.projectiles = [];
-    state.voidY = CANVAS_HEIGHT + 50;
+    state.voidY = VIRTUAL_HEIGHT + 100;
     state.winner = null;
     state.aiThinkTime = 0;
     state.aiTargetAngle = 0;
@@ -537,22 +864,25 @@ function resetGame() {
     state.recoilPending = false;
     state.voidSurgePending = false;
     // Reset UFO buffs
-    state.ufoBuffs = [
-        { damage: 0, blast: 0, bounces: 0 },
-        { damage: 0, blast: 0, bounces: 0 }
-    ];
+    state.ufoBuffs = Array.from({ length: NUM_PLAYERS }, () => ({ damage: 0, blast: 0, bounces: 0 }));
     state.buffNotification = null;
     // Reset shop state
     state.shopOfferings = [];
-    state.shopSelections = [0, 0];
-    state.shopReady = [false, false];
+    state.shopSelections = Array(NUM_PLAYERS).fill(0);
+    state.shopReady = Array(NUM_PLAYERS).fill(false);
     // Reset persistent fields
     state.fields = [];
+    // Reset active nukes
+    state.nukes = [];
+    state.nukeShockwave = null;
 }
 
 function startGame() {
     // Called after both players select tanks
     state.phase = 'aiming';
+
+    // Apply initial archetype abilities (e.g., GUARDIAN starting shield)
+    state.players.forEach(p => applyGameStartAbilities(p));
 
     // Roll initial glitch event for round 1 (both players will share it)
     rollNewGlitchEvent();
@@ -604,8 +934,8 @@ function fireProjectile() {
         radius: weapon.projectileRadius,
         color: weapon.color || player.color,
         bounces: 0,
-        // Apply extra bounces from ELASTIC WORLD event + UFO buff
-        maxBounces: weapon.bounces + state.extraBounces + bounceBonus,
+        // Apply extra bounces from ELASTIC WORLD event + UFO buff + archetype (RICOCHET)
+        maxBounces: weapon.bounces + state.extraBounces + bounceBonus + getArchetypeBonusBounces(player),
         trail: [],
         weaponKey: player.weapon,  // Store weapon key for explosion handling
         tankType: player.tankType, // Keep for backwards compatibility
@@ -620,7 +950,8 @@ function fireProjectile() {
     state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
 
     // Apply RECOIL KICK - push tank backward from shot direction
-    if (state.recoilPending) {
+    // FORTRESS archetype is immune to knockback
+    if (state.recoilPending && !isKnockbackImmune(player)) {
         const recoilForce = 8;
         // Recoil is opposite to shot direction
         player.x -= Math.cos(angleRad) * recoilForce;
@@ -656,12 +987,54 @@ function updateProjectile(dt) {
         proj.vx += state.wind;
     }
 
+    // HUNTER archetype - slight homing on all projectiles
+    const firingPlayerForHoming = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    const homingStrength = getArchetypeHomingStrength(state.players[firingPlayerForHoming]);
+    if (homingStrength > 0 && !proj.isRolling) {
+        // Find nearest living enemy for homing
+        let homingTarget = null;
+        let minHomingDist = Infinity;
+        for (let i = 0; i < state.players.length; i++) {
+            if (i === firingPlayerForHoming) continue;
+            const p = state.players[i];
+            if (p.health <= 0) continue;
+            const d = distance(proj.x, proj.y, p.x, p.y);
+            if (d < minHomingDist) {
+                minHomingDist = d;
+                homingTarget = p;
+            }
+        }
+        if (homingTarget) {
+            const hdx = homingTarget.x - proj.x;
+            const hdy = homingTarget.y - proj.y;
+            const hdist = Math.sqrt(hdx * hdx + hdy * hdy);
+            if (hdist > 0) {
+                proj.vx += (hdx / hdist) * homingStrength;
+                proj.vy += (hdy / hdist) * homingStrength;
+            }
+        }
+    }
+
     // SEEKER behavior - slight homing toward nearest enemy
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
     if (weapon && weapon.behavior === 'seeker' && !proj.isRolling) {
         const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-        const targetPlayer = state.players[1 - firingPlayer];
-        if (targetPlayer && targetPlayer.health > 0) {
+
+        // Find nearest living enemy
+        let targetPlayer = null;
+        let minDist = Infinity;
+        for (let i = 0; i < state.players.length; i++) {
+            if (i === firingPlayer) continue;
+            const p = state.players[i];
+            if (p.health <= 0) continue;
+            const d = distance(proj.x, proj.y, p.x, p.y);
+            if (d < minDist) {
+                minDist = d;
+                targetPlayer = p;
+            }
+        }
+
+        if (targetPlayer) {
             const dx = targetPlayer.x - proj.x;
             const dy = targetPlayer.y - proj.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
@@ -713,11 +1086,18 @@ function updateProjectile(dt) {
             proj.rollTimer = 0;
         }
 
-        // Wall collision while rolling
-        if (proj.x < proj.radius || proj.x > CANVAS_WIDTH - proj.radius) {
-            onExplode(proj);
-            state.projectile = null;
-            return;
+        // Wall bounce while rolling (use virtual dimensions)
+        if (proj.x < proj.radius) {
+            proj.x = proj.radius;
+            proj.vx = -proj.vx * 0.7;  // Bounce with energy loss
+            particles.sparks(proj.x, proj.y, 15, COLORS.yellow);
+            audio.playBounce();
+        }
+        if (proj.x > VIRTUAL_WIDTH - proj.radius) {
+            proj.x = VIRTUAL_WIDTH - proj.radius;
+            proj.vx = -proj.vx * 0.7;  // Bounce with energy loss
+            particles.sparks(proj.x, proj.y, 15, COLORS.yellow);
+            audio.playBounce();
         }
 
         return; // Skip normal physics while rolling
@@ -741,8 +1121,8 @@ function updateProjectile(dt) {
         proj.vx = -proj.vx * 0.9;
         onBounce(proj);
     }
-    if (proj.x > CANVAS_WIDTH - proj.radius) {
-        proj.x = CANVAS_WIDTH - proj.radius;
+    if (proj.x > VIRTUAL_WIDTH - proj.radius) {
+        proj.x = VIRTUAL_WIDTH - proj.radius;
         proj.vx = -proj.vx * 0.9;
         onBounce(proj);
     }
@@ -795,6 +1175,34 @@ function updateProjectile(dt) {
             return; // Don't explode, keep drilling
         }
 
+        // NUKE behavior - land and start fuse timer instead of exploding
+        if (projWeapon && projWeapon.behavior === 'nuke') {
+            const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+            // Place nuke on terrain surface
+            const landY = terrain.getHeightAt(proj.x) - proj.radius;
+            state.nukes.push({
+                x: proj.x,
+                y: landY,
+                fuseTimer: projWeapon.fuseTime || 3,
+                firedByPlayer: firingPlayer,
+                weaponKey: proj.weaponKey,
+                color: proj.color,
+                radius: proj.radius,
+                // Store buff bonuses from projectile
+                buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+                buffedBlastBonus: proj.buffedBlastBonus || 0
+            });
+            // Visual feedback - nuke lands with ominous thud
+            particles.sparks(proj.x, landY, 30, '#ffff00');
+            particles.sparks(proj.x, landY, 20, '#ff8800');
+            renderer.addScreenShake(15);
+            audio.playBounce();
+            // Clear projectile and end turn
+            state.projectile = null;
+            endTurn();
+            return;
+        }
+
         onExplode(proj);
         state.projectile = null;
         return;
@@ -816,8 +1224,8 @@ function updateProjectile(dt) {
         return;
     }
 
-    // 3. Goes out of bounds
-    if (proj.y > CANVAS_HEIGHT + 100) {
+    // 3. Goes out of bounds (use virtual dimensions)
+    if (proj.y > VIRTUAL_HEIGHT + 100) {
         onExplode(proj);
         state.projectile = null;
         return;
@@ -921,11 +1329,14 @@ function onExplode(proj) {
         // Stage 2 projectiles explode normally (fall through)
     }
 
-    // Apply UFO buffs to damage and blast radius
-    const damageMultiplier = proj.buffedDamageMultiplier || 1;
+    // Apply UFO buffs and archetype bonuses to damage and blast radius
+    const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    const firingPlayerForDamage = state.players[firingPlayerIdx];
+    const buffDamageMultiplier = proj.buffedDamageMultiplier || 1;
+    const archetypeDamageMultiplier = getArchetypeDamageMultiplier(firingPlayerForDamage);
     const blastBonus = proj.buffedBlastBonus || 0;
     const effectiveBlastRadius = weapon.blastRadius + blastBonus;
-    const effectiveDamage = weapon.damage * damageMultiplier;
+    const effectiveDamage = weapon.damage * buffDamageMultiplier * archetypeDamageMultiplier;
 
     // ENHANCED Visual effects - scale with blast radius
     // RAILGUN gets special high-impact visuals
@@ -1232,15 +1643,13 @@ function onExplode(proj) {
         // Camera punch zoom
         state.cameraZoom = CAMERA_ZOOM_AMOUNT * 1.3;
 
-        // Death effects for killing blow
+        // Death effects for killing blow - BRILLIANT TANK EXPLOSION
         if (killingBlow && hitPlayer) {
             // Brief slow-mo for kills only
             state.slowMoUntil = now + SLOW_MO_DURATION_MS;
-            // Extra explosion at player position
-            particles.explosion(hitPlayer.x, hitPlayer.y, 100, hitPlayer.color, 100);
-            renderer.addScreenShake(35);
-            renderer.flash(COLORS.white, 0.5);
-            audio.playKill();
+
+            // Trigger the death explosion with terrain destruction
+            triggerDeathExplosion(hitPlayer, false);
         }
     }
 
@@ -1467,18 +1876,32 @@ function endTurn() {
     // Delay before switching turns (Claude/Gemini suggestion)
     setTimeout(() => {
         state.turnCount++;
-        state.currentPlayer = 1 - state.currentPlayer;
 
-        // Award survival bonus to both players every turn
+        // Advance to next living player (cycle through all players)
+        let attempts = 0;
+        do {
+            state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
+            attempts++;
+        } while (state.players[state.currentPlayer].health <= 0 && attempts < state.players.length);
+
+        // Award survival bonus to all living players every turn
         state.players.forEach(p => {
             if (p.health > 0) {
                 p.coins += SURVIVAL_BONUS;
             }
         });
 
-        // Void rises every full round (after both players fire)
-        // Also: new glitch event at the start of each round (when P1's turn begins)
-        if (state.turnCount % 2 === 0) {
+        // Apply turn-start archetype abilities to current player (GUARDIAN shield, MERCHANT coins)
+        const currentPlayer = state.players[state.currentPlayer];
+        if (currentPlayer.health > 0) {
+            applyTurnStartAbilities(currentPlayer);
+        }
+
+        // Full round = all players have had a turn (use player count)
+        const playersAlive = state.players.filter(p => p.health > 0).length;
+        const isNewRound = state.turnCount % Math.max(playersAlive, 1) === 0;
+
+        if (isNewRound) {
             state.voidY -= VOID_RISE_PER_ROUND;
 
             // Revert previous round's event
@@ -1488,15 +1911,14 @@ function endTurn() {
             }
 
             // Transition to shop phase (skip shop on round 1)
-            if (state.turnCount >= 2) {
+            if (state.turnCount >= state.players.length) {
                 enterShopPhase();
                 return;  // Don't continue to aiming yet
             }
 
-            // Roll new glitch event for this round (both players will share it)
+            // Roll new glitch event for this round
             rollNewGlitchEvent();
         }
-        // Note: If turnCount is odd (P2's turn), keep the same glitch from P1's turn
 
         state.phase = 'aiming';
 
@@ -1568,20 +1990,31 @@ function generateShopOfferings() {
 function enterShopPhase() {
     state.phase = 'shop';
     state.shopOfferings = generateShopOfferings();
-    state.shopSelections = [0, 0];
-    state.shopReady = [false, false];
+    state.shopSelections = new Array(state.players.length).fill(0);
+    state.shopReady = new Array(state.players.length).fill(false);
 
-    // AI auto-selects in shop
-    if (state.players[1].isAI) {
-        aiShopSelect();
+    // All AI players auto-select, and dead players are auto-ready
+    for (let i = 0; i < state.players.length; i++) {
+        if (state.players[i].health <= 0) {
+            state.shopReady[i] = true;  // Dead players skip shop
+        } else if (state.players[i].isAI) {
+            aiShopSelectFor(i);
+        }
     }
+
+    checkShopComplete();
 }
 
 /**
- * AI weapon selection (simple: pick best affordable weapon)
+ * AI weapon selection for a specific player index
  */
-function aiShopSelect() {
-    const ai = state.players[1];
+function aiShopSelectFor(playerIndex) {
+    const ai = state.players[playerIndex];
+    if (ai.health <= 0) {
+        state.shopReady[playerIndex] = true;
+        return;
+    }
+
     let bestIndex = -1;
     let bestCost = 0;
 
@@ -1596,15 +2029,14 @@ function aiShopSelect() {
 
     // If found affordable weapon, buy it
     if (bestIndex >= 0) {
-        state.shopSelections[1] = bestIndex;
+        state.shopSelections[playerIndex] = bestIndex;
         const weaponKey = state.shopOfferings[bestIndex];
         ai.coins -= WEAPONS[weaponKey].cost;
         ai.weapon = weaponKey;
         audio.playPurchase();
     }
 
-    state.shopReady[1] = true;
-    checkShopComplete();
+    state.shopReady[playerIndex] = true;
 }
 
 /**
@@ -1664,7 +2096,9 @@ function handleShopInput() {
  * Check if all players are ready to exit shop
  */
 function checkShopComplete() {
-    if (state.shopReady[0] && state.shopReady[1]) {
+    // Check if all players are ready
+    const allReady = state.shopReady.every(ready => ready);
+    if (allReady) {
         exitShopPhase();
     }
 }
@@ -1690,7 +2124,21 @@ function exitShopPhase() {
 
 function prepareAITurn() {
     const ai = getCurrentPlayer();
-    const target = state.players[1 - state.currentPlayer];
+
+    // Find nearest living enemy
+    let target = null;
+    let minDist = Infinity;
+    for (let i = 0; i < state.players.length; i++) {
+        if (i === state.currentPlayer) continue;
+        const p = state.players[i];
+        if (p.health <= 0) continue;
+        const d = Math.abs(p.x - ai.x);
+        if (d < minDist) {
+            minDist = d;
+            target = p;
+        }
+    }
+    if (!target) return;  // No valid targets
 
     // Calculate angle to target (simple ballistic estimation)
     const dx = target.x - ai.x;
@@ -1757,19 +2205,53 @@ function updateAI(dt) {
 // ============================================================================
 
 function checkWinCondition() {
-    for (let i = 0; i < state.players.length; i++) {
-        const player = state.players[i];
-
-        // Health death
-        if (player.health <= 0) {
-            return { winner: 1 - i, reason: 'destroyed' };
-        }
-
-        // Void death (tank bottom touches void)
-        if (player.y + TANK_RADIUS > state.voidY) {
-            return { winner: 1 - i, reason: 'void' };
+    // Check for void deaths first (mark players as dead)
+    // VOIDBORN archetype has a grace period before dying to void
+    for (const player of state.players) {
+        if (player.health > 0 && player.y + TANK_RADIUS > state.voidY) {
+            const gracePeriod = getVoidGracePeriod(player);
+            if (gracePeriod > 0) {
+                // VOIDBORN: Start or continue grace timer
+                if (player.voidGraceTimer === undefined || player.voidGraceTimer <= 0) {
+                    player.voidGraceTimer = gracePeriod;
+                }
+                // Decrement timer (dt not available here, use approximation)
+                player.voidGraceTimer -= 0.016;  // ~60fps
+                if (player.voidGraceTimer <= 0) {
+                    triggerDeathExplosion(player, true);  // Void death explosion
+                    player.health = 0;  // Grace period expired
+                }
+                // Visual warning effect while in grace period
+                particles.sparks(player.x, player.y, 8, '#ff00ff');
+                particles.sparks(player.x, player.y, 5, COLORS.magenta);
+            } else {
+                triggerDeathExplosion(player, true);  // Void death explosion
+                player.health = 0;  // Kill player who touched void
+            }
+        } else {
+            // Reset grace timer when not in void
+            player.voidGraceTimer = 0;
         }
     }
+
+    // Count living players
+    const livingPlayers = [];
+    for (let i = 0; i < state.players.length; i++) {
+        if (state.players[i].health > 0) {
+            livingPlayers.push(i);
+        }
+    }
+
+    // If only one player remains, they win
+    if (livingPlayers.length === 1) {
+        return { winner: livingPlayers[0], reason: 'last_standing' };
+    }
+
+    // If no players remain (draw), first player wins by default
+    if (livingPlayers.length === 0) {
+        return { winner: 0, reason: 'draw' };
+    }
+
     return null;
 }
 
@@ -1778,12 +2260,24 @@ function checkWinCondition() {
 // ============================================================================
 
 function updateTankPhysics(player) {
+    // === HORIZONTAL BOUNDARY CLAMPING ===
+    // Keep tanks within playfield (use virtual world dimensions)
+    if (player.x < TANK_RADIUS) {
+        player.x = TANK_RADIUS;
+    }
+    if (player.x > VIRTUAL_WIDTH - TANK_RADIUS) {
+        player.x = VIRTUAL_WIDTH - TANK_RADIUS;
+    }
+
+    // === VERTICAL PHYSICS (falling) ===
     const groundY = terrain.getHeightAt(player.x);
     const tankBottom = player.y + TANK_RADIUS;
 
     if (tankBottom < groundY) {
         // Tank is above ground — fall
-        player.vy += state.gravity;
+        // SPECTER archetype: Reduced fall speed (hover jets)
+        const fallMult = getArchetypeFallSpeedMult(player);
+        player.vy += state.gravity * fallMult;
         player.y += player.vy;
 
         // Check if landed
@@ -1843,14 +2337,14 @@ function update(dt) {
         return;
     }
 
-    // Tank selection phases
+    // Tank archetype selection phases
     if (state.phase === 'select_p1' || state.phase === 'select_p2') {
         // Auto-select for AI player
         if (state.phase === 'select_p2' && state.players[1].isAI) {
-            // AI picks a random tank after short delay
+            // AI picks a random archetype after short delay
             setTimeout(() => {
-                const aiChoice = TANK_TYPE_KEYS[Math.floor(Math.random() * TANK_TYPE_KEYS.length)];
-                state.players[1].tankType = aiChoice;
+                const aiChoice = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
+                state.players[1].archetype = aiChoice;
                 audio.playConfirm();
                 startGame();
             }, 500);
@@ -1861,24 +2355,36 @@ function update(dt) {
 
         // Navigate with up/down or left/right
         if (input.wasPressed('ArrowUp') || input.wasPressed('ArrowLeft')) {
-            state.selectIndex = (state.selectIndex - 1 + TANK_TYPE_KEYS.length) % TANK_TYPE_KEYS.length;
+            state.selectIndex = (state.selectIndex - 1 + ARCHETYPE_KEYS.length) % ARCHETYPE_KEYS.length;
             audio.playSelect();
         }
         if (input.wasPressed('ArrowDown') || input.wasPressed('ArrowRight')) {
-            state.selectIndex = (state.selectIndex + 1) % TANK_TYPE_KEYS.length;
+            state.selectIndex = (state.selectIndex + 1) % ARCHETYPE_KEYS.length;
             audio.playSelect();
         }
 
         // Confirm selection with Space or Enter
         if (input.spaceReleased || input.enter) {
-            const selectedType = TANK_TYPE_KEYS[state.selectIndex];
+            const selectedArchetype = ARCHETYPE_KEYS[state.selectIndex];
             audio.playConfirm();
             if (state.phase === 'select_p1') {
-                state.players[0].tankType = selectedType;
-                state.phase = 'select_p2';
-                state.selectIndex = 0;
+                state.players[0].archetype = selectedArchetype;
+                // Assign random archetypes to all AI players and start
+                for (let i = 1; i < state.players.length; i++) {
+                    if (state.players[i].isAI) {
+                        state.players[i].archetype = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
+                    }
+                }
+                // Check if any human players remain to select
+                const humanPlayersLeft = state.players.slice(1).some(p => !p.isAI && !p.archetype);
+                if (humanPlayersLeft) {
+                    state.phase = 'select_p2';
+                    state.selectIndex = 0;
+                } else {
+                    startGame();
+                }
             } else {
-                state.players[1].tankType = selectedType;
+                state.players[1].archetype = selectedArchetype;
                 startGame();
             }
         }
@@ -1896,8 +2402,7 @@ function update(dt) {
     // Shop phase
     if (state.phase === 'shop') {
         handleShopInput();
-        input.endFrame();
-        return;
+        // DON'T return early - let nukes update during shop!
     }
 
     const player = getCurrentPlayer();
@@ -2006,6 +2511,19 @@ function update(dt) {
     // Update fire fields (Napalm)
     updateFields(dt);
 
+    // Update active nukes (fuse countdown)
+    updateNukes(dt);
+
+    // Update nuke shockwave effect
+    if (state.nukeShockwave) {
+        state.nukeShockwave.timer += dt;
+        const progress = state.nukeShockwave.timer / state.nukeShockwave.duration;
+        state.nukeShockwave.radius = state.nukeShockwave.maxRadius * progress;
+        if (state.nukeShockwave.timer >= state.nukeShockwave.duration) {
+            state.nukeShockwave = null;
+        }
+    }
+
     // Update lightning arc display timer
     if (state.lightningArc) {
         state.lightningArc.timer -= dt;
@@ -2067,12 +2585,206 @@ function updateFields(dt) {
                     if (p !== field.firedByPlayer) {
                         state.players[field.firedByPlayer].coins += KILL_BONUS;
                     }
-                    particles.explosion(player.x, player.y, 80, player.color, 80);
+                    triggerDeathExplosion(player, false);
                     audio.playKill();
                 }
             }
         }
     }
+}
+
+/**
+ * Update active nukes - tick fuse timers and trigger cinematic explosions
+ */
+function updateNukes(dt) {
+    for (let i = state.nukes.length - 1; i >= 0; i--) {
+        const nuke = state.nukes[i];
+
+        // Decrement fuse timer
+        nuke.fuseTimer -= dt;
+
+        // Pulsing warning effect while counting down
+        if (Math.random() < 0.4) {
+            const pulseIntensity = 1 - (nuke.fuseTimer / 3);  // Gets stronger as timer decreases
+            particles.sparks(
+                nuke.x + (Math.random() - 0.5) * 30,
+                nuke.y - Math.random() * 20,
+                Math.floor(5 + pulseIntensity * 10),
+                Math.random() < 0.5 ? '#ffff00' : '#ff8800'
+            );
+        }
+
+        // Screen shake builds as fuse runs down
+        if (nuke.fuseTimer < 1.0 && Math.random() < 0.3) {
+            renderer.addScreenShake(3 + (1 - nuke.fuseTimer) * 5);
+        }
+
+        // DETONATE when timer reaches zero
+        if (nuke.fuseTimer <= 0) {
+            triggerCinematicNukeExplosion(nuke);
+            state.nukes.splice(i, 1);
+        }
+    }
+}
+
+/**
+ * Trigger a cinematic multi-stage nuke explosion - THE BIG ONE
+ */
+function triggerCinematicNukeExplosion(nuke) {
+    const weapon = WEAPONS[nuke.weaponKey];
+    if (!weapon) return;
+
+    // Apply buffs to blast radius and damage
+    const blastBonus = nuke.buffedBlastBonus || 0;
+    const effectiveBlastRadius = weapon.blastRadius + blastBonus;
+    const damageMultiplier = nuke.buffedDamageMultiplier || 1;
+    const effectiveDamage = weapon.damage * damageMultiplier;
+
+    // === STAGE 1: BLINDING WHITE FLASH ===
+    renderer.flash('#ffffff', 1.0);  // FULL white flash
+    renderer.addScreenShake(80);     // Massive shake
+    audio.playExplosion(4.0);        // VERY loud boom
+
+    // Huge white core - the initial detonation point
+    particles.explosion(nuke.x, nuke.y, 300, '#ffffff', effectiveBlastRadius * 0.4);
+    particles.sparks(nuke.x, nuke.y, 100, '#ffffff');
+
+    // === STAGE 2: EXPANDING FIREBALL (multiple layers) ===
+    // Inner white-hot core
+    particles.explosion(nuke.x, nuke.y, 250, '#ffffaa', effectiveBlastRadius * 0.5);
+    // Yellow ring
+    particles.explosion(nuke.x, nuke.y, 350, '#ffff00', effectiveBlastRadius * 0.7);
+    // Orange ring
+    particles.explosion(nuke.x, nuke.y, 300, '#ffaa00', effectiveBlastRadius * 0.85);
+    // Red outer ring
+    particles.explosion(nuke.x, nuke.y, 200, '#ff4400', effectiveBlastRadius);
+    // Dark smoke outer edge
+    particles.explosion(nuke.x, nuke.y, 150, '#ff2200', effectiveBlastRadius * 1.1);
+
+    // === STAGE 3: MASSIVE SHOCKWAVE ===
+    state.nukeShockwave = {
+        x: nuke.x,
+        y: nuke.y,
+        radius: 0,
+        maxRadius: effectiveBlastRadius * 2.0,  // Bigger shockwave
+        timer: 0,
+        duration: 1.2  // Slower, more dramatic expansion
+    };
+
+    // === STAGE 4: RADIAL SECONDARY EXPLOSIONS ===
+    // Multiple rings of secondary blasts
+    for (let ring = 0; ring < 3; ring++) {
+        const ringDelay = ring * 80;
+        const ringDist = effectiveBlastRadius * (0.3 + ring * 0.25);
+        const burstCount = 6 + ring * 2;
+
+        setTimeout(() => {
+            for (let burst = 0; burst < burstCount; burst++) {
+                const angle = (burst / burstCount) * Math.PI * 2 + ring * 0.3;
+                const bx = nuke.x + Math.cos(angle) * ringDist;
+                const by = nuke.y + Math.sin(angle) * ringDist;
+                particles.explosion(bx, by, 60, '#ff6600', effectiveBlastRadius * 0.25);
+                particles.sparks(bx, by, 40, '#ffff00');
+            }
+            renderer.addScreenShake(30 - ring * 8);
+            audio.playExplosion(2.0 - ring * 0.5);
+        }, ringDelay);
+    }
+
+    // === STAGE 5: DEBRIS FOUNTAIN ===
+    // Upward debris spray
+    for (let i = 0; i < 50; i++) {
+        const angle = -Math.PI/2 + (Math.random() - 0.5) * Math.PI * 0.8;
+        const speed = 5 + Math.random() * 10;
+        particles.sparks(
+            nuke.x + (Math.random() - 0.5) * 40,
+            nuke.y,
+            3,
+            Math.random() < 0.3 ? '#ffffff' : (Math.random() < 0.5 ? '#ffff00' : '#ff8800')
+        );
+    }
+
+    // === DAMAGE CALCULATION ===
+    const firingPlayer = state.players[nuke.firedByPlayer];
+    let totalEnemyDamage = 0;
+
+    for (let i = 0; i < state.players.length; i++) {
+        const player = state.players[i];
+        if (player.health <= 0) continue;
+
+        const dist = distance(nuke.x, nuke.y, player.x, player.y);
+        if (dist < effectiveBlastRadius) {
+            // Nuke has LESS falloff - devastating even at edge
+            const falloff = 0.4 + 0.6 * (1 - dist / effectiveBlastRadius);
+            let damage = effectiveDamage * falloff;
+
+            // Apply shield reduction if player has one
+            if (player.shield) {
+                damage *= (1 - player.shield);
+            }
+
+            player.health = Math.max(0, player.health - damage);
+
+            // Track enemy damage for coins
+            if (i !== nuke.firedByPlayer) {
+                totalEnemyDamage += damage;
+            }
+
+            // INTENSE visual feedback on hit players
+            particles.explosion(player.x, player.y, 60, '#ffffff', 30);
+            particles.sparks(player.x, player.y, 80, '#ffff00');
+            particles.sparks(player.x, player.y, 50, '#ffffff');
+
+            // Check for kill
+            if (player.health <= 0) {
+                if (i !== nuke.firedByPlayer && firingPlayer) {
+                    firingPlayer.coins += KILL_BONUS;
+                }
+                triggerDeathExplosion(player, false);
+                audio.playKill();
+            }
+        }
+    }
+
+    // Award coins for damage
+    if (totalEnemyDamage > 0 && firingPlayer) {
+        firingPlayer.coins += Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
+    }
+
+    // === TERRAIN DESTRUCTION ===
+    terrain.destroy(nuke.x, nuke.y, effectiveBlastRadius);
+
+    // === EXTENDED LINGERING EFFECTS ===
+    // Longer slow-mo for dramatic effect
+    state.slowMoUntil = performance.now() + 800;
+
+    // Multiple delayed aftershocks
+    setTimeout(() => {
+        renderer.flash('#ffaa00', 0.6);
+        renderer.addScreenShake(50);
+        particles.explosion(nuke.x, nuke.y, 100, '#ff4400', effectiveBlastRadius * 0.5);
+    }, 200);
+
+    setTimeout(() => {
+        renderer.flash('#ff6600', 0.4);
+        renderer.addScreenShake(35);
+        audio.playExplosion(2.5);
+    }, 400);
+
+    setTimeout(() => {
+        renderer.addScreenShake(25);
+        audio.playExplosion(1.8);
+    }, 600);
+
+    setTimeout(() => {
+        renderer.addScreenShake(15);
+        audio.playExplosion(1.2);
+    }, 800);
+
+    // Final rumble
+    setTimeout(() => {
+        renderer.addScreenShake(10);
+    }, 1000);
 }
 
 function updateClusterBomblet(proj, dt) {
@@ -2100,10 +2812,10 @@ function updateClusterBomblet(proj, dt) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // Bounce off walls
-    if (proj.x < proj.radius || proj.x > CANVAS_WIDTH - proj.radius) {
+    // Bounce off walls (use virtual dimensions)
+    if (proj.x < proj.radius || proj.x > VIRTUAL_WIDTH - proj.radius) {
         proj.vx = -proj.vx * 0.9;
-        proj.x = clamp(proj.x, proj.radius, CANVAS_WIDTH - proj.radius);
+        proj.x = clamp(proj.x, proj.radius, VIRTUAL_WIDTH - proj.radius);
         proj.bounces++;
         particles.sparks(proj.x, proj.y, 8, COLORS.yellow);
     }
@@ -2116,10 +2828,10 @@ function updateClusterBomblet(proj, dt) {
         particles.sparks(proj.x, proj.y, 8, COLORS.yellow);
     }
 
-    // Check termination
+    // Check termination (use virtual dimensions)
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
-        proj.y > CANVAS_HEIGHT + 100 ||
+        proj.y > VIRTUAL_HEIGHT + 100 ||
         proj.bounces >= proj.maxBounces) {
         onExplode(proj);
     }
@@ -2155,14 +2867,14 @@ function updateAnomalyProjectile(dt) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // Bounce off walls
+    // Bounce off walls (use virtual dimensions)
     if (proj.x < proj.radius) {
         proj.x = proj.radius;
         proj.vx = -proj.vx * 0.9;
         onAnomalyBounce(proj);
     }
-    if (proj.x > CANVAS_WIDTH - proj.radius) {
-        proj.x = CANVAS_WIDTH - proj.radius;
+    if (proj.x > VIRTUAL_WIDTH - proj.radius) {
+        proj.x = VIRTUAL_WIDTH - proj.radius;
         proj.vx = -proj.vx * 0.9;
         onAnomalyBounce(proj);
     }
@@ -2174,10 +2886,10 @@ function updateAnomalyProjectile(dt) {
         onAnomalyBounce(proj);
     }
 
-    // Check termination: terrain, void, or out of bounds
+    // Check termination: terrain, void, or out of bounds (use virtual dimensions)
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
-        proj.y > CANVAS_HEIGHT + 100) {
+        proj.y > VIRTUAL_HEIGHT + 100) {
         onAnomalyExplode(proj);
     }
 }
@@ -2269,21 +2981,30 @@ function render() {
         return;
     }
 
-    // Apply camera zoom (punch-in effect on hits)
+    // ========================================================================
+    // WORLD RENDERING (scaled to fit virtual world in canvas)
+    // ========================================================================
+    const ctx = renderer.ctx;
+    ctx.save();
+
+    // Apply 0.5x world scale to fit 3840x1800 virtual world into 1920x900 canvas
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+
+    // Apply camera zoom (punch-in effect on hits) - works in virtual coordinates
     if (state.cameraZoom > 0) {
         const zoomScale = 1 + state.cameraZoom;
-        // Zoom toward the hit position or center of screen
-        const focusX = state.lastHitPos ? state.lastHitPos.x : CANVAS_WIDTH / 2;
-        const focusY = state.lastHitPos ? state.lastHitPos.y : CANVAS_HEIGHT / 2;
+        // Zoom toward the hit position or center of virtual world
+        const focusX = state.lastHitPos ? state.lastHitPos.x : VIRTUAL_WIDTH / 2;
+        const focusY = state.lastHitPos ? state.lastHitPos.y : VIRTUAL_HEIGHT / 2;
 
-        renderer.ctx.save();
-        renderer.ctx.translate(focusX, focusY);
-        renderer.ctx.scale(zoomScale, zoomScale);
-        renderer.ctx.translate(-focusX, -focusY);
+        ctx.save();
+        ctx.translate(focusX, focusY);
+        ctx.scale(zoomScale, zoomScale);
+        ctx.translate(-focusX, -focusY);
     }
 
-    // Background grid
-    renderer.drawGrid(50, '#0a0a15');
+    // Background grid (larger spacing for virtual world)
+    renderer.drawGrid(100, '#0a0a15');
 
     // Draw ambient background (far clouds, dust particles)
     const ambient = getAmbient();
@@ -2307,15 +3028,30 @@ function render() {
         drawFireField(field);
     }
 
-    // Draw both tanks
+    // Draw active nukes (with countdown)
+    for (const nuke of state.nukes) {
+        drawNuke(nuke);
+    }
+
+    // Draw nuke shockwave
+    if (state.nukeShockwave) {
+        drawNukeShockwave(state.nukeShockwave);
+    }
+
+    // Draw all tanks
     for (let i = 0; i < state.players.length; i++) {
         const player = state.players[i];
         const isActive = i === state.currentPlayer && state.phase === 'aiming';
-        const tankType = TANK_TYPES[player.tankType];
-        const shape = tankType ? tankType.shape : 6;
 
-        // Tank body (shape based on tank type)
-        renderer.drawRegularPolygon(player.x, player.y, TANK_RADIUS, shape, 0, player.color, true);
+        // Get archetype visuals (fallback to defaults)
+        const archetype = player.archetype ? TANK_ARCHETYPES[player.archetype] : null;
+        const shape = archetype ? archetype.chassisShape : 6;
+        const tankColor = archetype ? archetype.palette.base : player.color;
+        const turretLen = archetype ? archetype.turretLength : 40;
+        const turretWid = archetype ? archetype.turretWidth : 6;
+
+        // Tank body (shape based on archetype)
+        renderer.drawRegularPolygon(player.x, player.y, TANK_RADIUS, shape, 0, tankColor, true);
 
         // Shield indicator (glowing ring around tank when shielded)
         if (player.shield > 0) {
@@ -2340,12 +3076,12 @@ function render() {
             ctx.restore();
         }
 
-        // Turret
-        const turretLength = 40;
+        // Turret (uses archetype-specific length and width)
+        const turretLength = turretLen;
         const angleRad = degToRad(180 - player.angle);
         const turretX = player.x + Math.cos(angleRad) * turretLength;
         const turretY = player.y - 20 - Math.sin(angleRad) * turretLength;
-        renderer.drawLine(player.x, player.y - 20, turretX, turretY, player.color, 4, true);
+        renderer.drawLine(player.x, player.y - 20, turretX, turretY, tankColor, turretWid, true);
 
         // Power meter (only for active player when charging)
         if (isActive && (player.charging || player.power > 0)) {
@@ -2359,9 +3095,10 @@ function render() {
             renderer.drawRect(meterX + 1, meterY + 1, (meterWidth - 2) * player.power, meterHeight - 2, fillColor, true);
 
             // Debug velocity display
-            if (DEBUG_SHOW_VELOCITY && tankType) {
+            const weapon = player.weapon ? WEAPONS[player.weapon] : null;
+            if (DEBUG_SHOW_VELOCITY && weapon) {
                 const effectivePower = chargeToPower(player.power);
-                const velocity = effectivePower * MAX_POWER * tankType.projectileSpeed;
+                const velocity = effectivePower * MAX_POWER * weapon.projectileSpeed;
                 renderer.drawText(`v=${velocity.toFixed(1)}`, player.x, meterY - 12, '#ffff00', 10, 'center', false);
             }
         }
@@ -2379,9 +3116,9 @@ function render() {
         const healthColor = healthPercent > 0.5 ? COLORS.green : (healthPercent > 0.25 ? COLORS.orange : COLORS.magenta);
         renderer.drawRect(healthBarX + 1, healthBarY + 1, (healthBarWidth - 2) * healthPercent, healthBarHeight - 2, healthColor, true);
 
-        // Tank type label
-        if (tankType) {
-            renderer.drawText(tankType.name, player.x, player.y + 45, player.color, 10, 'center', false);
+        // Archetype label
+        if (archetype) {
+            renderer.drawText(archetype.name, player.x, player.y + 45, tankColor, 10, 'center', false);
         }
     }
 
@@ -2421,12 +3158,17 @@ function render() {
         ambient.triggerLightning(renderer);
     }
 
-    // Restore from camera zoom before HUD
+    // Restore from camera zoom
     if (state.cameraZoom > 0) {
-        renderer.ctx.restore();
+        ctx.restore();
     }
 
-    // HUD
+    // Restore from world scale - HUD rendered at 1:1
+    ctx.restore();
+
+    // ========================================================================
+    // HUD RENDERING (at 1:1 scale, pinned to screen)
+    // ========================================================================
     renderer.drawText('VOID ARTILLERY', 20, 30, COLORS.cyan, 20, 'left', true);
 
     // Turn indicator
@@ -2442,19 +3184,34 @@ function render() {
     renderer.drawText(`Round ${getCurrentRound()}`, CANVAS_WIDTH - 20, 30, COLORS.white, 14, 'right', false);
     renderer.drawText(`FPS: ${fpsCounter.fps}`, CANVAS_WIDTH - 20, 50, fpsCounter.fps < 50 ? COLORS.magenta : '#666666', 10, 'right', false);
 
-    // Player stats with weapon and coins
-    const p1Weapon = state.players[0].weapon ? WEAPONS[state.players[0].weapon]?.name : '';
-    const p2Weapon = state.players[1].weapon ? WEAPONS[state.players[1].weapon]?.name : '';
-    renderer.drawText(`P1: ${Math.round(state.players[0].health)}% [${p1Weapon}]`, 20, 60, state.players[0].color, 14, 'left', false);
-    renderer.drawText(`P2: ${Math.round(state.players[1].health)}% [${p2Weapon}]`, 20, 80, state.players[1].color, 14, 'left', false);
+    // Player stats - compact horizontal strip for 5-6 players
+    const statsStartX = 20;
+    const statsY = 60;
+    const playerSpacing = 220;  // Wider for archetype info
 
-    // Coin display
-    renderer.drawText(`${state.players[0].coins}`, 180, 60, COLORS.yellow, 12, 'left', false);
-    renderer.drawText(`${state.players[1].coins}`, 180, 80, COLORS.yellow, 12, 'left', false);
+    for (let i = 0; i < state.players.length; i++) {
+        const p = state.players[i];
+        const x = statsStartX + i * playerSpacing;
+        const weaponName = p.weapon ? WEAPONS[p.weapon]?.name : '';
+        const archetype = p.archetype ? TANK_ARCHETYPES[p.archetype] : null;
+        const isDead = p.health <= 0;
+        const isActive = i === state.currentPlayer && state.phase === 'aiming';
 
-    // Draw active UFO buffs for each player
-    drawPlayerBuffs(0, 200, 60);
-    drawPlayerBuffs(1, 200, 80);
+        // Player label with health and archetype
+        const labelColor = isDead ? '#444444' : (archetype ? archetype.palette.base : p.color);
+        const archetypeName = archetype ? archetype.name : '';
+        const label = `P${i + 1} ${archetypeName}: ${isDead ? 'X' : Math.round(p.health) + '%'}`;
+        renderer.drawText(label, x, statsY, labelColor, isActive ? 14 : 12, 'left', isActive);
+
+        // Weapon, coins, and shield (smaller, below)
+        if (!isDead) {
+            let statusText = `[${weaponName}] $${p.coins}`;
+            if (p.shield > 0) {
+                statusText += ` 🛡${Math.round(p.shield * 100)}%`;
+            }
+            renderer.drawText(statusText, x, statsY + 15, '#888888', 10, 'left', false);
+        }
+    }
 
     // Event notification (glitch events)
     if (state.activeEvent && state.activeEvent.timer > 0) {
@@ -2728,6 +3485,104 @@ function drawFireField(field) {
 }
 
 /**
+ * Draw an active nuke with countdown timer
+ */
+function drawNuke(nuke) {
+    const ctx = renderer.ctx;
+    const timeLeft = Math.ceil(nuke.fuseTimer);
+    const pulsePhase = (nuke.fuseTimer % 1);  // 0-1 within each second
+    const urgency = 1 - (nuke.fuseTimer / 3);  // Gets more urgent as timer decreases
+
+    // Pulsing glow intensity
+    const pulseIntensity = 0.5 + 0.5 * Math.sin(pulsePhase * Math.PI * 2 * 3);  // Faster pulse as time runs out
+    const glowSize = 30 + urgency * 40 + pulseIntensity * 20;
+
+    // Draw outer danger glow
+    renderer.setGlow('#ff0000', glowSize);
+    ctx.fillStyle = `rgba(255, ${Math.floor(100 - urgency * 100)}, 0, ${0.3 + pulseIntensity * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(nuke.x, nuke.y, nuke.radius * 2 + urgency * 15, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Draw nuke body
+    renderer.setGlow('#ffff00', 20);
+    ctx.fillStyle = '#ffff00';
+    ctx.beginPath();
+    ctx.arc(nuke.x, nuke.y, nuke.radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Inner core
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(nuke.x, nuke.y, nuke.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    renderer.clearGlow();
+
+    // Draw countdown number
+    ctx.save();
+    ctx.font = `bold ${32 + urgency * 16}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Text glow
+    renderer.setGlow('#ff0000', 15);
+    ctx.fillStyle = urgency > 0.66 ? '#ff0000' : (urgency > 0.33 ? '#ffaa00' : '#ffff00');
+    ctx.fillText(timeLeft.toString(), nuke.x, nuke.y - 50);
+    renderer.clearGlow();
+    ctx.restore();
+
+    // Warning rings expanding outward
+    if (urgency > 0.5) {
+        const ringPhase = (performance.now() / 500) % 1;
+        ctx.strokeStyle = `rgba(255, 0, 0, ${0.5 * (1 - ringPhase)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(nuke.x, nuke.y, nuke.radius * 2 + ringPhase * 50, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+}
+
+/**
+ * Draw expanding nuke shockwave
+ */
+function drawNukeShockwave(shockwave) {
+    const ctx = renderer.ctx;
+    const progress = shockwave.timer / shockwave.duration;
+    const alpha = 1 - progress;  // Fade out as it expands
+
+    // Multiple shockwave rings for thickness
+    for (let ring = 0; ring < 3; ring++) {
+        const ringOffset = ring * 15;
+        const ringRadius = shockwave.radius - ringOffset;
+        if (ringRadius < 0) continue;
+
+        const ringAlpha = alpha * (1 - ring * 0.3);
+        const lineWidth = 8 - ring * 2;
+
+        // Outer glow
+        renderer.setGlow('#ffaa00', 30 * ringAlpha);
+        ctx.strokeStyle = `rgba(255, ${150 + ring * 50}, 0, ${ringAlpha})`;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.arc(shockwave.x, shockwave.y, ringRadius, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Inner white flash ring
+    if (progress < 0.3) {
+        const flashAlpha = 1 - (progress / 0.3);
+        renderer.setGlow('#ffffff', 40 * flashAlpha);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+        ctx.lineWidth = 12;
+        ctx.beginPath();
+        ctx.arc(shockwave.x, shockwave.y, shockwave.radius * 0.5, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    renderer.clearGlow();
+}
+
+/**
  * Draw a lightning arc (Chain Lightning)
  */
 function drawLightningArc(arc) {
@@ -2782,8 +3637,14 @@ function drawLightningArc(arc) {
 }
 
 function renderTitle() {
+    const ctx = renderer.ctx;
+
+    // World elements at scaled coordinates
+    ctx.save();
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+
     // Background with subtle animation
-    renderer.drawGrid(50, '#0a0a15');
+    renderer.drawGrid(100, '#0a0a15');
 
     // Draw ambient background (far clouds, dust)
     const ambient = getAmbient();
@@ -2792,7 +3653,7 @@ function renderTitle() {
     }
 
     // Animated void at bottom
-    const voidY = CANVAS_HEIGHT - 100 + Math.sin(state.time * 2) * 20;
+    const voidY = VIRTUAL_HEIGHT - 100 + Math.sin(state.time * 2) * 20;
     renderer.drawVoid(voidY);
 
     // Draw ambient foreground (UFOs, weather)
@@ -2801,6 +3662,9 @@ function renderTitle() {
         ambient.triggerLightning(renderer);
     }
 
+    ctx.restore();
+
+    // UI elements at 1:1 scale
     // Main title with glow
     renderer.drawText('VOID', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 80, COLORS.magenta, 72, 'center', true);
     renderer.drawText('ARTILLERY', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, COLORS.cyan, 72, 'center', true);
@@ -2810,16 +3674,21 @@ function renderTitle() {
 
     // Animated prompt
     const alpha = 0.5 + Math.sin(state.time * 4) * 0.5;
-    renderer.ctx.globalAlpha = alpha;
+    ctx.globalAlpha = alpha;
     renderer.drawText('PRESS SPACE TO START', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 140, COLORS.white, 20, 'center', true);
-    renderer.ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1;
 
     // Credits
-    renderer.drawText('Game Off 2024 Jam Entry', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40, '#444444', 12, 'center', false);
+    renderer.drawText('Game Off 2026 Jam Entry', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40, '#444444', 12, 'center', false);
 }
 
 function renderModeSelect() {
-    renderer.drawGrid(50, '#0a0a15');
+    const ctx = renderer.ctx;
+
+    // World elements at scaled coordinates
+    ctx.save();
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+    renderer.drawGrid(100, '#0a0a15');
 
     // Draw ambient background
     const ambient = getAmbient();
@@ -2827,7 +3696,9 @@ function renderModeSelect() {
         ambient.drawBackground(renderer);
         ambient.drawForeground(renderer);
     }
+    ctx.restore();
 
+    // UI at 1:1 scale
     // Title
     renderer.drawText('VOID ARTILLERY', CANVAS_WIDTH / 2, 80, COLORS.cyan, 40, 'center', true);
     renderer.drawText('SELECT MODE', CANVAS_WIDTH / 2, 140, COLORS.white, 24, 'center', false);
@@ -2869,8 +3740,12 @@ function renderTankSelect() {
     const playerNum = isP1 ? 1 : 2;
     const playerColor = isP1 ? COLORS.cyan : COLORS.magenta;
 
-    // Background
-    renderer.drawGrid(50, '#0a0a15');
+    const ctx = renderer.ctx;
+
+    // World elements at scaled coordinates
+    ctx.save();
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+    renderer.drawGrid(100, '#0a0a15');
 
     // Draw ambient background
     const ambient = getAmbient();
@@ -2878,61 +3753,69 @@ function renderTankSelect() {
         ambient.drawBackground(renderer);
         ambient.drawForeground(renderer);
     }
+    ctx.restore();
 
+    // UI at 1:1 scale
     // Title
     renderer.drawText('VOID ARTILLERY', CANVAS_WIDTH / 2, 50, COLORS.cyan, 28, 'center', true);
     const subtitle = isAISelecting ? 'AI IS CHOOSING...' : `PLAYER ${playerNum} - SELECT YOUR TANK`;
     renderer.drawText(subtitle, CANVAS_WIDTH / 2, 90, playerColor, 20, 'center', true);
 
-    // Calculate adaptive layout based on number of tanks
+    // Calculate adaptive layout based on number of archetypes
     const headerHeight = 120;  // Space for title + subtitle
     const footerHeight = 50;   // Space for controls hint
     const availableHeight = CANVAS_HEIGHT - headerHeight - footerHeight;
-    const tankCount = TANK_TYPE_KEYS.length;
+    const archetypeCount = ARCHETYPE_KEYS.length;
 
-    // Calculate spacing to fit all tanks, with max cap for readability
-    const itemHeight = 80;  // Height of each selection box
-    const maxSpacing = 95;  // Max spacing between items
-    const minSpacing = 70;  // Min spacing to prevent crowding
-    const calculatedSpacing = Math.min(maxSpacing, Math.max(minSpacing, availableHeight / tankCount));
+    // Calculate spacing to fit all archetypes
+    const maxSpacing = 90;
+    const minSpacing = 65;
+    const calculatedSpacing = Math.min(maxSpacing, Math.max(minSpacing, availableHeight / archetypeCount));
 
     // Center the list vertically in available space
-    const totalListHeight = (tankCount - 1) * calculatedSpacing;
+    const totalListHeight = (archetypeCount - 1) * calculatedSpacing;
     const startY = headerHeight + (availableHeight - totalListHeight) / 2;
 
-    for (let i = 0; i < tankCount; i++) {
-        const key = TANK_TYPE_KEYS[i];
-        const tankType = TANK_TYPES[key];
+    for (let i = 0; i < archetypeCount; i++) {
+        const key = ARCHETYPE_KEYS[i];
+        const archetype = TANK_ARCHETYPES[key];
         const y = startY + i * calculatedSpacing;
         const isSelected = i === state.selectIndex;
 
-        // Selection highlight box (compact)
+        // Selection highlight box with archetype color
+        const boxColor = isSelected ? archetype.palette.glow : '#333333';
         if (isSelected) {
-            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 280, y - 32, 560, 64, playerColor, 2, true);
+            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 320, y - 30, 640, 60, boxColor, 2, true);
         }
 
-        // Tank preview shape (moved left for more text space)
-        const previewX = CANVAS_WIDTH / 2 - 220;
-        const previewColor = isSelected ? playerColor : '#555555';
-        const previewSize = isSelected ? 28 : 24;
-        renderer.drawRegularPolygon(previewX, y, previewSize, tankType.shape, 0, previewColor, true);
+        // Tank preview shape with unique archetype visuals
+        const previewX = CANVAS_WIDTH / 2 - 260;
+        const previewColor = isSelected ? archetype.palette.base : '#444444';
+        const previewSize = isSelected ? 26 : 22;
+        renderer.drawRegularPolygon(previewX, y, previewSize, archetype.chassisShape, 0, previewColor, isSelected);
 
-        // Tank name (moved right to avoid preview overlap)
-        const textColor = isSelected ? COLORS.white : '#777777';
-        const nameX = CANVAS_WIDTH / 2 - 150;
-        renderer.drawText(tankType.name, nameX, y - 8, textColor, isSelected ? 20 : 18, 'left', isSelected);
+        // Draw turret/barrel
+        const turretAngle = Math.PI / 4;  // 45 degrees
+        const turretLength = archetype.turretLength * (isSelected ? 0.8 : 0.6);
+        const turretEndX = previewX + Math.cos(turretAngle) * turretLength;
+        const turretEndY = y - Math.sin(turretAngle) * turretLength;
+        renderer.drawLine(previewX, y, turretEndX, turretEndY, previewColor, archetype.turretWidth * (isSelected ? 1 : 0.8), isSelected);
 
-        // Tank description (below name, smaller font)
-        const descColor = isSelected ? '#aaaaaa' : '#555555';
-        renderer.drawText(tankType.description, nameX, y + 14, descColor, 11, 'left', false);
+        // Archetype name
+        const textColor = isSelected ? COLORS.white : '#666666';
+        const nameX = CANVAS_WIDTH / 2 - 180;
+        renderer.drawText(archetype.name, nameX, y - 10, textColor, isSelected ? 18 : 16, 'left', isSelected);
 
-        // Stats (compact, right-aligned)
-        const statsX = CANVAS_WIDTH / 2 + 265;
-        const statsColor = isSelected ? '#999999' : '#555555';
-        const statsFontSize = 10;
-        renderer.drawText(`DMG ${tankType.damage}`, statsX, y - 12, statsColor, statsFontSize, 'right', false);
-        renderer.drawText(`BLS ${tankType.blastRadius}`, statsX, y + 2, statsColor, statsFontSize, 'right', false);
-        renderer.drawText(`BNC ${tankType.bounces}`, statsX, y + 16, statsColor, statsFontSize, 'right', false);
+        // Archetype description
+        const descColor = isSelected ? '#888888' : '#444444';
+        renderer.drawText(archetype.description, nameX, y + 8, descColor, 11, 'left', false);
+
+        // Ability name and description (right side)
+        const abilityX = CANVAS_WIDTH / 2 + 50;
+        const abilityColor = isSelected ? archetype.palette.glow : '#555555';
+        renderer.drawText(archetype.abilityName, abilityX, y - 10, abilityColor, isSelected ? 14 : 12, 'left', isSelected);
+        const abilityDescColor = isSelected ? '#aaaaaa' : '#444444';
+        renderer.drawText(archetype.abilityDesc, abilityX, y + 8, abilityDescColor, 10, 'left', false);
     }
 
     // Controls hint (at bottom with padding)
@@ -2940,8 +3823,12 @@ function renderTankSelect() {
 }
 
 function renderShop() {
-    // Background
-    renderer.drawGrid(50, '#0a0a15');
+    const ctx = renderer.ctx;
+
+    // World elements at scaled coordinates
+    ctx.save();
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+    renderer.drawGrid(100, '#0a0a15');
 
     // Draw ambient background
     const ambient = getAmbient();
@@ -2949,10 +3836,11 @@ function renderShop() {
         ambient.drawBackground(renderer);
         ambient.drawForeground(renderer);
     }
+    ctx.restore();
 
+    // UI at 1:1 scale
     const round = getCurrentRound();
-    const p1 = state.players[0];
-    const p2 = state.players[1];
+    const p1 = state.players[0];  // Human player for shop input
 
     // Header
     renderer.setGlow(COLORS.yellow, 15);
@@ -2960,28 +3848,25 @@ function renderShop() {
     renderer.clearGlow();
     renderer.drawText(`ROUND ${round}`, CANVAS_WIDTH / 2, 85, '#888888', 16, 'center', false);
 
-    // Player info panels
-    // P1 (left side)
-    renderer.drawText('P1', 100, 50, COLORS.cyan, 20, 'center', true);
-    renderer.drawText(`${p1.coins} coins`, 100, 75, COLORS.yellow, 14, 'center', false);
-    const p1WeaponName = WEAPONS[p1.weapon]?.name || 'None';
-    renderer.drawText(`[${p1WeaponName}]`, 100, 95, '#888888', 11, 'center', false);
-    if (state.shopReady[0]) {
-        renderer.drawText('READY', 100, 120, COLORS.green, 14, 'center', true);
-    }
+    // Player info strip across top - compact for multiple players
+    const playerSpacing = Math.min(150, (CANVAS_WIDTH - 100) / state.players.length);
+    for (let i = 0; i < state.players.length; i++) {
+        const p = state.players[i];
+        const x = 80 + i * playerSpacing;
+        const label = p.isAI ? `AI${i + 1}` : `P${i + 1}`;
+        const weaponName = WEAPONS[p.weapon]?.name || 'None';
+        const isDead = p.health <= 0;
 
-    // P2 (right side)
-    renderer.drawText(p2.isAI ? 'AI' : 'P2', CANVAS_WIDTH - 100, 50, COLORS.magenta, 20, 'center', true);
-    renderer.drawText(`${p2.coins} coins`, CANVAS_WIDTH - 100, 75, COLORS.yellow, 14, 'center', false);
-    const p2WeaponName = WEAPONS[p2.weapon]?.name || 'None';
-    renderer.drawText(`[${p2WeaponName}]`, CANVAS_WIDTH - 100, 95, '#888888', 11, 'center', false);
-    if (state.shopReady[1]) {
-        renderer.drawText('READY', CANVAS_WIDTH - 100, 120, COLORS.green, 14, 'center', true);
+        renderer.drawText(label, x, 50, isDead ? '#444' : p.color, 14, 'center', !isDead);
+        renderer.drawText(`${p.coins}`, x, 68, isDead ? '#444' : COLORS.yellow, 11, 'center', false);
+        if (state.shopReady[i]) {
+            renderer.drawText('✓', x + 30, 58, COLORS.green, 14, 'left', false);
+        }
     }
 
     // Weapon list
-    const startY = 150;
-    const spacing = 70;
+    const startY = 130;
+    const spacing = 65;
     const offerings = state.shopOfferings;
     const selection = state.shopSelections[0];
 
@@ -3102,11 +3987,16 @@ function init() {
     renderer = new Renderer(canvas);
     renderer.resize(CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Initialize ambient world systems (clouds, UFOs, weather, particles)
-    initAmbient(CANVAS_WIDTH, CANVAS_HEIGHT);
+    // Initialize ambient world systems (clouds, UFOs, weather) - use virtual dimensions
+    initAmbient(VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
 
-    // Generate terrain for title screen background
-    terrain.generate(CANVAS_WIDTH);
+    // Generate terrain for title screen background (use virtual dimensions)
+    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, getSpawnPositions(NUM_PLAYERS));
+
+    // Position initial players on terrain (for title screen preview)
+    state.players.forEach(p => {
+        p.y = terrain.getHeightAt(p.x) - TANK_RADIUS;
+    });
 
     // Start at title screen
     state.phase = 'title';
