@@ -259,33 +259,38 @@ export class Renderer {
     // Void (rising danger zone)
     // ========================================================================
     
-    drawVoid(voidY) {
+    drawVoid(voidY, virtualWidth = null, virtualHeight = null) {
+        // Use virtual dimensions if provided (for scaled world rendering)
+        // Otherwise fall back to canvas dimensions
+        const drawWidth = virtualWidth || this.width * 2;  // Default to 2x canvas for scaled contexts
+        const drawHeight = virtualHeight || this.height * 2;
+
         // Gradient from purple to black
         const gradient = this.ctx.createLinearGradient(0, voidY - 50, 0, voidY + 100);
         gradient.addColorStop(0, 'transparent');
         gradient.addColorStop(0.3, COLORS.voidPurple);
         gradient.addColorStop(1, '#0a0010');
-        
+
         this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(0, voidY - 50, this.width, this.height - voidY + 50);
-        
+        this.ctx.fillRect(0, voidY - 50, drawWidth, drawHeight - voidY + 50);
+
         // Glowing edge line
         this.setGlow(COLORS.magenta, 30);
         this.ctx.beginPath();
         this.ctx.moveTo(0, voidY);
-        this.ctx.lineTo(this.width, voidY);
+        this.ctx.lineTo(drawWidth, voidY);
         this.ctx.strokeStyle = COLORS.magenta;
         this.ctx.lineWidth = 2;
         this.ctx.stroke();
         this.clearGlow();
-        
+
         // Animated glitch effect on edge (subtle)
         const time = Date.now() / 100;
         for (let i = 0; i < 5; i++) {
-            const glitchX = Math.random() * this.width;
+            const glitchX = Math.random() * drawWidth;
             const glitchW = Math.random() * 50 + 10;
             const glitchOffset = Math.sin(time + i) * 3;
-            
+
             this.ctx.fillStyle = COLORS.magenta;
             this.ctx.globalAlpha = 0.3;
             this.ctx.fillRect(glitchX, voidY + glitchOffset - 2, glitchW, 4);

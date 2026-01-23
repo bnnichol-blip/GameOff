@@ -36,7 +36,7 @@ const WORLD_RIGHT = VIRTUAL_WIDTH - WALL_MARGIN;
 const WORLD_TOP = WALL_MARGIN;
 const WORLD_BOTTOM = VIRTUAL_HEIGHT;
 
-const NUM_PLAYERS = 3;  // Reduced for smaller world
+const NUM_PLAYERS = 4;  // Support up to 4 players
 const DEFAULT_GRAVITY = 0.15;   // Lower gravity for longer flight paths in larger world
 const MAX_POWER = 28;           // Adjusted for 2x world size
 const CHARGE_RATE = 0.012;      // Slower charge for more precise timing (~3 sec for full)
@@ -125,7 +125,7 @@ function getSpawnPositions(numPlayers) {
 /**
  * Create initial player objects
  */
-function createPlayers(numPlayers, isAIGame = false) {
+function createPlayers(numPlayers, humanCount = numPlayers) {
     const spawnXs = getSpawnPositions(numPlayers);
     const players = [];
     for (let i = 0; i < numPlayers; i++) {
@@ -141,7 +141,7 @@ function createPlayers(numPlayers, isAIGame = false) {
             color: PLAYER_COLORS[i % PLAYER_COLORS.length],
             archetype: null,      // Tank archetype (ability)
             tankType: null,       // Legacy - kept for compatibility
-            isAI: isAIGame && i > 0,  // In AI mode, all except P1 are AI
+            isAI: i >= humanCount,  // Players beyond human count are AI
             shield: 0,
             coins: STARTING_COINS,
             weapon: 'MORTAR',
@@ -464,18 +464,25 @@ const WEAPONS = {
         coverageWidth: 400
     },
     // Dying Light is granted by desperation beacon, not purchasable
+    // GIGA OP: Double damage, massive blast, void rise, multi-explosion, screen shockwave
     DYING_LIGHT: {
         name: 'Dying Light',
-        description: 'Final strike from dying ship. Use within 3 turns!',
+        description: 'ULTIMATE WEAPON. Devastates everything.',
         cost: 0,
         tier: 'SPECIAL',
-        damage: 90,
-        blastRadius: 180,
-        bounces: 1,
-        projectileRadius: 12,
-        projectileSpeed: 1.0,
+        damage: 200,           // Massive base damage
+        blastRadius: 250,      // Huge blast radius
+        bounces: 2,            // Extra bounce for trick shots
+        projectileRadius: 16,  // Big glowing projectile
+        projectileSpeed: 1.2,  // Faster
         color: '#ffcc00',
-        behavior: 'dyingLight'
+        behavior: 'dyingLight',
+        // Special effects
+        voidRise: 80,          // Raises void on impact
+        shockwaveRadius: 500,  // Screen-wide shockwave
+        shockwaveDamage: 40,   // Shockwave damage
+        chainExplosions: 3,    // Number of follow-up explosions
+        terrainDevastation: 2.5 // Multiplier for terrain destruction
     }
 };
 
@@ -643,9 +650,12 @@ const state = {
     players: createPlayers(NUM_PLAYERS),
     currentPlayer: 0,
     turnCount: 0,
-    phase: 'title',  // 'title' | 'mode_select' | 'select_p1' | 'select_p2' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
+    phase: 'title',  // 'title' | 'mode_select' | 'archetype_select' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
     selectIndex: 0,  // Current selection in menus
-    gameMode: null,  // '1p' | '2p'
+    gameMode: null,  // '1p' | 'mp' (multiplayer)
+    humanPlayerCount: 2,      // Number of human players (1-4)
+    selectingPlayerIndex: 0,  // Which player is currently selecting archetype (0-3)
+    shoppingPlayerIndex: 0,   // Which human player is currently shopping
     projectile: null,
     projectiles: [],  // For cluster bombs (multiple projectiles)
     // Shop state
@@ -920,13 +930,14 @@ function resetToTitle() {
     state.phase = 'title';
     state.gameMode = null;
     state.selectIndex = 0;
+    state.humanPlayerCount = 2;  // Reset to default
 }
 
 function resetGame() {
-    const isAIGame = state.gameMode === '1p';
+    const humanCount = state.humanPlayerCount || 1;
 
     // Create players and get spawn positions
-    state.players = createPlayers(NUM_PLAYERS, isAIGame);
+    state.players = createPlayers(NUM_PLAYERS, humanCount);
     const spawnXs = getSpawnPositions(NUM_PLAYERS);
 
     // Generate terrain with spawn positions for balancing (use virtual dimensions)
@@ -944,8 +955,10 @@ function resetGame() {
 
     state.currentPlayer = 0;
     state.turnCount = 0;
-    state.phase = 'select_p1';
+    state.phase = 'archetype_select';
     state.selectIndex = 0;
+    state.selectingPlayerIndex = 0;  // Reset archetype selection index
+    state.shoppingPlayerIndex = 0;   // Reset shop player index
     state.projectile = null;
     state.projectiles = [];
     state.voidY = VIRTUAL_HEIGHT + 100;
@@ -992,6 +1005,20 @@ function resetGame() {
     // Reset turn flow safety state
     state.turnEndLocked = false;
     state.firingStartTime = 0;
+}
+
+/**
+ * Advance to next player in archetype selection, or start game if all done
+ */
+function advanceArchetypeSelection() {
+    state.selectingPlayerIndex++;
+    state.selectIndex = 0;  // Reset menu selection for next player
+
+    // Check if all players have selected
+    if (state.selectingPlayerIndex >= NUM_PLAYERS) {
+        startGame();
+    }
+    // Otherwise, stay in archetype_select phase for next player
 }
 
 function startGame() {
@@ -1907,6 +1934,12 @@ function onExplode(proj) {
     proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
     proj.y = Math.max(WORLD_TOP, Math.min(VIRTUAL_HEIGHT, proj.y));
 
+    // === CHECK IF EXPLOSION CLAIMS A DESPERATION BEACON ===
+    const beaconClaimPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    const beaconWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : TANK_TYPES[proj.tankType];
+    const beaconBlastRadius = beaconWeapon ? (beaconWeapon.blastRadius || 50) : 50;
+    checkExplosionClaimsBeacon(proj.x, proj.y, beaconBlastRadius, beaconClaimPlayer);
+
     // === STRAFING BULLET EXPLOSION - Handle before weapon lookup ===
     if (proj.isStrafeBullet) {
         const damage = proj.damage || 10;
@@ -2386,6 +2419,124 @@ function onExplode(proj) {
         particles.sparks(proj.x, proj.y, 50, COLORS.white);
     }
 
+    // DYING LIGHT behavior - ULTIMATE DEVASTATION
+    if (weapon.behavior === 'dyingLight') {
+        // 1. TERRAIN DEVASTATION - Extra large terrain destruction
+        const devastationRadius = effectiveBlastRadius * (weapon.terrainDevastation || 2.5);
+        terrain.destroy(proj.x, proj.y, devastationRadius);
+
+        // 2. VOID PULSE - Raise the void
+        if (weapon.voidRise) {
+            state.voidY -= weapon.voidRise;
+            // Ominous void visual
+            for (let i = 0; i < 30; i++) {
+                const px = Math.random() * VIRTUAL_WIDTH;
+                particles.sparks(px, state.voidY, 8, '#aa00ff');
+            }
+            renderer.flash('#8800ff', 0.3);
+        }
+
+        // 3. SCREEN-WIDE SHOCKWAVE - Damages everyone on screen
+        if (weapon.shockwaveRadius && weapon.shockwaveDamage) {
+            for (let i = 0; i < state.players.length; i++) {
+                const player = state.players[i];
+                if (player.health <= 0) continue;
+                if (i === firingPlayerIndex) continue;  // Don't hit self with shockwave
+
+                const dist = distance(proj.x, proj.y, player.x, player.y);
+                if (dist < weapon.shockwaveRadius) {
+                    const falloff = 1 - (dist / weapon.shockwaveRadius);
+                    const shockDmg = weapon.shockwaveDamage * falloff;
+                    // Apply damage reduction
+                    const reduction = getArchetypeDamageReduction(player);
+                    const finalShockDmg = shockDmg * (1 - reduction);
+                    player.health = Math.max(0, player.health - finalShockDmg);
+                    totalEnemyDamage += finalShockDmg;
+
+                    // Shockwave hit visual
+                    particles.sparks(player.x, player.y, 25, '#ffffff');
+                    renderer.addScreenShake(8);
+
+                    if (player.health <= 0 && !killingBlow) {
+                        killingBlow = true;
+                        hitPlayer = player;
+                        if (i !== firingPlayerIndex) {
+                            firingPlayer.coins += KILL_BONUS;
+                        }
+                    }
+                }
+            }
+
+            // Shockwave visual - expanding ring
+            particles.explosion(proj.x, proj.y, 200, '#ffffff', weapon.shockwaveRadius * 0.3);
+            particles.explosion(proj.x, proj.y, 150, '#ffcc00', weapon.shockwaveRadius * 0.5);
+        }
+
+        // 4. MULTI-EXPLOSION - Chain of delayed explosions
+        if (weapon.chainExplosions) {
+            const chainCount = weapon.chainExplosions;
+            const chainDelay = 150;  // ms between explosions
+            const chainRadius = effectiveBlastRadius * 0.6;
+            const chainDamage = effectiveDamage * 0.4;
+
+            for (let chain = 1; chain <= chainCount; chain++) {
+                setTimeout(() => {
+                    // Random offset from original impact
+                    const offsetX = (Math.random() - 0.5) * effectiveBlastRadius * 1.5;
+                    const offsetY = (Math.random() - 0.5) * effectiveBlastRadius * 0.8;
+                    const chainX = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x + offsetX));
+                    const chainY = Math.max(WORLD_TOP, Math.min(state.voidY, proj.y + offsetY));
+
+                    // Chain explosion visuals
+                    particles.explosion(chainX, chainY, 80, '#ffaa00', chainRadius);
+                    particles.explosion(chainX, chainY, 50, '#ffffff', chainRadius * 0.5);
+                    particles.sparks(chainX, chainY, 40, '#ffcc00');
+                    renderer.addScreenShake(20);
+                    renderer.flash('#ffaa00', 0.2);
+                    audio.playExplosion(0.7);
+
+                    // Chain terrain destruction
+                    terrain.destroy(chainX, chainY, chainRadius);
+
+                    // Chain damage to players
+                    for (let i = 0; i < state.players.length; i++) {
+                        const player = state.players[i];
+                        if (player.health <= 0) continue;
+
+                        const dist = distance(chainX, chainY, player.x, player.y);
+                        if (dist < chainRadius) {
+                            const falloff = 1 - (dist / chainRadius);
+                            let dmg = chainDamage * falloff;
+                            // Apply damage reduction
+                            const reduction = getArchetypeDamageReduction(player);
+                            dmg *= (1 - reduction);
+                            player.health = Math.max(0, player.health - dmg);
+                            particles.sparks(player.x, player.y, 20, '#ff6600');
+
+                            if (player.health <= 0) {
+                                triggerDeathExplosion(player, false);
+                                if (i !== firingPlayerIndex) {
+                                    firingPlayer.coins += KILL_BONUS;
+                                }
+                            }
+                        }
+                    }
+                }, chain * chainDelay);
+            }
+        }
+
+        // 5. SPECTACULAR VISUALS - Golden apocalypse
+        particles.explosion(proj.x, proj.y, 250, '#ffffff', effectiveBlastRadius);
+        particles.explosion(proj.x, proj.y, 200, '#ffcc00', effectiveBlastRadius * 1.5);
+        particles.explosion(proj.x, proj.y, 150, '#ff8800', effectiveBlastRadius * 2);
+        particles.sparks(proj.x, proj.y, 100, '#ffff00');
+        particles.sparks(proj.x, proj.y, 80, '#ffffff');
+        renderer.addScreenShake(50);  // Massive shake
+        renderer.flash('#ffffff', 0.5);
+        renderer.flash('#ffcc00', 0.4);
+        audio.playExplosion(1.5);  // Extra loud
+    }
+
     // Award coins for damage dealt to enemies
     if (totalEnemyDamage > 0) {
         const coinsEarned = Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
@@ -2754,6 +2905,12 @@ function endTurn() {
                 audio.playGlitch();
             }
 
+            // Spawn desperation beacon on rounds 2-4 if none active
+            const newRound = getCurrentRound();
+            if (newRound >= 2 && newRound <= 4 && state.desperationBeacons.length === 0) {
+                spawnGuaranteedDesperationBeacon();
+            }
+
             // Revert previous round's event
             if (state.activeEvent) {
                 events.revertEvent(state);
@@ -2848,6 +3005,19 @@ function generateShopOfferings() {
 }
 
 /**
+ * Find next human player who needs to shop
+ */
+function findNextShoppingPlayer(currentIdx) {
+    for (let i = currentIdx + 1; i < NUM_PLAYERS; i++) {
+        const p = state.players[i];
+        if (!p.isAI && p.health > 0 && !state.shopReady[i]) {
+            return i;
+        }
+    }
+    return -1;  // No more human players to shop
+}
+
+/**
  * Enter the shop phase between rounds
  */
 function enterShopPhase() {
@@ -2856,12 +3026,22 @@ function enterShopPhase() {
     state.shopSelections = new Array(state.players.length).fill(0);
     state.shopReady = new Array(state.players.length).fill(false);
 
-    // All AI players auto-select, and dead players are auto-ready
+    // Mark dead players as ready
     for (let i = 0; i < state.players.length; i++) {
         if (state.players[i].health <= 0) {
-            state.shopReady[i] = true;  // Dead players skip shop
-        } else if (state.players[i].isAI) {
-            aiShopSelectFor(i);
+            state.shopReady[i] = true;
+        }
+    }
+
+    // Find first human player who needs to shop
+    state.shoppingPlayerIndex = findNextShoppingPlayer(-1);
+
+    // If no human players need to shop, let AI finish
+    if (state.shoppingPlayerIndex < 0) {
+        for (let i = 0; i < state.players.length; i++) {
+            if (state.players[i].isAI && state.players[i].health > 0) {
+                aiShopSelectFor(i);
+            }
         }
     }
 
@@ -2869,7 +3049,7 @@ function enterShopPhase() {
 }
 
 /**
- * AI weapon selection for a specific player index
+ * AI weapon selection with strategic ROI-based logic
  */
 function aiShopSelectFor(playerIndex) {
     const ai = state.players[playerIndex];
@@ -2878,19 +3058,115 @@ function aiShopSelectFor(playerIndex) {
         return;
     }
 
-    let bestIndex = -1;
-    let bestCost = 0;
+    // Analyze game state for strategic decisions
+    const enemies = state.players.filter((p, i) => i !== playerIndex && p.health > 0);
+    const avgEnemyHealth = enemies.length > 0 ? enemies.reduce((sum, p) => sum + p.health, 0) / enemies.length : 50;
+    const lowestEnemyHealth = enemies.length > 0 ? Math.min(...enemies.map(p => p.health)) : 50;
+    const round = getCurrentRound();
 
-    // Find most expensive weapon AI can afford
+    // Check if enemies are clustered (for AoE weapons)
+    let enemiesClustered = false;
+    if (enemies.length >= 2) {
+        const xs = enemies.map(p => p.x);
+        const spread = Math.max(...xs) - Math.min(...xs);
+        enemiesClustered = spread < 400;  // Within 400 units = clustered
+    }
+
+    // Check orbital weapon availability and affordability
+    const orbitalBeaconAvailable = state.orbitalStock.ORBITAL_BEACON.remaining > 0;
+    const strafingRunAvailable = state.orbitalStock.STRAFING_RUN.remaining > 0;
+    const orbitalBeaconCost = WEAPONS.ORBITAL_BEACON?.cost || 150;
+    const strafingRunCost = WEAPONS.STRAFING_RUN?.cost || 120;
+
+    // Strategic saving: If close to affording orbital weapons, save coins
+    const turnsToOrbital = 2;
+    const expectedCoinsPerTurn = SURVIVAL_BONUS + 15;  // Survival + damage coins estimate
+    const coinsInTurns = ai.coins + expectedCoinsPerTurn * turnsToOrbital;
+
+    // Prioritize orbital weapons if available and affordable
+    if (orbitalBeaconAvailable && ai.coins >= orbitalBeaconCost && round >= 3) {
+        const idx = state.shopOfferings.indexOf('ORBITAL_BEACON');
+        if (idx >= 0) {
+            state.shopSelections[playerIndex] = idx;
+            ai.coins -= orbitalBeaconCost;
+            ai.weapon = 'ORBITAL_BEACON';
+            audio.playPurchase();
+            state.shopReady[playerIndex] = true;
+            return;
+        }
+    }
+
+    if (strafingRunAvailable && ai.coins >= strafingRunCost && enemies.length >= 2) {
+        const idx = state.shopOfferings.indexOf('STRAFING_RUN');
+        if (idx >= 0) {
+            state.shopSelections[playerIndex] = idx;
+            ai.coins -= strafingRunCost;
+            ai.weapon = 'STRAFING_RUN';
+            audio.playPurchase();
+            state.shopReady[playerIndex] = true;
+            return;
+        }
+    }
+
+    // Save for orbital if close to affording
+    if ((orbitalBeaconAvailable && coinsInTurns >= orbitalBeaconCost && ai.coins < orbitalBeaconCost) ||
+        (strafingRunAvailable && coinsInTurns >= strafingRunCost && ai.coins < strafingRunCost)) {
+        // Skip buying, save for orbital
+        state.shopReady[playerIndex] = true;
+        return;
+    }
+
+    // Score each weapon based on situation
+    let bestIndex = -1;
+    let bestScore = -Infinity;
+
     for (let i = 0; i < state.shopOfferings.length; i++) {
-        const weapon = WEAPONS[state.shopOfferings[i]];
-        if (weapon.cost <= ai.coins && weapon.cost > bestCost) {
-            bestCost = weapon.cost;
+        const weaponKey = state.shopOfferings[i];
+        const weapon = WEAPONS[weaponKey];
+
+        if (weapon.cost > ai.coins) continue;
+        if (weapon.tier === 'ORBITAL') continue;  // Already handled above
+
+        // Base score: damage per coin (ROI)
+        let score = (weapon.damage * (weapon.blastRadius / 50)) / Math.max(weapon.cost, 1);
+
+        // Bonus for high damage when enemy is low health
+        if (lowestEnemyHealth <= 40 && weapon.damage >= 80) {
+            score += 50;  // Finishing blow potential
+        }
+
+        // Bonus for AoE when enemies clustered
+        if (enemiesClustered && weapon.blastRadius >= 100) {
+            score += 30;
+        }
+
+        // Bonus for cluster/spread weapons vs multiple enemies
+        if (enemies.length >= 2 && (weapon.behavior === 'cluster' || weapon.behavior === 'splitterAirburst')) {
+            score += 25;
+        }
+
+        // Bonus for terrain weapons (digger, dirt ball) for strategic play
+        if (weapon.terrainEffect && round >= 4) {
+            score += 15;
+        }
+
+        // Bonus for nuke in late game
+        if (weapon.behavior === 'nuke' && round >= 5) {
+            score += 40;
+        }
+
+        // Penalty for very expensive weapons early game
+        if (round <= 2 && weapon.cost > 80) {
+            score -= 20;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
             bestIndex = i;
         }
     }
 
-    // If found affordable weapon, buy it
+    // If found good weapon, buy it
     if (bestIndex >= 0) {
         state.shopSelections[playerIndex] = bestIndex;
         const weaponKey = state.shopOfferings[bestIndex];
@@ -2903,10 +3179,22 @@ function aiShopSelectFor(playerIndex) {
 }
 
 /**
- * Handle player shop input
+ * Handle player shop input (cycles through human players)
  */
 function handleShopInput() {
-    const playerIndex = 0;  // Only P1 uses manual shop (P2 is auto if AI)
+    const playerIndex = state.shoppingPlayerIndex;
+
+    // If no human player is shopping, let AI finish and check
+    if (playerIndex < 0) {
+        for (let i = 0; i < state.players.length; i++) {
+            if (state.players[i].isAI && state.players[i].health > 0 && !state.shopReady[i]) {
+                aiShopSelectFor(i);
+            }
+        }
+        checkShopComplete();
+        return;
+    }
+
     const player = state.players[playerIndex];
 
     if (state.shopReady[playerIndex]) return;
@@ -2957,6 +3245,9 @@ function handleShopInput() {
                 if (orbitalStock) {
                     orbitalStock.remaining--;
                 }
+
+                // Advance to next human player
+                advanceShopToNextPlayer();
             } else {
                 // Can't afford - play error sound
                 audio.playError();
@@ -2965,9 +3256,26 @@ function handleShopInput() {
             // Keep current weapon
             state.shopReady[playerIndex] = true;
             audio.playConfirm();
+            advanceShopToNextPlayer();
         }
 
         checkShopComplete();
+    }
+}
+
+/**
+ * Advance shop to next human player, or let AI finish
+ */
+function advanceShopToNextPlayer() {
+    state.shoppingPlayerIndex = findNextShoppingPlayer(state.shoppingPlayerIndex);
+
+    // If no more humans, let AI finish
+    if (state.shoppingPlayerIndex < 0) {
+        for (let i = 0; i < state.players.length; i++) {
+            if (state.players[i].isAI && state.players[i].health > 0 && !state.shopReady[i]) {
+                aiShopSelectFor(i);
+            }
+        }
     }
 }
 
@@ -2998,52 +3306,368 @@ function exitShopPhase() {
 }
 
 // ============================================================================
-// AI System
+// AI System - Smart ballistic solver with event awareness
 // ============================================================================
 
-function prepareAITurn() {
-    const ai = getCurrentPlayer();
+/**
+ * Get current gravity adjusted for events
+ */
+function getEffectiveGravity() {
+    return state.gravity || DEFAULT_GRAVITY;
+}
 
-    // Find nearest living enemy
-    let target = null;
-    let minDist = Infinity;
-    for (let i = 0; i < state.players.length; i++) {
-        if (i === state.currentPlayer) continue;
-        const p = state.players[i];
-        if (p.health <= 0) continue;
-        const d = Math.abs(p.x - ai.x);
-        if (d < minDist) {
-            minDist = d;
-            target = p;
+/**
+ * Get current wind (from events)
+ */
+function getEffectiveWind() {
+    return state.wind || 0;
+}
+
+/**
+ * Simulate a projectile trajectory with full physics
+ * Returns { hitX, hitY, hitsTarget, nearMiss, distance, bounces } or null if OOB
+ */
+function simulateTrajectory(startX, startY, angleDeg, power, targetX, targetY, targetRadius, weaponOverride = null) {
+    const weapon = weaponOverride || WEAPONS[getCurrentPlayer().weapon] || WEAPONS.MORTAR;
+    const angleRad = degToRad(180 - angleDeg);
+    const effectivePower = chargeToPower(power);
+    const speed = effectivePower * MAX_POWER * (weapon.projectileSpeed || 1.0) * state.velocityMultiplier;
+
+    let x = startX;
+    let y = startY - 20;  // Barrel offset
+    let vx = Math.cos(angleRad) * speed;
+    let vy = -Math.sin(angleRad) * speed;
+
+    const gravity = getEffectiveGravity();
+    const wind = getEffectiveWind();
+    const maxBounces = (weapon.bounces || 1) + state.extraBounces;
+    let bounces = 0;
+
+    const maxSteps = 600;
+
+    for (let step = 0; step < maxSteps; step++) {
+        // Apply gravity
+        vy += gravity;
+
+        // Apply wind
+        if (wind !== 0) {
+            vx += wind * 0.1;
+        }
+
+        // Move
+        x += vx;
+        y += vy;
+
+        // Check wall bounces
+        if (x < WORLD_LEFT && bounces < maxBounces) {
+            x = WORLD_LEFT;
+            vx = -vx * 0.9;
+            bounces++;
+        }
+        if (x > WORLD_RIGHT && bounces < maxBounces) {
+            x = WORLD_RIGHT;
+            vx = -vx * 0.9;
+            bounces++;
+        }
+        if (y < WORLD_TOP && bounces < maxBounces) {
+            y = WORLD_TOP;
+            vy = -vy * 0.9;
+            bounces++;
+        }
+
+        // Check terrain hit
+        const groundY = terrain.getHeightAt(x);
+        if (y >= groundY) {
+            // Hit terrain - check distance to target
+            const distToTarget = Math.sqrt((x - targetX) ** 2 + (y - targetY) ** 2);
+            const blastRadius = weapon.blastRadius || 80;
+            return {
+                hitX: x,
+                hitY: y,
+                hitsTarget: distToTarget < blastRadius + targetRadius,
+                nearMiss: distToTarget < blastRadius * 1.5 + targetRadius,
+                distance: distToTarget,
+                bounces: bounces
+            };
+        }
+
+        // Check void
+        if (y > state.voidY) {
+            return null;  // Lost to void
+        }
+
+        // Out of bounds check
+        if (x < -200 || x > VIRTUAL_WIDTH + 200 || y > VIRTUAL_HEIGHT + 200) {
+            return null;
         }
     }
-    if (!target) return;  // No valid targets
 
-    // Calculate angle to target (simple ballistic estimation)
+    return null;  // Timeout
+}
+
+/**
+ * Find the optimal angle and power to hit a target using grid search
+ * Includes bank shot consideration (wall bounces)
+ */
+function findOptimalShot(ai, target, weapon) {
     const dx = target.x - ai.x;
     const dy = target.y - ai.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
-    // Simple angle calculation with some randomness for imperfection
-    // Higher arc for longer distances
-    let baseAngle = Math.atan2(-dy, dx) * (180 / Math.PI);
+    // Determine which direction to shoot
+    const shootingRight = dx > 0;
 
-    // Add arc compensation (longer distance = higher angle)
-    const arcBonus = (dist / CANVAS_WIDTH) * 30;
-    baseAngle += arcBonus;
+    // Search for best angle and power combination
+    let bestAngle = 90;
+    let bestPower = 0.7;
+    let bestDistance = Infinity;
+    let foundHit = false;
 
-    // Add some randomness for imperfect AI (-15 to +15 degrees)
-    const randomError = (Math.random() - 0.5) * 30;
-    state.aiTargetAngle = clamp(180 - baseAngle + randomError, 10, 170);
+    // Expanded angle range for bank shots
+    const angleMin = shootingRight ? 15 : 95;
+    const angleMax = shootingRight ? 85 : 165;
 
-    // Power based on distance with some randomness
-    // AI needs to charge higher due to nonlinear curve (0.7 charge ≈ 0.5 effective)
-    const basePower = clamp(dist / 600, 0.5, 0.98);
-    const powerError = (Math.random() - 0.5) * 0.15;
-    state.aiTargetPower = clamp(basePower + powerError, 0.4, 1.0);
+    // Also try bank shots (opposite direction for wall bounce)
+    const bankAngleMin = shootingRight ? 95 : 15;
+    const bankAngleMax = shootingRight ? 140 : 85;
 
-    // Think time before acting (1-2 seconds)
-    state.aiThinkTime = 1000 + Math.random() * 1000;
+    // Adjust power range based on distance and gravity
+    const gravityFactor = getEffectiveGravity() / DEFAULT_GRAVITY;
+    const basePowerMin = 0.35;
+    const basePowerMax = 0.98;
+
+    // Direct shots
+    for (let angleStep = 0; angleStep <= 14; angleStep++) {
+        const testAngle = angleMin + (angleMax - angleMin) * (angleStep / 14);
+
+        for (let powerStep = 0; powerStep <= 12; powerStep++) {
+            const testPower = basePowerMin + (powerStep / 12) * (basePowerMax - basePowerMin);
+
+            const result = simulateTrajectory(
+                ai.x, ai.y, testAngle, testPower,
+                target.x, target.y, TANK_RADIUS, weapon
+            );
+
+            if (result && result.distance < bestDistance) {
+                bestDistance = result.distance;
+                bestAngle = testAngle;
+                bestPower = testPower;
+
+                if (result.hitsTarget) {
+                    foundHit = true;
+                }
+            }
+        }
+    }
+
+    // Bank shots (if direct shot not found or for variety)
+    if (!foundHit || Math.random() < 0.2) {
+        for (let angleStep = 0; angleStep <= 8; angleStep++) {
+            const testAngle = bankAngleMin + (bankAngleMax - bankAngleMin) * (angleStep / 8);
+
+            for (let powerStep = 0; powerStep <= 8; powerStep++) {
+                const testPower = 0.5 + (powerStep / 8) * 0.45;
+
+                const result = simulateTrajectory(
+                    ai.x, ai.y, testAngle, testPower,
+                    target.x, target.y, TANK_RADIUS, weapon
+                );
+
+                if (result && result.bounces > 0 && result.distance < bestDistance) {
+                    bestDistance = result.distance;
+                    bestAngle = testAngle;
+                    bestPower = testPower;
+
+                    if (result.hitsTarget) {
+                        foundHit = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fine-tune around best found solution
+    for (let fineAngle = bestAngle - 4; fineAngle <= bestAngle + 4; fineAngle += 0.5) {
+        for (let finePower = bestPower - 0.08; finePower <= bestPower + 0.08; finePower += 0.02) {
+            const result = simulateTrajectory(
+                ai.x, ai.y, fineAngle, clamp(finePower, 0.3, 0.98),
+                target.x, target.y, TANK_RADIUS, weapon
+            );
+
+            if (result && result.distance < bestDistance) {
+                bestDistance = result.distance;
+                bestAngle = fineAngle;
+                bestPower = clamp(finePower, 0.3, 0.98);
+
+                if (result.hitsTarget) {
+                    foundHit = true;
+                }
+            }
+        }
+    }
+
+    return { angle: bestAngle, power: bestPower, perfect: foundHit, distance: bestDistance };
+}
+
+/**
+ * Evaluate if AI should use orbital weapon
+ */
+function shouldUseOrbitalWeapon(ai, enemies) {
+    const weapon = WEAPONS[ai.weapon];
+    if (!weapon) return false;
+
+    // ORBITAL BEACON: Use when enemy is stationary or in crater
+    if (ai.weapon === 'ORBITAL_BEACON') {
+        // Always use if we have it - it's powerful
+        return enemies.length > 0;
+    }
+
+    // STRAFING RUN: Use when enemies are spread horizontally
+    if (ai.weapon === 'STRAFING_RUN') {
+        if (enemies.length >= 2) {
+            const xs = enemies.map(p => p.x);
+            const spread = Math.max(...xs) - Math.min(...xs);
+            return spread > 200;  // Enemies spread out enough for strafing
+        }
+        return enemies.length > 0;  // Use even for single target
+    }
+
+    return false;
+}
+
+/**
+ * Get target position for orbital weapon
+ */
+function getOrbitalTarget(ai, enemies) {
+    if (enemies.length === 0) return { x: VIRTUAL_WIDTH / 2, y: VIRTUAL_HEIGHT / 2 };
+
+    // For strafing run, target the center of enemies
+    if (ai.weapon === 'STRAFING_RUN') {
+        const avgX = enemies.reduce((sum, p) => sum + p.x, 0) / enemies.length;
+        return { x: avgX, y: enemies[0].y };
+    }
+
+    // For orbital beacon, target the lowest health enemy
+    const target = enemies.reduce((best, p) => p.health < best.health ? p : best, enemies[0]);
+    return { x: target.x, y: target.y };
+}
+
+function prepareAITurn() {
+    const ai = getCurrentPlayer();
+    const weapon = WEAPONS[ai.weapon] || WEAPONS.MORTAR;
+
+    // Find all living enemies
+    const enemies = [];
+    for (let i = 0; i < state.players.length; i++) {
+        if (i === state.currentPlayer) continue;
+        const p = state.players[i];
+        if (p.health <= 0) continue;
+        enemies.push({ ...p, index: i });
+    }
+
+    if (enemies.length === 0) return;  // No valid targets
+
+    // Check if AI should use orbital weapon
+    if (shouldUseOrbitalWeapon(ai, enemies)) {
+        const orbitalTarget = getOrbitalTarget(ai, enemies);
+        // Aim at orbital target with high arc
+        const dx = orbitalTarget.x - ai.x;
+        const shootingRight = dx > 0;
+        state.aiTargetAngle = shootingRight ? 60 : 120;  // High arc for orbital drop
+        state.aiTargetPower = clamp(Math.abs(dx) / 800, 0.4, 0.85);
+        state.aiThinkTime = 600 + Math.random() * 400;
+        return;
+    }
+
+    // Find best target (lowest health enemy, weighted by distance)
+    let target = null;
+    let bestScore = -Infinity;
+    for (const enemy of enemies) {
+        // Score: heavily prefer low health, secondary prefer close distance
+        const healthScore = (100 - enemy.health) * 15;  // Lower health = much higher score
+        const distScore = -Math.abs(enemy.x - ai.x) / 50;  // Closer = higher score
+
+        // Bonus for enemies near void
+        const voidProximity = (state.voidY - enemy.y) < 150 ? 200 : 0;
+
+        const score = healthScore + distScore + voidProximity;
+
+        if (score > bestScore) {
+            bestScore = score;
+            target = enemy;
+        }
+    }
+
+    if (!target) return;
+
+    // Find the optimal shot using trajectory simulation
+    const optimalShot = findOptimalShot(ai, target, weapon);
+
+    // 70% chance of perfect shot, 30% chance of near miss
+    const willHit = Math.random() < 0.70;
+
+    if (willHit && optimalShot.perfect) {
+        // Use the calculated optimal shot
+        state.aiTargetAngle = optimalShot.angle;
+        state.aiTargetPower = optimalShot.power;
+    } else {
+        // Near miss - add small error (but still close)
+        const angleError = (Math.random() - 0.5) * 8;  // ±4 degrees (tighter than before)
+        const powerError = (Math.random() - 0.5) * 0.08;  // ±4% power (tighter)
+        state.aiTargetAngle = clamp(optimalShot.angle + angleError, 10, 170);
+        state.aiTargetPower = clamp(optimalShot.power + powerError, 0.35, 0.98);
+    }
+
+    // Apply event-aware adjustments
+    applyEventAdjustments();
+
+    // Think time before acting (0.6-1.2 seconds - faster)
+    state.aiThinkTime = 600 + Math.random() * 600;
+}
+
+/**
+ * Adjust AI shot based on active glitch events
+ */
+function applyEventAdjustments() {
+    if (!state.activeEvent) return;
+
+    const eventName = state.activeEvent.name;
+
+    // Gravity adjustments
+    if (eventName === 'GRAVITY FLUX' || eventName === 'HEAVY GRAVITY') {
+        // Higher gravity = need more power and higher angle
+        if (state.gravity > DEFAULT_GRAVITY) {
+            state.aiTargetPower = clamp(state.aiTargetPower * 1.15, 0.4, 0.98);
+            state.aiTargetAngle = clamp(state.aiTargetAngle + 5, 10, 170);
+        }
+    }
+
+    if (eventName === 'LOW GRAVITY' || eventName === 'MOON GRAVITY') {
+        // Lower gravity = need less power
+        if (state.gravity < DEFAULT_GRAVITY) {
+            state.aiTargetPower = clamp(state.aiTargetPower * 0.85, 0.35, 0.95);
+        }
+    }
+
+    // Wind compensation
+    if (eventName === 'WIND BLAST' && state.wind !== 0) {
+        // Compensate aim against wind direction
+        const windCompensation = -state.wind * 3;  // Aim opposite to wind
+        state.aiTargetAngle = clamp(state.aiTargetAngle + windCompensation, 10, 170);
+    }
+
+    // Velocity multiplier events
+    if (eventName === 'TIME DILATION' || eventName === 'MUZZLE OVERCHARGE') {
+        if (state.velocityMultiplier > 1) {
+            state.aiTargetPower = clamp(state.aiTargetPower * 0.9, 0.35, 0.95);
+        }
+    }
+
+    if (eventName === 'MUZZLE DAMPEN') {
+        if (state.velocityMultiplier < 1) {
+            state.aiTargetPower = clamp(state.aiTargetPower * 1.1, 0.4, 0.98);
+        }
+    }
 }
 
 function updateAI(dt) {
@@ -3207,6 +3831,100 @@ function update(dt) {
     // Update terrain circuit pulse animations
     terrain.updateCircuitPulses(dt);
 
+    // ========================================================================
+    // DEBUG COMMANDS (active during gameplay phases)
+    // ========================================================================
+    if (state.phase === 'aiming' || state.phase === 'firing' || state.phase === 'shop') {
+        // D = Give current player DYING LIGHT
+        if (input.wasPressed('KeyD')) {
+            const player = getCurrentPlayer();
+            state.storedWeapons[state.currentPlayer] = player.weapon;
+            player.weapon = 'DYING_LIGHT';
+            state.dyingLightTurns[state.currentPlayer] = 99;  // Infinite uses in debug
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got DYING LIGHT`);
+            audio.playPurchase();
+        }
+
+        // B = Spawn desperation BEACON
+        if (input.wasPressed('KeyB')) {
+            spawnGuaranteedDesperationBeacon();
+            console.log('[DEBUG] Spawned desperation beacon');
+        }
+
+        // C = Give current player 500 COINS
+        if (input.wasPressed('KeyC')) {
+            const player = getCurrentPlayer();
+            player.coins += 500;
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got 500 coins (total: ${player.coins})`);
+            audio.playPurchase();
+        }
+
+        // H = HEAL current player to full
+        if (input.wasPressed('KeyH')) {
+            const player = getCurrentPlayer();
+            player.health = 100;
+            console.log(`[DEBUG] P${state.currentPlayer + 1} healed to full`);
+            particles.sparks(player.x, player.y, 30, '#00ff00');
+        }
+
+        // K = KILL next enemy (cycle through)
+        if (input.wasPressed('KeyK')) {
+            for (let i = 0; i < state.players.length; i++) {
+                if (i !== state.currentPlayer && state.players[i].health > 0) {
+                    state.players[i].health = 0;
+                    triggerDeathExplosion(state.players[i], false);
+                    console.log(`[DEBUG] Killed P${i + 1}`);
+                    break;
+                }
+            }
+        }
+
+        // V = Raise VOID by 100
+        if (input.wasPressed('KeyV')) {
+            state.voidY -= 100;
+            console.log(`[DEBUG] Void raised to ${state.voidY}`);
+            renderer.flash('#8800ff', 0.3);
+        }
+
+        // N = Give current player NUKE
+        if (input.wasPressed('KeyN')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'NUKE';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got NUKE`);
+            audio.playPurchase();
+        }
+
+        // O = Give current player ORBITAL BEACON
+        if (input.wasPressed('KeyO')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'ORBITAL_BEACON';
+            state.orbitalStock.ORBITAL_BEACON.remaining = 99;
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got ORBITAL BEACON`);
+            audio.playPurchase();
+        }
+
+        // S = Give current player STRAFING RUN
+        if (input.wasPressed('KeyS') && !input.space) {
+            const player = getCurrentPlayer();
+            player.weapon = 'STRAFING_RUN';
+            state.orbitalStock.STRAFING_RUN.remaining = 99;
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got STRAFING RUN`);
+            audio.playPurchase();
+        }
+
+        // 1-9 = Cycle through weapons
+        for (let i = 1; i <= 9; i++) {
+            if (input.wasPressed(`Digit${i}`)) {
+                const weaponKeys = Object.keys(WEAPONS);
+                const weaponIndex = (i - 1) % weaponKeys.length;
+                const player = getCurrentPlayer();
+                player.weapon = weaponKeys[weaponIndex];
+                console.log(`[DEBUG] P${state.currentPlayer + 1} got ${WEAPONS[player.weapon].name}`);
+                audio.playSelect();
+            }
+        }
+    }
+
     // Title screen
     if (state.phase === 'title') {
         if (input.spaceReleased || input.enter) {
@@ -3220,37 +3938,37 @@ function update(dt) {
         return;
     }
 
-    // Mode selection (1P vs AI or 2P local)
+    // Mode selection (1P-4P)
     if (state.phase === 'mode_select') {
+        const numModes = 4;
         if (input.wasPressed('ArrowUp') || input.wasPressed('ArrowLeft')) {
-            state.selectIndex = 1 - state.selectIndex;
+            state.selectIndex = (state.selectIndex - 1 + numModes) % numModes;
             audio.playSelect();
         }
         if (input.wasPressed('ArrowDown') || input.wasPressed('ArrowRight')) {
-            state.selectIndex = 1 - state.selectIndex;
+            state.selectIndex = (state.selectIndex + 1) % numModes;
             audio.playSelect();
         }
         if (input.spaceReleased || input.enter) {
             audio.playConfirm();
-            state.gameMode = state.selectIndex === 0 ? '1p' : '2p';
-            resetGame();  // This sets up players with AI flag based on gameMode
+            // Map index to human player count: 0→1, 1→2, 2→3, 3→4
+            state.humanPlayerCount = state.selectIndex + 1;
+            state.gameMode = state.humanPlayerCount === 1 ? '1p' : 'mp';
+            resetGame();  // This sets up players with AI flag based on humanPlayerCount
         }
         input.endFrame();
         return;
     }
 
-    // Tank archetype selection phases
-    if (state.phase === 'select_p1' || state.phase === 'select_p2') {
-        // Auto-select for AI player
-        if (state.phase === 'select_p2' && state.players[1].isAI) {
-            // AI picks a random archetype after short delay
-            setTimeout(() => {
-                const aiChoice = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
-                state.players[1].archetype = aiChoice;
-                audio.playConfirm();
-                startGame();
-            }, 500);
-            state.phase = 'ai_selecting';  // Temporary state to prevent re-triggering
+    // Tank archetype selection (dynamic for 1-4 players)
+    if (state.phase === 'archetype_select') {
+        const selectingPlayer = state.players[state.selectingPlayerIndex];
+
+        // If current selecting player is AI, auto-select and advance
+        if (selectingPlayer.isAI) {
+            const aiChoice = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
+            selectingPlayer.archetype = aiChoice;
+            advanceArchetypeSelection();
             input.endFrame();
             return;
         }
@@ -3269,34 +3987,10 @@ function update(dt) {
         if (input.spaceReleased || input.enter) {
             const selectedArchetype = ARCHETYPE_KEYS[state.selectIndex];
             audio.playConfirm();
-            if (state.phase === 'select_p1') {
-                state.players[0].archetype = selectedArchetype;
-                // Assign random archetypes to all AI players and start
-                for (let i = 1; i < state.players.length; i++) {
-                    if (state.players[i].isAI) {
-                        state.players[i].archetype = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
-                    }
-                }
-                // Check if any human players remain to select
-                const humanPlayersLeft = state.players.slice(1).some(p => !p.isAI && !p.archetype);
-                if (humanPlayersLeft) {
-                    state.phase = 'select_p2';
-                    state.selectIndex = 0;
-                } else {
-                    startGame();
-                }
-            } else {
-                state.players[1].archetype = selectedArchetype;
-                startGame();
-            }
+            selectingPlayer.archetype = selectedArchetype;
+            advanceArchetypeSelection();
         }
 
-        input.endFrame();
-        return;
-    }
-
-    // AI selecting state (just wait)
-    if (state.phase === 'ai_selecting') {
         input.endFrame();
         return;
     }
@@ -3402,7 +4096,7 @@ function update(dt) {
     }
 
     // Check win conditions continuously (for void/falling deaths)
-    if (state.phase !== 'gameover' && state.phase !== 'select_p1' && state.phase !== 'select_p2') {
+    if (state.phase !== 'gameover' && state.phase !== 'archetype_select') {
         const winResult = checkWinCondition();
         if (winResult) {
             state.winner = winResult.winner;
@@ -3815,13 +4509,15 @@ function updateDesperationBeacons(dt) {
             }
         }
 
-        // Check for projectile collision to claim beacon
-        if (beacon.landed && !beacon.claimed) {
+        // Check for projectile collision to claim beacon (can claim while falling OR landed)
+        if (!beacon.claimed) {
+            const claimRadius = 50;  // Generous hitbox for claiming
+
             // Check main projectile
             if (state.projectile) {
                 const proj = state.projectile;
                 const dist = distance(proj.x, proj.y, beacon.x, beacon.y);
-                if (dist < 30) {
+                if (dist < claimRadius) {
                     claimDesperationBeacon(beacon, proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer);
                 }
             }
@@ -3829,11 +4525,27 @@ function updateDesperationBeacons(dt) {
             // Check cluster projectiles
             for (const proj of state.projectiles) {
                 const dist = distance(proj.x, proj.y, beacon.x, beacon.y);
-                if (dist < 30) {
+                if (dist < claimRadius) {
                     claimDesperationBeacon(beacon, proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer);
                     break;
                 }
             }
+        }
+    }
+}
+
+/**
+ * Check if an explosion hits any desperation beacon and claims it
+ * Called from explosion/damage dealing code
+ */
+function checkExplosionClaimsBeacon(x, y, blastRadius, playerIndex) {
+    for (const beacon of state.desperationBeacons) {
+        if (beacon.claimed) continue;
+
+        const dist = distance(x, y, beacon.x, beacon.y);
+        if (dist < blastRadius + 30) {  // Explosion radius + beacon size
+            claimDesperationBeacon(beacon, playerIndex);
+            break;  // Only claim one beacon per explosion
         }
     }
 }
@@ -3861,11 +4573,13 @@ function claimDesperationBeacon(beacon, playerIndex) {
     particles.explosion(beacon.x, beacon.y, 100, '#ffcc00', 80);
     particles.sparks(beacon.x, beacon.y, 60, '#ffffff');
 
-    // Show notification
+    // Show notification (include beacon position for floating text)
     state.buffNotification = {
         playerIndex: playerIndex,
         buffType: 'DYING_LIGHT',
-        timer: 2.5
+        timer: 2.5,
+        x: beacon.x * WORLD_SCALE,  // Convert to screen coordinates
+        y: beacon.y * WORLD_SCALE
     };
 
     // Remove the beacon
@@ -3895,6 +4609,32 @@ function dropDesperationBeacon(shipX, shipY) {
     // Visual effect
     particles.sparks(shipX, shipY, 40, '#ffcc00');
     particles.sparks(shipX, shipY, 30, '#ff6600');
+}
+
+/**
+ * Spawn a guaranteed desperation beacon at a random position (for rounds 2-4)
+ */
+function spawnGuaranteedDesperationBeacon() {
+    // Spawn at random X position, falling from top of screen
+    const spawnX = VIRTUAL_WIDTH * 0.2 + Math.random() * VIRTUAL_WIDTH * 0.6;  // Middle 60% of screen
+    const spawnY = 50;  // Start near top
+
+    state.desperationBeacons.push({
+        x: spawnX,
+        y: spawnY,
+        vy: 0,
+        landed: false,
+        timer: 0,
+        maxTime: 20,  // Longer time for guaranteed beacons
+        claimed: false,
+        claimedBy: -1
+    });
+
+    // Visual and audio announcement
+    particles.sparks(spawnX, spawnY, 60, '#ffcc00');
+    particles.sparks(spawnX, spawnY, 40, '#ff6600');
+    renderer.flash('#ffcc00', 0.3);
+    audio.playGlitch();
 }
 
 /**
@@ -4298,8 +5038,8 @@ function render() {
         return;
     }
 
-    // Tank selection screen (including AI selecting)
-    if (state.phase === 'select_p1' || state.phase === 'select_p2' || state.phase === 'ai_selecting') {
+    // Tank selection screen
+    if (state.phase === 'archetype_select') {
         renderTankSelect();
         renderer.endFrame();
         return;
@@ -4621,7 +5361,7 @@ function render() {
         renderer.ctx.globalAlpha = 1;
     }
 
-    // UFO buff notification (when a UFO is destroyed)
+    // UFO buff notification (when a UFO is destroyed or desperation beacon claimed)
     if (state.buffNotification && state.buffNotification.timer > 0) {
         const notif = state.buffNotification;
         const alpha = Math.min(1, notif.timer);
@@ -4629,9 +5369,19 @@ function render() {
         const playerColor = state.players[notif.playerIndex].color;
 
         renderer.ctx.globalAlpha = alpha;
-        // Float upward animation
-        const floatY = notif.y - (2 - notif.timer) * 30;
-        renderer.drawText(`P${notif.playerIndex + 1} ${buffInfo.name}`, notif.x, floatY, buffInfo.color, 18, 'center', true);
+
+        // Handle special notifications (like DYING_LIGHT) that aren't in UFO_BUFF_TYPES
+        if (buffInfo) {
+            // Standard UFO buff notification
+            const floatY = notif.y - (2 - notif.timer) * 30;
+            renderer.drawText(`P${notif.playerIndex + 1} ${buffInfo.name}`, notif.x, floatY, buffInfo.color, 18, 'center', true);
+        } else if (notif.buffType === 'DYING_LIGHT') {
+            // Special notification for desperation beacon
+            const floatY = (notif.y || CANVAS_HEIGHT / 2) - (2.5 - notif.timer) * 20;
+            renderer.drawText(`P${notif.playerIndex + 1} DYING LIGHT!`, notif.x || CANVAS_WIDTH / 2, floatY, '#ffcc00', 22, 'center', true);
+            renderer.drawText('3 turns of ultimate power', notif.x || CANVAS_WIDTH / 2, floatY + 25, '#ffaa00', 14, 'center', false);
+        }
+
         renderer.ctx.globalAlpha = 1;
     }
 
@@ -4787,13 +5537,27 @@ function drawTracerPreview() {
 
 function drawProjectile(proj) {
     const isRailgun = proj.tankType === 'PHANTOM';
+    const isDyingLight = proj.weaponKey === 'DYING_LIGHT';
 
     // Trail
     for (let i = 0; i < proj.trail.length; i++) {
         const point = proj.trail[i];
         const t = i / proj.trail.length;
 
-        if (isRailgun) {
+        if (isDyingLight) {
+            // DYING LIGHT: Spectacular golden comet trail
+            const alpha = t * 0.9;
+            const radius = proj.radius * t * 1.2;
+            renderer.ctx.globalAlpha = alpha;
+            // Outer orange glow
+            renderer.drawCircle(point.x, point.y, radius * 2, '#ff6600', true);
+            // Middle gold
+            renderer.ctx.globalAlpha = alpha * 0.9;
+            renderer.drawCircle(point.x, point.y, radius * 1.3, '#ffcc00', true);
+            // Inner white core
+            renderer.ctx.globalAlpha = alpha * 0.7;
+            renderer.drawCircle(point.x, point.y, radius * 0.6, '#ffffff', true);
+        } else if (isRailgun) {
             // Railgun: Bright, streaky trail with white core
             const alpha = t * 0.7;
             const radius = proj.radius * t * 0.5;
@@ -4814,7 +5578,27 @@ function drawProjectile(proj) {
     renderer.ctx.globalAlpha = 1;
 
     // Main projectile
-    if (isRailgun) {
+    if (isDyingLight) {
+        // DYING LIGHT: Pulsing golden sun with multiple layers
+        const pulse = Math.sin(state.time * 15) * 0.3 + 1;
+        const outerPulse = Math.sin(state.time * 10) * 0.2 + 1;
+
+        // Massive outer glow
+        renderer.setGlow('#ffcc00', 50 * outerPulse);
+        renderer.drawCircle(proj.x, proj.y, proj.radius * 3 * outerPulse, '#ff8800', true);
+        // Middle golden layer
+        renderer.setGlow('#ffffff', 30);
+        renderer.drawCircle(proj.x, proj.y, proj.radius * 1.8 * pulse, '#ffcc00', true);
+        // Bright white core
+        renderer.setGlow('#ffffff', 40);
+        renderer.drawCircle(proj.x, proj.y, proj.radius * 0.8, '#ffffff', true);
+        renderer.clearGlow();
+
+        // Emit sparks while flying
+        if (Math.random() < 0.3) {
+            particles.sparks(proj.x, proj.y, 3, '#ffcc00');
+        }
+    } else if (isRailgun) {
         // Railgun: Bright white core with colored outer ring
         renderer.setGlow(COLORS.white, 25);
         renderer.drawCircle(proj.x, proj.y, proj.radius * 1.3, proj.color, false);
@@ -5456,12 +6240,14 @@ function renderModeSelect() {
 
     // Mode options
     const modes = [
-        { name: '1 PLAYER', desc: 'Battle against AI', color: COLORS.cyan },
-        { name: '2 PLAYERS', desc: 'Local multiplayer', color: COLORS.magenta }
+        { name: '1 PLAYER', desc: 'Battle against AI', color: COLORS.cyan, humans: 1 },
+        { name: '2 PLAYERS', desc: 'Local multiplayer', color: COLORS.magenta, humans: 2 },
+        { name: '3 PLAYERS', desc: 'Local multiplayer', color: '#00ff00', humans: 3 },
+        { name: '4 PLAYERS', desc: 'Local multiplayer', color: '#ffaa00', humans: 4 }
     ];
 
-    const startY = 280;
-    const spacing = 150;
+    const startY = 220;
+    const spacing = 100;
 
     for (let i = 0; i < modes.length; i++) {
         const mode = modes[i];
@@ -5486,10 +6272,11 @@ function renderModeSelect() {
 }
 
 function renderTankSelect() {
-    const isP1 = state.phase === 'select_p1';
-    const isAISelecting = state.phase === 'ai_selecting';
-    const playerNum = isP1 ? 1 : 2;
-    const playerColor = isP1 ? COLORS.cyan : COLORS.magenta;
+    const playerIdx = state.selectingPlayerIndex;
+    const selectingPlayer = state.players[playerIdx];
+    const playerNum = playerIdx + 1;
+    const playerColor = selectingPlayer.color;
+    const isAISelecting = selectingPlayer.isAI;
 
     const ctx = renderer.ctx;
 
@@ -5591,13 +6378,21 @@ function renderShop() {
 
     // UI at 1:1 scale
     const round = getCurrentRound();
-    const p1 = state.players[0];  // Human player for shop input
+    const shopperIdx = state.shoppingPlayerIndex;
+    const currentShopper = shopperIdx >= 0 ? state.players[shopperIdx] : state.players[0];
 
     // Header
     renderer.setGlow(COLORS.yellow, 15);
     renderer.drawText('SHOP', CANVAS_WIDTH / 2, 50, COLORS.yellow, 36, 'center', true);
     renderer.clearGlow();
-    renderer.drawText(`ROUND ${round}`, CANVAS_WIDTH / 2, 85, '#888888', 16, 'center', false);
+
+    // Show which player is shopping
+    if (shopperIdx >= 0) {
+        const shopperColor = currentShopper.color;
+        renderer.drawText(`PLAYER ${shopperIdx + 1} SHOPPING`, CANVAS_WIDTH / 2, 85, shopperColor, 16, 'center', true);
+    } else {
+        renderer.drawText(`ROUND ${round}`, CANVAS_WIDTH / 2, 85, '#888888', 16, 'center', false);
+    }
 
     // Player info strip across top - compact for multiple players
     const playerSpacing = Math.min(150, (CANVAS_WIDTH - 100) / state.players.length);
@@ -5607,8 +6402,14 @@ function renderShop() {
         const label = p.isAI ? `AI${i + 1}` : `P${i + 1}`;
         const weaponName = WEAPONS[p.weapon]?.name || 'None';
         const isDead = p.health <= 0;
+        const isCurrentShopper = i === shopperIdx;
 
-        renderer.drawText(label, x, 50, isDead ? '#444' : p.color, 14, 'center', !isDead);
+        // Highlight current shopper with box
+        if (isCurrentShopper) {
+            renderer.drawRectOutline(x - 35, 40, 70, 40, p.color, 2, true);
+        }
+
+        renderer.drawText(label, x, 50, isDead ? '#444' : p.color, isCurrentShopper ? 16 : 14, 'center', isCurrentShopper || !isDead);
         renderer.drawText(`${p.coins}`, x, 68, isDead ? '#444' : COLORS.yellow, 11, 'center', false);
         if (state.shopReady[i]) {
             renderer.drawText('✓', x + 30, 58, COLORS.green, 14, 'left', false);
@@ -5619,14 +6420,14 @@ function renderShop() {
     const startY = 130;
     const spacing = 65;
     const offerings = state.shopOfferings;
-    const selection = state.shopSelections[0];
+    const selection = shopperIdx >= 0 ? state.shopSelections[shopperIdx] : 0;
 
     for (let i = 0; i < offerings.length; i++) {
         const weaponKey = offerings[i];
         const weapon = WEAPONS[weaponKey];
         const y = startY + i * spacing;
         const isSelected = i === selection;
-        const canAfford = p1.coins >= weapon.cost;
+        const canAfford = currentShopper.coins >= weapon.cost;
 
         // Check orbital stock
         const orbitalStock = state.orbitalStock[weaponKey];

@@ -41,7 +41,7 @@ class AudioSystem {
         if (this.musicStarted) return;
 
         try {
-            this.bgMusic = new Audio('Mesmerizing Galaxy Loop.mp3');
+            this.bgMusic = new Audio('whispering-stars-lofi-319187.mp3');
             this.bgMusic.loop = true;
             this.bgMusic.volume = 0.15;  // Background music volume
 
@@ -432,6 +432,58 @@ class AudioSystem {
 
         // Add noise burst for digital static
         this.playNoiseBurst(0.15, 0.25);
+    }
+
+    // ========================================================================
+    // Orbital Beam Sound (devastating capital ship strike)
+    // ========================================================================
+
+    playOrbitalBeam() {
+        if (!this.initialized) return;
+        this.resume();
+
+        const now = this.ctx.currentTime;
+        const duration = 0.8;
+
+        // Deep resonant bass tone
+        const bassOsc = this.ctx.createOscillator();
+        const bassGain = this.ctx.createGain();
+
+        bassOsc.type = 'sine';
+        bassOsc.frequency.setValueAtTime(40, now);
+        bassOsc.frequency.exponentialRampToValueAtTime(25, now + duration);
+
+        bassGain.gain.setValueAtTime(0.6, now);
+        bassGain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        bassOsc.connect(bassGain);
+        bassGain.connect(this.masterGain);
+        bassOsc.start(now);
+        bassOsc.stop(now + duration);
+
+        // High energy sizzle
+        const sizzleOsc = this.ctx.createOscillator();
+        const sizzleGain = this.ctx.createGain();
+
+        sizzleOsc.type = 'sawtooth';
+        sizzleOsc.frequency.setValueAtTime(800, now);
+        sizzleOsc.frequency.exponentialRampToValueAtTime(200, now + duration * 0.5);
+
+        sizzleGain.gain.setValueAtTime(0.15, now);
+        sizzleGain.gain.exponentialRampToValueAtTime(0.01, now + duration * 0.6);
+
+        sizzleOsc.connect(sizzleGain);
+        sizzleGain.connect(this.masterGain);
+        sizzleOsc.start(now);
+        sizzleOsc.stop(now + duration);
+
+        // Noise burst for impact
+        this.playNoiseBurst(0.4, duration * 0.8);
+
+        // Delayed rumble
+        setTimeout(() => {
+            this.playExplosion(2.5);
+        }, 100);
     }
 
     // ========================================================================

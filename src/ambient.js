@@ -26,17 +26,21 @@ const CLOUD_CONFIG = {
 };
 
 const UFO_CONFIG = {
-    spawnChance: 0.001,  // Per frame chance
-    minSpeed: 40,
-    maxSpeed: 80,
+    spawnChance: 0.003,   // Per frame chance (3x more frequent)
+    maxConcurrent: 4,     // Max UFOs at once (was 2)
+    minSpeed: 50,
+    maxSpeed: 100,
     wobbleSpeed: 2,
     wobbleAmount: 15,
-    shootInterval: 2000,  // ms between shots
-    shootChance: 0.4,     // Chance to shoot when interval hits
+    shootInterval: 1500,  // ms between shots (faster)
+    shootChance: 0.6,     // Chance to shoot when interval hits
     // Combat properties
     health: 1,            // UFOs die in one hit
     hitboxWidth: 35,      // Ellipse hitbox width (half-width)
-    hitboxHeight: 12      // Ellipse hitbox height (half-height)
+    hitboxHeight: 12,     // Ellipse hitbox height (half-height)
+    // Shot damage properties
+    shotDamage: 8,        // Damage to tanks
+    shotBlastRadius: 40   // Terrain destruction radius
 };
 
 // Buff types that UFOs can drop
@@ -48,26 +52,158 @@ export const UFO_BUFF_TYPES = {
 
 const WEATHER_CONFIG = {
     rain: {
-        count: 100,
-        speed: 400,
-        angle: 0.1,  // Slight angle
+        count: 200,       // 2x more
+        speed: 600,       // 1.5x faster
+        angle: 0.15,      // More angled
         color: '#4488ff',
-        length: 15
+        length: 25        // Longer streaks
     },
     snow: {
-        count: 60,
-        speed: 50,
-        wobble: 30,
+        count: 120,       // 2x more
+        speed: 80,        // Faster
+        wobble: 50,       // More wobble
         color: '#ffffff',
-        radius: 2
+        radius: 3         // Bigger flakes
     },
     embers: {
-        count: 40,
-        speed: 30,
-        riseSpeed: -20,
+        count: 100,       // 2.5x more
+        speed: 50,        // Faster
+        riseSpeed: -40,   // Rise faster
         color: '#ff6600',
-        radius: 2
+        radius: 3         // Bigger
     }
+};
+
+// Space battle configuration - DISTANT EPIC (like a painting in the background)
+const SPACE_BATTLE_CONFIG = {
+    // Sky boundaries (percentage of canvas height)
+    skyTopPct: 0.02,           // Top of battle area
+    skyBottomPct: 0.45,        // Bottom of battle area (above terrain)
+
+    // === GLOBAL DEPTH SETTINGS ===
+    depthOverlayAlpha: 0.25,   // Dark overlay to push battle back visually
+
+    // === DREADNOUGHTS (massive distant silhouettes) ===
+    dreadnoughtCount: 3,
+    dreadnought: {
+        widthPctMin: 0.20,     // 20% of screen width minimum
+        widthPctMax: 0.30,     // 30% of screen width maximum
+        heightRatio: 0.18,     // Height = width * this ratio
+        depthLayer: 0,         // Furthest back (dimmest)
+        alpha: 0.18,           // Very dim, distant silhouettes
+        driftSpeed: 1.2,       // Barely perceptible drift
+        yPctMin: 0.05,         // Top of dreadnought zone
+        yPctMax: 0.20,         // Bottom of dreadnought zone
+        fireIntervalMin: 10,   // Long pauses between shots
+        fireIntervalMax: 20,
+        beamWidth: 4,          // Thinner beams
+        beamSpeed: 120,        // Slow majestic bolts
+        beamLength: 60
+    },
+
+    // === CRUISERS (medium ships, still distant) ===
+    cruiserCount: 5,
+    cruiser: {
+        widthPctMin: 0.08,     // 8% of screen width
+        widthPctMax: 0.15,     // 15% of screen width
+        heightRatio: 0.20,
+        depthLayer: 1,         // Middle layer
+        alpha: 0.22,           // Still quite dim
+        driftSpeed: 3,         // Slow drift
+        yPctMin: 0.10,
+        yPctMax: 0.35,
+        fireIntervalMin: 6,    // Slower firing
+        fireIntervalMax: 14,
+        beamWidth: 2,          // Thin beams
+        beamSpeed: 150,
+        beamLength: 35
+    },
+
+    // === FIGHTERS (small ships, reduced count) ===
+    fighterCount: 12,          // Cut in half
+    fighter: {
+        widthPctMin: 0.010,    // 1% of screen width
+        widthPctMax: 0.025,    // 2.5% of screen width
+        heightRatio: 0.5,
+        depthLayer: 2,         // Nearest layer
+        alpha: 0.30,           // Still subdued
+        speed: 50,             // Cruising, not zipping
+        yPctMin: 0.08,
+        yPctMax: 0.40,
+        fireChance: 0.003,     // Much less frequent firing
+        beamWidth: 1,          // Hair-thin beams
+        beamSpeed: 200,        // Moderate speed
+        beamLength: 12,
+        weaveAmount: 12,       // Subtle weaving
+        weaveSpeed: 1.0        // Slower weave
+    },
+
+    // === PROJECTILE POOLING ===
+    maxProjectiles: 25,        // Fewer active projectiles
+
+    // === EXPLOSIONS & IMPACTS (subtle) ===
+    impactFlashDuration: 0.05, // Brief shield flicker
+    smallExplosionRadius: 10,
+    largeExplosionRadius: 25,
+    impactAlpha: 0.35,         // Subdued impacts
+    criticalDamageChance: 0.003,
+    shipDestructionChance: 0.001,
+    debrisPerDestruction: 8,
+
+    // === SPACE DUST (atmospheric) ===
+    dustCount: 40,
+    dustSpeedMin: 2,
+    dustSpeedMax: 8,
+    dustAlphaMin: 0.03,
+    dustAlphaMax: 0.08,
+    dustSizeMin: 1,
+    dustSizeMax: 2,
+
+    // === DISTANT FLASHES (rare) ===
+    distantFlashChance: 0.0015,
+    distantFlashRadius: 80,
+    distantFlashDuration: 0.25,
+    distantFlashAlpha: 0.15,
+
+    // === ATMOSPHERE ===
+    hazeAlpha: 0.04,
+
+    // === FACTION COLORS (slightly muted for distance) ===
+    factionA: {  // Cool fleet (blue/purple)
+        hull: '#151f28',
+        edge: '#2a4a75',
+        engine: '#3366aa',
+        laser: '#00aacc',
+        accent: '#4433aa'
+    },
+    factionB: {  // Warm fleet (orange/red)
+        hull: '#28201a',
+        edge: '#885533',
+        engine: '#cc6633',
+        laser: '#cc8800',
+        accent: '#883322'
+    },
+
+    // Common colors (muted)
+    explosion: '#cc9933',
+    explosionCore: '#dddddd',
+    shieldFlash: '#66cccc',
+    smoke: '#333333',
+
+    // Projectile glow settings
+    projectileGlowHeavy: 8,
+    projectileGlowLight: 4,
+    projectileAlpha: 0.4
+};
+
+// Lightning configuration
+const LIGHTNING_CONFIG = {
+    strikeChance: 0.0008,  // Per frame during rain
+    branchCount: 4,
+    segmentLength: 30,
+    damage: 0,             // No damage to tanks
+    terrainDamage: 35,     // Crater radius
+    duration: 0.15         // Seconds visible
 };
 
 const AMBIENT_CONFIG = {
@@ -304,32 +440,57 @@ class UFO {
 // ============================================================================
 
 class UFOShot {
-    constructor(x, y, color) {
+    constructor(x, y, color, terrainCallback, tankCallback) {
         this.x = x;
         this.y = y;
         this.color = color;
-        this.vy = randomRange(100, 180);
-        this.vx = randomRange(-30, 30);
-        this.life = 2;
+        this.vy = randomRange(120, 200);  // Faster shots
+        this.vx = randomRange(-40, 40);
+        this.life = 2.5;
         this.dead = false;
-        this.radius = 4;
+        this.radius = 5;
         this.trail = [];
+        this.terrainCallback = terrainCallback;
+        this.tankCallback = tankCallback;
+        this.hasHit = false;
     }
 
-    update(dt, canvasHeight, voidY) {
+    update(dt, canvasHeight, voidY, players = []) {
         // Store trail
         this.trail.push({ x: this.x, y: this.y });
-        if (this.trail.length > 8) this.trail.shift();
+        if (this.trail.length > 10) this.trail.shift();
 
         this.x += this.vx * dt;
         this.y += this.vy * dt;
         this.life -= dt;
 
+        // Check for tank collision (damage tanks!)
+        if (!this.hasHit && this.tankCallback) {
+            for (const player of players) {
+                if (player.health <= 0) continue;
+                const dx = this.x - player.x;
+                const dy = this.y - player.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 30) {  // Tank radius
+                    // Deal damage to tank
+                    this.tankCallback(player, UFO_CONFIG.shotDamage, this.x, this.y);
+                    this.hasHit = true;
+                    this.dead = true;
+                    particles.sparks(this.x, this.y, 20, this.color);
+                    particles.sparks(this.x, this.y, 15, '#ffffff');
+                    return;
+                }
+            }
+        }
+
         // Die on ground or void or timeout
         if (this.life <= 0 || this.y > voidY || this.y > canvasHeight) {
             this.dead = true;
-            // Spawn cosmetic impact particles
-            particles.sparks(this.x, this.y, 8, this.color);
+            // Impact effect with terrain damage
+            particles.sparks(this.x, this.y, 15, this.color);
+            if (this.terrainCallback && this.y < voidY) {
+                this.terrainCallback(this.x, this.y, UFO_CONFIG.shotBlastRadius);
+            }
         }
     }
 
@@ -337,14 +498,16 @@ class UFOShot {
         // Trail
         for (let i = 0; i < this.trail.length; i++) {
             const t = this.trail[i];
-            const alpha = (i / this.trail.length) * 0.4;
+            const alpha = (i / this.trail.length) * 0.5;
             renderer.ctx.globalAlpha = alpha;
-            renderer.drawCircle(t.x, t.y, this.radius * 0.5, this.color, false);
+            renderer.drawCircle(t.x, t.y, this.radius * 0.6, this.color, false);
         }
         renderer.ctx.globalAlpha = 1;
 
-        // Main shot
+        // Main shot with glow
+        renderer.setGlow(this.color, 10);
         renderer.drawCircle(this.x, this.y, this.radius, this.color, true);
+        renderer.clearGlow();
     }
 }
 
@@ -527,6 +690,983 @@ class AmbientParticle {
 }
 
 // ============================================================================
+// EPIC SPACE BATTLE SYSTEM - "Holy shit there's a WAR up there"
+// ============================================================================
+
+// Helper to get sky bounds based on canvas size
+function getSkyBounds(canvasHeight) {
+    return {
+        top: canvasHeight * SPACE_BATTLE_CONFIG.skyTopPct,
+        bottom: canvasHeight * SPACE_BATTLE_CONFIG.skyBottomPct
+    };
+}
+
+// ============================================================================
+// DREADNOUGHT - Massive capital ships (20-30% screen width)
+// ============================================================================
+
+class Dreadnought {
+    constructor(canvasWidth, canvasHeight, index, allShips) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.index = index;
+        this.allShips = allShips;
+        this.reset(true);
+    }
+
+    reset(initial = false) {
+        const cfg = SPACE_BATTLE_CONFIG.dreadnought;
+        const sky = getSkyBounds(this.canvasHeight);
+
+        // Size based on screen width percentage
+        this.width = this.canvasWidth * randomRange(cfg.widthPctMin, cfg.widthPctMax);
+        this.height = this.width * cfg.heightRatio;
+
+        // Distribute across screen
+        const section = this.canvasWidth / SPACE_BATTLE_CONFIG.dreadnoughtCount;
+        this.x = section * this.index + randomRange(section * 0.2, section * 0.8);
+
+        // Y position in dreadnought zone
+        const yMin = this.canvasHeight * cfg.yPctMin;
+        const yMax = this.canvasHeight * cfg.yPctMax;
+        this.y = randomRange(yMin, yMax);
+
+        // Slow drift
+        this.vx = randomRange(-1, 1) * cfg.driftSpeed;
+        this.vy = randomRange(-0.5, 0.5) * cfg.driftSpeed;
+
+        // Faction (alternating)
+        this.faction = this.index % 2 === 0 ? 'A' : 'B';
+        const colors = this.faction === 'A' ? SPACE_BATTLE_CONFIG.factionA : SPACE_BATTLE_CONFIG.factionB;
+        this.colors = colors;
+
+        // Ship style
+        this.style = randomChoice(['destroyer', 'carrier', 'battleship']);
+
+        // Animation state
+        this.enginePulse = Math.random() * Math.PI * 2;
+        this.lightPhase = Math.random() * Math.PI * 2;
+        this.windowFlicker = Array(8).fill(0).map(() => Math.random() * Math.PI * 2);
+
+        // Firing
+        this.fireTimer = randomRange(cfg.fireIntervalMin, cfg.fireIntervalMax);
+
+        // Damage state
+        this.damaged = false;
+        this.smokeTimer = 0;
+
+        // Alpha based on depth
+        this.alpha = cfg.alpha;
+    }
+
+    update(dt, fireCallback, addExplosion, addSmoke) {
+        const cfg = SPACE_BATTLE_CONFIG.dreadnought;
+        const sky = getSkyBounds(this.canvasHeight);
+
+        // Drift
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+
+        // Animation
+        this.enginePulse += dt * 2;
+        this.lightPhase += dt * 4;
+        for (let i = 0; i < this.windowFlicker.length; i++) {
+            this.windowFlicker[i] += dt * (3 + i * 0.5);
+        }
+
+        // Boundary bounce
+        const margin = this.width * 0.6;
+        if (this.x < margin || this.x > this.canvasWidth - margin) this.vx *= -1;
+        const yMin = this.canvasHeight * cfg.yPctMin;
+        const yMax = this.canvasHeight * cfg.yPctMax;
+        if (this.y < yMin || this.y > yMax) this.vy *= -1;
+
+        // Fire at enemy ships
+        this.fireTimer -= dt;
+        if (this.fireTimer <= 0 && fireCallback) {
+            this.fireTimer = randomRange(cfg.fireIntervalMin, cfg.fireIntervalMax);
+
+            // Target an enemy ship (different faction)
+            const enemies = this.allShips.filter(s => s !== this && s.faction !== this.faction);
+            if (enemies.length > 0) {
+                const target = randomChoice(enemies);
+                fireCallback(this.x, this.y, target, this.colors.laser, 'heavy', this.width);
+            }
+        }
+
+        // Smoke if damaged
+        if (this.damaged && addSmoke) {
+            this.smokeTimer -= dt;
+            if (this.smokeTimer <= 0) {
+                this.smokeTimer = 0.15;
+                addSmoke(this.x + randomRange(-this.width * 0.3, this.width * 0.3),
+                         this.y + randomRange(-this.height * 0.3, this.height * 0.3));
+            }
+        }
+    }
+
+    draw(renderer) {
+        const ctx = renderer.ctx;
+        const w = this.width;
+        const h = this.height;
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.globalAlpha = this.alpha;
+
+        if (this.style === 'destroyer') {
+            // Star Destroyer style - long wedge
+            ctx.fillStyle = this.colors.hull;
+            ctx.beginPath();
+            ctx.moveTo(w * 0.5, 0);                    // Nose
+            ctx.lineTo(w * 0.3, -h * 0.15);
+            ctx.lineTo(-w * 0.1, -h * 0.3);
+            ctx.lineTo(-w * 0.4, -h * 0.45);
+            ctx.lineTo(-w * 0.5, -h * 0.4);
+            ctx.lineTo(-w * 0.5, h * 0.4);
+            ctx.lineTo(-w * 0.4, h * 0.45);
+            ctx.lineTo(-w * 0.1, h * 0.3);
+            ctx.lineTo(w * 0.3, h * 0.15);
+            ctx.closePath();
+            ctx.fill();
+
+            // Bridge tower
+            ctx.fillStyle = '#0a0a15';
+            ctx.fillRect(-w * 0.05, -h * 0.55, w * 0.15, h * 0.25);
+            ctx.fillRect(-w * 0.02, -h * 0.7, w * 0.08, h * 0.15);
+
+        } else if (this.style === 'carrier') {
+            // Flat carrier with flight deck
+            ctx.fillStyle = this.colors.hull;
+            ctx.beginPath();
+            ctx.moveTo(w * 0.45, -h * 0.1);
+            ctx.lineTo(w * 0.45, h * 0.1);
+            ctx.lineTo(-w * 0.45, h * 0.35);
+            ctx.lineTo(-w * 0.5, h * 0.3);
+            ctx.lineTo(-w * 0.5, -h * 0.3);
+            ctx.lineTo(-w * 0.45, -h * 0.35);
+            ctx.closePath();
+            ctx.fill();
+
+            // Flight deck markings
+            ctx.strokeStyle = this.colors.edge;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = this.alpha * 0.5;
+            ctx.beginPath();
+            ctx.moveTo(w * 0.3, 0);
+            ctx.lineTo(-w * 0.3, 0);
+            ctx.stroke();
+            ctx.globalAlpha = this.alpha;
+
+        } else {
+            // Battleship - chunky with gun batteries
+            ctx.fillStyle = this.colors.hull;
+            ctx.beginPath();
+            ctx.moveTo(w * 0.4, 0);
+            ctx.lineTo(w * 0.3, -h * 0.25);
+            ctx.lineTo(-w * 0.2, -h * 0.4);
+            ctx.lineTo(-w * 0.5, -h * 0.35);
+            ctx.lineTo(-w * 0.5, h * 0.35);
+            ctx.lineTo(-w * 0.2, h * 0.4);
+            ctx.lineTo(w * 0.3, h * 0.25);
+            ctx.closePath();
+            ctx.fill();
+
+            // Gun turrets
+            ctx.fillStyle = this.colors.edge;
+            ctx.beginPath();
+            ctx.arc(w * 0.1, -h * 0.25, h * 0.12, 0, Math.PI * 2);
+            ctx.arc(w * 0.1, h * 0.25, h * 0.12, 0, Math.PI * 2);
+            ctx.arc(-w * 0.2, 0, h * 0.15, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Edge highlight
+        ctx.globalAlpha = this.alpha * 0.6;
+        ctx.strokeStyle = this.colors.edge;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Window lights (flickering)
+        ctx.globalAlpha = this.alpha;
+        for (let i = 0; i < this.windowFlicker.length; i++) {
+            const brightness = 0.3 + Math.sin(this.windowFlicker[i]) * 0.4;
+            if (brightness > 0.4) {
+                const wx = -w * 0.3 + (i % 4) * w * 0.12;
+                const wy = -h * 0.2 + Math.floor(i / 4) * h * 0.25;
+                ctx.globalAlpha = this.alpha * brightness;
+                ctx.fillStyle = '#ffffaa';
+                ctx.fillRect(wx, wy, 3, 2);
+            }
+        }
+
+        // Running lights
+        const lightOn = Math.sin(this.lightPhase) > 0;
+        if (lightOn) {
+            ctx.globalAlpha = 0.9;
+            ctx.fillStyle = this.colors.engine;
+            ctx.beginPath();
+            ctx.arc(w * 0.48, 0, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = this.faction === 'A' ? '#ff0000' : '#00ff00';
+            ctx.beginPath();
+            ctx.arc(-w * 0.48, -h * 0.3, 2, 0, Math.PI * 2);
+            ctx.arc(-w * 0.48, h * 0.3, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Engine glow
+        const engineBrightness = 0.5 + Math.sin(this.enginePulse) * 0.3;
+        ctx.globalAlpha = engineBrightness;
+        renderer.setGlow(this.colors.engine, 20);
+        ctx.fillStyle = this.colors.engine;
+        ctx.beginPath();
+        ctx.ellipse(-w * 0.52, 0, 8, h * 0.25, 0, 0, Math.PI * 2);
+        ctx.fill();
+        renderer.clearGlow();
+
+        ctx.restore();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// CRUISER - Medium ships (8-15% screen width)
+// ============================================================================
+
+class Cruiser {
+    constructor(canvasWidth, canvasHeight, index, allShips) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.index = index;
+        this.allShips = allShips;
+        this.reset(true);
+    }
+
+    reset(initial = false) {
+        const cfg = SPACE_BATTLE_CONFIG.cruiser;
+
+        this.width = this.canvasWidth * randomRange(cfg.widthPctMin, cfg.widthPctMax);
+        this.height = this.width * cfg.heightRatio;
+
+        this.x = randomRange(this.width, this.canvasWidth - this.width);
+        const yMin = this.canvasHeight * cfg.yPctMin;
+        const yMax = this.canvasHeight * cfg.yPctMax;
+        this.y = randomRange(yMin, yMax);
+
+        this.vx = randomRange(-1, 1) * cfg.driftSpeed;
+        this.vy = randomRange(-0.5, 0.5) * cfg.driftSpeed;
+
+        this.faction = this.index % 2 === 0 ? 'A' : 'B';
+        this.colors = this.faction === 'A' ? SPACE_BATTLE_CONFIG.factionA : SPACE_BATTLE_CONFIG.factionB;
+
+        this.style = randomChoice(['frigate', 'corvette', 'gunship']);
+
+        this.enginePulse = Math.random() * Math.PI * 2;
+        this.lightPhase = Math.random() * Math.PI * 2;
+
+        this.fireTimer = randomRange(cfg.fireIntervalMin, cfg.fireIntervalMax);
+        this.alpha = cfg.alpha;
+
+        this.damaged = false;
+        this.smokeTimer = 0;
+    }
+
+    update(dt, fireCallback, addExplosion, addSmoke) {
+        const cfg = SPACE_BATTLE_CONFIG.cruiser;
+
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.enginePulse += dt * 3;
+        this.lightPhase += dt * 5;
+
+        // Boundary
+        const margin = this.width * 0.6;
+        if (this.x < margin || this.x > this.canvasWidth - margin) this.vx *= -1;
+        const yMin = this.canvasHeight * cfg.yPctMin;
+        const yMax = this.canvasHeight * cfg.yPctMax;
+        if (this.y < yMin || this.y > yMax) this.vy *= -1;
+
+        // Fire
+        this.fireTimer -= dt;
+        if (this.fireTimer <= 0 && fireCallback) {
+            this.fireTimer = randomRange(cfg.fireIntervalMin, cfg.fireIntervalMax);
+            const enemies = this.allShips.filter(s => s !== this && s.faction !== this.faction);
+            if (enemies.length > 0) {
+                const target = randomChoice(enemies);
+                fireCallback(this.x, this.y, target, this.colors.laser, 'medium', this.width);
+            }
+        }
+
+        if (this.damaged && addSmoke) {
+            this.smokeTimer -= dt;
+            if (this.smokeTimer <= 0) {
+                this.smokeTimer = 0.2;
+                addSmoke(this.x + randomRange(-this.width * 0.2, this.width * 0.2), this.y);
+            }
+        }
+    }
+
+    draw(renderer) {
+        const ctx = renderer.ctx;
+        const w = this.width;
+        const h = this.height;
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.globalAlpha = this.alpha;
+
+        // Simple angular shape
+        ctx.fillStyle = this.colors.hull;
+        ctx.beginPath();
+        ctx.moveTo(w * 0.5, 0);
+        ctx.lineTo(w * 0.2, -h * 0.4);
+        ctx.lineTo(-w * 0.4, -h * 0.45);
+        ctx.lineTo(-w * 0.5, -h * 0.3);
+        ctx.lineTo(-w * 0.5, h * 0.3);
+        ctx.lineTo(-w * 0.4, h * 0.45);
+        ctx.lineTo(w * 0.2, h * 0.4);
+        ctx.closePath();
+        ctx.fill();
+
+        // Edge
+        ctx.globalAlpha = this.alpha * 0.5;
+        ctx.strokeStyle = this.colors.edge;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Engine
+        const engineBrightness = 0.4 + Math.sin(this.enginePulse) * 0.3;
+        ctx.globalAlpha = engineBrightness;
+        renderer.setGlow(this.colors.engine, 12);
+        ctx.fillStyle = this.colors.engine;
+        ctx.beginPath();
+        ctx.ellipse(-w * 0.52, 0, 5, h * 0.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        renderer.clearGlow();
+
+        // Running light
+        if (Math.sin(this.lightPhase) > 0.3) {
+            ctx.globalAlpha = 0.8;
+            ctx.fillStyle = this.colors.engine;
+            ctx.beginPath();
+            ctx.arc(w * 0.48, 0, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.restore();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// FIGHTER - Small fast ships (1-2.5% screen width)
+// ============================================================================
+
+class Fighter {
+    constructor(canvasWidth, canvasHeight, allShips) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.allShips = allShips;
+        this.trail = [];
+        this.maxTrailLength = 6;
+        this.reset(true);
+    }
+
+    reset(initial = false) {
+        const cfg = SPACE_BATTLE_CONFIG.fighter;
+
+        this.width = this.canvasWidth * randomRange(cfg.widthPctMin, cfg.widthPctMax);
+        this.height = this.width * cfg.heightRatio;
+
+        this.x = randomRange(0, this.canvasWidth);
+        const yMin = this.canvasHeight * cfg.yPctMin;
+        const yMax = this.canvasHeight * cfg.yPctMax;
+        this.y = randomRange(yMin, yMax);
+
+        this.angle = randomRange(0, Math.PI * 2);
+        this.speed = cfg.speed * randomRange(0.8, 1.3);
+
+        this.faction = Math.random() < 0.5 ? 'A' : 'B';
+        this.colors = this.faction === 'A' ? SPACE_BATTLE_CONFIG.factionA : SPACE_BATTLE_CONFIG.factionB;
+
+        // Weaving behavior
+        this.weavePhase = Math.random() * Math.PI * 2;
+        this.turnTimer = randomRange(0.5, 2);
+
+        this.alpha = cfg.alpha;
+        this.trail = [];
+    }
+
+    update(dt, fireCallback) {
+        const cfg = SPACE_BATTLE_CONFIG.fighter;
+        const sky = getSkyBounds(this.canvasHeight);
+
+        // Store trail
+        this.trail.push({ x: this.x, y: this.y });
+        if (this.trail.length > this.maxTrailLength) this.trail.shift();
+
+        // Weaving motion
+        this.weavePhase += cfg.weaveSpeed * dt;
+        const weaveOffset = Math.sin(this.weavePhase) * cfg.weaveAmount * dt;
+
+        // Move
+        this.x += Math.cos(this.angle) * this.speed * dt;
+        this.y += Math.sin(this.angle) * this.speed * dt + weaveOffset;
+
+        // Random turns
+        this.turnTimer -= dt;
+        if (this.turnTimer <= 0) {
+            this.angle += randomRange(-1, 1);
+            this.turnTimer = randomRange(0.5, 2);
+        }
+
+        // Wrap
+        if (this.x < -30) this.x = this.canvasWidth + 30;
+        if (this.x > this.canvasWidth + 30) this.x = -30;
+        const yMin = this.canvasHeight * cfg.yPctMin - 20;
+        const yMax = this.canvasHeight * cfg.yPctMax + 20;
+        if (this.y < yMin) { this.y = yMin; this.angle = Math.abs(this.angle); }
+        if (this.y > yMax) { this.y = yMax; this.angle = -Math.abs(this.angle); }
+
+        // Fire occasionally
+        if (Math.random() < cfg.fireChance && fireCallback) {
+            // Aim roughly forward with spread
+            fireCallback(this.x, this.y, null, this.colors.laser, 'light', this.width, this.angle + randomRange(-0.5, 0.5));
+        }
+    }
+
+    draw(renderer) {
+        const ctx = renderer.ctx;
+        const w = this.width;
+
+        // Trail
+        if (this.trail.length > 1) {
+            for (let i = 1; i < this.trail.length; i++) {
+                const alpha = (i / this.trail.length) * this.alpha * 0.4;
+                ctx.globalAlpha = alpha;
+                ctx.strokeStyle = this.colors.engine;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(this.trail[i - 1].x, this.trail[i - 1].y);
+                ctx.lineTo(this.trail[i].x, this.trail[i].y);
+                ctx.stroke();
+            }
+        }
+
+        // Fighter body
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle);
+        ctx.globalAlpha = this.alpha;
+
+        ctx.fillStyle = this.colors.hull;
+        ctx.beginPath();
+        ctx.moveTo(w * 0.6, 0);
+        ctx.lineTo(-w * 0.4, -w * 0.35);
+        ctx.lineTo(-w * 0.2, 0);
+        ctx.lineTo(-w * 0.4, w * 0.35);
+        ctx.closePath();
+        ctx.fill();
+
+        // Engine dot
+        ctx.globalAlpha = this.alpha * 0.8;
+        ctx.fillStyle = this.colors.engine;
+        ctx.beginPath();
+        ctx.arc(-w * 0.35, 0, w * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// PROJECTILE - Pooled laser bolts that travel between ships
+// ============================================================================
+
+class SpaceProjectile {
+    constructor() {
+        this.active = false;
+    }
+
+    fire(x, y, target, color, type, sourceWidth, fixedAngle = null) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.type = type;  // 'heavy', 'medium', 'light'
+        this.active = true;
+        this.hasHit = false;
+
+        const cfg = SPACE_BATTLE_CONFIG;
+
+        if (type === 'heavy') {
+            this.speed = cfg.dreadnought.beamSpeed;
+            this.width = cfg.dreadnought.beamWidth;
+            this.length = cfg.dreadnought.beamLength;
+            this.life = 3;
+        } else if (type === 'medium') {
+            this.speed = cfg.cruiser.beamSpeed;
+            this.width = cfg.cruiser.beamWidth;
+            this.length = cfg.cruiser.beamLength;
+            this.life = 2;
+        } else {
+            this.speed = cfg.fighter.beamSpeed;
+            this.width = cfg.fighter.beamWidth;
+            this.length = cfg.fighter.beamLength;
+            this.life = 1.5;
+        }
+
+        this.maxLife = this.life;
+
+        // Calculate angle to target or use fixed angle
+        if (fixedAngle !== null) {
+            this.angle = fixedAngle;
+            this.targetX = null;
+            this.targetY = null;
+        } else if (target) {
+            const dx = target.x - x;
+            const dy = target.y - y;
+            this.angle = Math.atan2(dy, dx);
+            this.targetX = target.x;
+            this.targetY = target.y;
+            this.targetShip = target;
+        } else {
+            this.angle = randomRange(0, Math.PI * 2);
+            this.targetX = null;
+            this.targetY = null;
+        }
+    }
+
+    update(dt, addImpact) {
+        if (!this.active) return;
+
+        this.x += Math.cos(this.angle) * this.speed * dt;
+        this.y += Math.sin(this.angle) * this.speed * dt;
+        this.life -= dt;
+
+        // Check if reached target
+        if (this.targetShip && !this.hasHit) {
+            const dx = this.x - this.targetShip.x;
+            const dy = this.y - this.targetShip.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const hitDist = (this.targetShip.width || 50) * 0.4;
+
+            if (dist < hitDist) {
+                this.hasHit = true;
+                if (addImpact) {
+                    addImpact(this.x, this.y, this.type, this.targetShip);
+                }
+            }
+        }
+
+        if (this.life <= 0) this.active = false;
+    }
+
+    draw(renderer) {
+        if (!this.active) return;
+
+        const ctx = renderer.ctx;
+        const cfg = SPACE_BATTLE_CONFIG;
+        const baseAlpha = cfg.projectileAlpha || 0.4;
+        const alpha = clamp(this.life / this.maxLife, 0, 1) * baseAlpha;
+
+        const endX = this.x - Math.cos(this.angle) * this.length;
+        const endY = this.y - Math.sin(this.angle) * this.length;
+
+        // Subtle glow
+        const glowSize = this.type === 'heavy' ? cfg.projectileGlowHeavy : cfg.projectileGlowLight;
+        ctx.globalAlpha = alpha * 0.4;
+        renderer.setGlow(this.color, glowSize);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = this.width + 1;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+
+        // Thin core
+        ctx.globalAlpha = alpha * 0.8;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = this.width;
+        ctx.stroke();
+
+        renderer.clearGlow();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// IMPACT - Shield flashes and explosion effects
+// ============================================================================
+
+class SpaceImpact {
+    constructor() {
+        this.active = false;
+    }
+
+    trigger(x, y, type, targetShip, beaconDropCallback = null) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.active = true;
+        this.targetShip = targetShip;
+
+        const cfg = SPACE_BATTLE_CONFIG;
+
+        // Shield flash
+        this.flashLife = cfg.impactFlashDuration;
+        this.flashMaxLife = this.flashLife;
+
+        // Explosion
+        if (type === 'heavy') {
+            this.radius = 0;
+            this.maxRadius = cfg.largeExplosionRadius;
+            this.explosionLife = 0.5;
+        } else {
+            this.radius = 0;
+            this.maxRadius = cfg.smallExplosionRadius;
+            this.explosionLife = 0.3;
+        }
+        this.maxExplosionLife = this.explosionLife;
+
+        // Chance for critical damage and desperation beacon drop
+        if (targetShip && Math.random() < cfg.criticalDamageChance) {
+            targetShip.damaged = true;
+
+            // Drop desperation beacon from critically damaged capital ship (once per ship)
+            if (!targetShip.hasDroppedBeacon && beaconDropCallback) {
+                // Only capital ships (dreadnoughts/cruisers) drop beacons
+                if (targetShip.width && targetShip.width > 50) {
+                    targetShip.hasDroppedBeacon = true;
+                    beaconDropCallback(targetShip.x, targetShip.y);
+                }
+            }
+        }
+    }
+
+    update(dt) {
+        if (!this.active) return;
+
+        this.flashLife -= dt;
+        this.explosionLife -= dt;
+        this.radius += 80 * dt;
+
+        if (this.explosionLife <= 0) this.active = false;
+    }
+
+    draw(renderer) {
+        if (!this.active) return;
+
+        const ctx = renderer.ctx;
+        const cfg = SPACE_BATTLE_CONFIG;
+        const baseAlpha = cfg.impactAlpha || 0.35;
+
+        // Shield flash on ship (subtle)
+        if (this.flashLife > 0 && this.targetShip) {
+            const flashAlpha = (this.flashLife / this.flashMaxLife) * baseAlpha;
+            ctx.globalAlpha = flashAlpha;
+            renderer.setGlow(cfg.shieldFlash, 10);
+            ctx.strokeStyle = cfg.shieldFlash;
+            ctx.lineWidth = 1;
+            const shipW = this.targetShip.width || 50;
+            const shipH = this.targetShip.height || 20;
+            ctx.beginPath();
+            ctx.ellipse(this.targetShip.x, this.targetShip.y, shipW * 0.4, shipH * 0.5, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            renderer.clearGlow();
+        }
+
+        // Explosion (subdued)
+        const explosionAlpha = clamp(this.explosionLife / this.maxExplosionLife, 0, 1) * baseAlpha;
+
+        // Small core
+        ctx.globalAlpha = explosionAlpha * 0.8;
+        renderer.setGlow(cfg.explosion, 6);
+        ctx.fillStyle = cfg.explosionCore;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * 0.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Faint outer ring
+        ctx.globalAlpha = explosionAlpha * 0.5;
+        ctx.strokeStyle = cfg.explosion;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * 0.7, 0, Math.PI * 2);
+        ctx.stroke();
+
+        renderer.clearGlow();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// SPACE DUST - Drifting particle layer
+// ============================================================================
+
+class SpaceDust {
+    constructor(canvasWidth, canvasHeight) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.reset(true);
+    }
+
+    reset(initial = false) {
+        const cfg = SPACE_BATTLE_CONFIG;
+        this.x = randomRange(0, this.canvasWidth);
+        this.y = randomRange(0, this.canvasHeight * cfg.skyBottomPct);
+        this.vx = randomRange(cfg.dustSpeedMin, cfg.dustSpeedMax) * (Math.random() < 0.5 ? 1 : -1);
+        this.vy = randomRange(-2, 2);
+        this.size = randomRange(cfg.dustSizeMin, cfg.dustSizeMax);
+        this.alpha = randomRange(cfg.dustAlphaMin, cfg.dustAlphaMax);
+    }
+
+    update(dt) {
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+
+        // Wrap
+        if (this.x < -10) this.x = this.canvasWidth + 10;
+        if (this.x > this.canvasWidth + 10) this.x = -10;
+        const maxY = this.canvasHeight * SPACE_BATTLE_CONFIG.skyBottomPct;
+        if (this.y < -10) this.y = maxY;
+        if (this.y > maxY + 10) this.y = -10;
+    }
+
+    draw(renderer) {
+        const ctx = renderer.ctx;
+        ctx.globalAlpha = this.alpha;
+        ctx.fillStyle = '#666688';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// DISTANT FLASH - Far-off explosions
+// ============================================================================
+
+class DistantFlash {
+    constructor() {
+        this.active = false;
+    }
+
+    trigger(canvasWidth, canvasHeight) {
+        const cfg = SPACE_BATTLE_CONFIG;
+        this.x = randomRange(50, canvasWidth - 50);
+        this.y = randomRange(canvasHeight * 0.02, canvasHeight * 0.15);
+        this.radius = 0;
+        this.maxRadius = cfg.distantFlashRadius * randomRange(0.5, 1.5);
+        this.life = cfg.distantFlashDuration;
+        this.maxLife = this.life;
+        this.active = true;
+        this.color = randomChoice(['#ffaa44', '#ff6622', '#ffcc66']);
+    }
+
+    update(dt) {
+        if (!this.active) return;
+        this.radius += 100 * dt;  // Slower expansion
+        this.life -= dt;
+        if (this.life <= 0) this.active = false;
+    }
+
+    draw(renderer) {
+        if (!this.active) return;
+
+        const ctx = renderer.ctx;
+        const cfg = SPACE_BATTLE_CONFIG;
+        const baseAlpha = cfg.distantFlashAlpha || 0.15;
+        const alpha = clamp(this.life / this.maxLife, 0, 1) * baseAlpha;
+
+        // Very subtle glow
+        ctx.globalAlpha = alpha;
+        renderer.setGlow(this.color, 15);
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Faint outer ring
+        ctx.globalAlpha = alpha * 0.4;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * 0.6, 0, Math.PI * 2);
+        ctx.stroke();
+
+        renderer.clearGlow();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// SMOKE TRAIL - For damaged ships
+// ============================================================================
+
+class SmokeParticle {
+    constructor() {
+        this.active = false;
+    }
+
+    spawn(x, y) {
+        this.x = x;
+        this.y = y;
+        this.vx = randomRange(-10, 10);
+        this.vy = randomRange(-5, 5);
+        this.size = randomRange(5, 15);
+        this.life = randomRange(1, 2);
+        this.maxLife = this.life;
+        this.active = true;
+    }
+
+    update(dt) {
+        if (!this.active) return;
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+        this.size += 10 * dt;
+        this.life -= dt;
+        if (this.life <= 0) this.active = false;
+    }
+
+    draw(renderer) {
+        if (!this.active) return;
+        const ctx = renderer.ctx;
+        const alpha = clamp(this.life / this.maxLife, 0, 1) * 0.2;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = SPACE_BATTLE_CONFIG.smoke;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
+// Lightning Strike System
+// ============================================================================
+
+class LightningStrike {
+    constructor(canvasWidth, canvasHeight, terrainCallback) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.terrainCallback = terrainCallback;
+
+        // Random strike position
+        this.x = randomRange(100, canvasWidth - 100);
+        this.startY = 0;
+        this.endY = randomRange(400, canvasHeight - 200);
+
+        // Generate lightning path with branches
+        this.segments = this.generatePath();
+        this.branches = this.generateBranches();
+
+        this.life = LIGHTNING_CONFIG.duration;
+        this.maxLife = this.life;
+        this.dead = false;
+        this.impactTriggered = false;
+    }
+
+    generatePath() {
+        const segments = [];
+        let x = this.x;
+        let y = this.startY;
+        const targetY = this.endY;
+
+        while (y < targetY) {
+            const newX = x + randomRange(-40, 40);
+            const newY = y + LIGHTNING_CONFIG.segmentLength * randomRange(0.8, 1.2);
+            segments.push({ x1: x, y1: y, x2: newX, y2: newY });
+            x = newX;
+            y = newY;
+        }
+        return segments;
+    }
+
+    generateBranches() {
+        const branches = [];
+        const branchCount = LIGHTNING_CONFIG.branchCount;
+        for (let i = 0; i < branchCount; i++) {
+            // Pick a random segment to branch from
+            const segIdx = randomInt(Math.floor(this.segments.length * 0.3), this.segments.length - 1);
+            const seg = this.segments[segIdx];
+            if (!seg) continue;
+
+            // Generate small branch
+            let x = seg.x2;
+            let y = seg.y2;
+            const branchSegs = [];
+            const branchLen = randomInt(2, 4);
+            const dir = Math.random() < 0.5 ? -1 : 1;
+
+            for (let j = 0; j < branchLen; j++) {
+                const newX = x + dir * randomRange(15, 35);
+                const newY = y + randomRange(15, 30);
+                branchSegs.push({ x1: x, y1: y, x2: newX, y2: newY });
+                x = newX;
+                y = newY;
+            }
+            branches.push(branchSegs);
+        }
+        return branches;
+    }
+
+    update(dt) {
+        this.life -= dt;
+
+        // Trigger terrain damage at impact point (once)
+        if (!this.impactTriggered && this.terrainCallback) {
+            const lastSeg = this.segments[this.segments.length - 1];
+            if (lastSeg) {
+                this.terrainCallback(lastSeg.x2, lastSeg.y2, LIGHTNING_CONFIG.terrainDamage);
+                // Spawn particles at impact
+                particles.sparks(lastSeg.x2, lastSeg.y2, 30, '#ffffff');
+                particles.sparks(lastSeg.x2, lastSeg.y2, 20, '#88ffff');
+            }
+            this.impactTriggered = true;
+        }
+
+        if (this.life <= 0) this.dead = true;
+    }
+
+    draw(renderer) {
+        const alpha = clamp(this.life / this.maxLife, 0, 1);
+        const ctx = renderer.ctx;
+
+        // Draw with intense glow
+        ctx.globalAlpha = alpha;
+        renderer.setGlow('#88ffff', 25);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+
+        // Main bolt
+        ctx.beginPath();
+        for (const seg of this.segments) {
+            ctx.moveTo(seg.x1, seg.y1);
+            ctx.lineTo(seg.x2, seg.y2);
+        }
+        ctx.stroke();
+
+        // Branches (thinner)
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#aaffff';
+        for (const branch of this.branches) {
+            ctx.beginPath();
+            for (const seg of branch) {
+                ctx.moveTo(seg.x1, seg.y1);
+                ctx.lineTo(seg.x2, seg.y2);
+            }
+            ctx.stroke();
+        }
+
+        renderer.clearGlow();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
 // Ambient System Manager
 // ============================================================================
 
@@ -547,6 +1687,22 @@ export class AmbientSystem {
         this.weatherType = null;  // 'rain', 'snow', 'embers', or null
         this.weatherParticles = [];
 
+        // EPIC space battle (visual only, no gameplay effects)
+        this.dreadnoughts = [];
+        this.cruisers = [];
+        this.fighters = [];
+        this.projectilePool = [];
+        this.impactPool = [];
+        this.spaceDust = [];
+        this.distantFlashes = [];
+        this.smokeParticles = [];
+        this.allShips = [];  // Combined list for targeting
+
+        // Lightning strikes
+        this.lightningStrikes = [];
+        this.terrainDamageCallback = null;  // Set by main.js
+        this.tankDamageCallback = null;     // Set by main.js
+
         // Ambient particles
         this.dustParticles = [];
         this.glitchParticles = [];
@@ -563,8 +1719,17 @@ export class AmbientSystem {
         // Initialize ambient particles
         this.initAmbientParticles();
 
+        // Initialize space battle
+        this.initSpaceBattle();
+
         // Set random initial weather (or none)
         this.setRandomWeather();
+    }
+
+    // Set callbacks for damage effects
+    setDamageCallbacks(terrainCallback, tankCallback) {
+        this.terrainDamageCallback = terrainCallback;
+        this.tankDamageCallback = tankCallback;
     }
 
     initClouds() {
@@ -582,6 +1747,55 @@ export class AmbientSystem {
         }
         for (let i = 0; i < AMBIENT_CONFIG.glitchCount; i++) {
             this.glitchParticles.push(new AmbientParticle('glitch', this.canvasWidth, this.canvasHeight));
+        }
+    }
+
+    initSpaceBattle() {
+        const cfg = SPACE_BATTLE_CONFIG;
+
+        // Create dreadnoughts (massive capital ships)
+        for (let i = 0; i < cfg.dreadnoughtCount; i++) {
+            const ship = new Dreadnought(this.canvasWidth, this.canvasHeight, i, this.allShips);
+            this.dreadnoughts.push(ship);
+            this.allShips.push(ship);
+        }
+
+        // Create cruisers (medium ships)
+        for (let i = 0; i < cfg.cruiserCount; i++) {
+            const ship = new Cruiser(this.canvasWidth, this.canvasHeight, i, this.allShips);
+            this.cruisers.push(ship);
+            this.allShips.push(ship);
+        }
+
+        // Create fighters (small fast ships)
+        for (let i = 0; i < cfg.fighterCount; i++) {
+            const ship = new Fighter(this.canvasWidth, this.canvasHeight, this.allShips);
+            this.fighters.push(ship);
+        }
+
+        // Pre-allocate projectile pool
+        for (let i = 0; i < cfg.maxProjectiles; i++) {
+            this.projectilePool.push(new SpaceProjectile());
+        }
+
+        // Pre-allocate impact pool
+        for (let i = 0; i < 20; i++) {
+            this.impactPool.push(new SpaceImpact());
+        }
+
+        // Pre-allocate smoke particles
+        for (let i = 0; i < 30; i++) {
+            this.smokeParticles.push(new SmokeParticle());
+        }
+
+        // Create space dust
+        for (let i = 0; i < cfg.dustCount; i++) {
+            this.spaceDust.push(new SpaceDust(this.canvasWidth, this.canvasHeight));
+        }
+
+        // Pre-allocate distant flashes
+        for (let i = 0; i < 5; i++) {
+            this.distantFlashes.push(new DistantFlash());
         }
     }
 
@@ -604,13 +1818,13 @@ export class AmbientSystem {
     }
 
     spawnUFO() {
-        if (this.ufos.length < 2) {  // Max 2 UFOs at once
+        if (this.ufos.length < UFO_CONFIG.maxConcurrent) {  // Use config for max
             const ufo = new UFO(
                 this.canvasWidth,
                 this.canvasHeight,
                 // onShoot callback
                 (x, y, color) => {
-                    this.ufoShots.push(new UFOShot(x, y, color));
+                    this.ufoShots.push(new UFOShot(x, y, color, this.terrainDamageCallback, this.tankDamageCallback));
                 },
                 // onDestroyed callback
                 (x, y, color, playerIndex, buffType) => {
@@ -619,6 +1833,15 @@ export class AmbientSystem {
             );
             this.ufos.push(ufo);
         }
+    }
+
+    spawnLightning() {
+        const strike = new LightningStrike(
+            this.canvasWidth,
+            this.canvasHeight,
+            this.terrainDamageCallback
+        );
+        this.lightningStrikes.push(strike);
     }
 
     /**
@@ -648,7 +1871,7 @@ export class AmbientSystem {
         return null;
     }
 
-    update(dt, voidY) {
+    update(dt, voidY, players = []) {
         this.time += dt;
 
         // Update clouds
@@ -670,11 +1893,107 @@ export class AmbientSystem {
         }
         this.ufos = this.ufos.filter(u => !u.dead);
 
-        // Update UFO shots
+        // Update UFO shots (with damage)
         for (const shot of this.ufoShots) {
-            shot.update(dt, this.canvasHeight, voidY);
+            shot.update(dt, this.canvasHeight, voidY, players);
         }
         this.ufoShots = this.ufoShots.filter(s => !s.dead);
+
+        // =====================================================================
+        // EPIC SPACE BATTLE UPDATE
+        // =====================================================================
+
+        // Callback for ships to fire projectiles
+        const fireProjectile = (x, y, target, color, type, sourceWidth, fixedAngle = null) => {
+            // Find inactive projectile in pool
+            const proj = this.projectilePool.find(p => !p.active);
+            if (proj) {
+                proj.fire(x, y, target, color, type, sourceWidth, fixedAngle);
+            }
+        };
+
+        // Callback for creating impact effects
+        const addImpact = (x, y, type, targetShip) => {
+            const impact = this.impactPool.find(i => !i.active);
+            if (impact) {
+                impact.trigger(x, y, type, targetShip, this.onBeaconDrop);
+            }
+        };
+
+        // Callback for smoke trails
+        const addSmoke = (x, y) => {
+            const smoke = this.smokeParticles.find(s => !s.active);
+            if (smoke) {
+                smoke.spawn(x, y);
+            }
+        };
+
+        // Skip ship updates during battle pause (for dramatic orbital strike effect)
+        if (!this.battlePaused) {
+            // Update dreadnoughts
+            for (const ship of this.dreadnoughts) {
+                ship.update(dt, fireProjectile, addImpact, addSmoke);
+            }
+
+            // Update cruisers
+            for (const ship of this.cruisers) {
+                ship.update(dt, fireProjectile, addImpact, addSmoke);
+            }
+
+            // Update fighters
+            for (const fighter of this.fighters) {
+                fighter.update(dt, fireProjectile);
+            }
+
+            // Update projectiles
+            for (const proj of this.projectilePool) {
+                proj.update(dt, addImpact);
+            }
+        } else {
+            // Still update projectiles even during pause (they're mid-flight)
+            for (const proj of this.projectilePool) {
+                proj.update(dt, addImpact);
+            }
+        }
+
+        // Update impacts
+        for (const impact of this.impactPool) {
+            impact.update(dt);
+        }
+
+        // Update smoke
+        for (const smoke of this.smokeParticles) {
+            smoke.update(dt);
+        }
+
+        // Update space dust
+        for (const dust of this.spaceDust) {
+            dust.update(dt);
+        }
+
+        // Update distant flashes
+        for (const flash of this.distantFlashes) {
+            flash.update(dt);
+        }
+
+        // Spawn distant flashes randomly
+        if (Math.random() < SPACE_BATTLE_CONFIG.distantFlashChance) {
+            const flash = this.distantFlashes.find(f => !f.active);
+            if (flash) {
+                flash.trigger(this.canvasWidth, this.canvasHeight);
+            }
+        }
+
+        // Update lightning strikes
+        for (const strike of this.lightningStrikes) {
+            strike.update(dt);
+        }
+        this.lightningStrikes = this.lightningStrikes.filter(s => !s.dead);
+
+        // Maybe spawn lightning during rain
+        if (this.weatherType === 'rain' && Math.random() < LIGHTNING_CONFIG.strikeChance) {
+            this.spawnLightning();
+        }
 
         // Update weather
         for (const particle of this.weatherParticles) {
@@ -688,11 +2007,138 @@ export class AmbientSystem {
         for (const glitch of this.glitchParticles) {
             glitch.update(dt);
         }
+
+        // Update battle pause timer
+        if (this.battlePaused && this.pauseTimer > 0) {
+            this.pauseTimer -= dt;
+            if (this.pauseTimer <= 0) {
+                this.battlePaused = false;
+            }
+        }
+    }
+
+    // =========================================================================
+    // Orbital Strike Support Methods
+    // =========================================================================
+
+    /**
+     * Find the nearest capital ship (dreadnought or cruiser) to a ground X position
+     * Used for orbital beacon targeting
+     */
+    findNearestCapitalShip(groundX) {
+        let nearestShip = null;
+        let minDist = Infinity;
+
+        // Check dreadnoughts first (preferred targets)
+        for (const ship of this.dreadnoughts) {
+            const dist = Math.abs(ship.x - groundX);
+            if (dist < minDist) {
+                minDist = dist;
+                nearestShip = ship;
+            }
+        }
+
+        // If no dreadnought close enough, check cruisers
+        if (minDist > this.canvasWidth * 0.4) {
+            for (const ship of this.cruisers) {
+                const dist = Math.abs(ship.x - groundX);
+                if (dist < minDist) {
+                    minDist = dist;
+                    nearestShip = ship;
+                }
+            }
+        }
+
+        return nearestShip;
+    }
+
+    /**
+     * Pause the space battle briefly (for dramatic effect during orbital strikes)
+     */
+    pauseBattle(duration) {
+        this.battlePaused = true;
+        this.pauseTimer = duration;
+    }
+
+    /**
+     * Set callback for desperation beacon drops
+     */
+    setBeaconDropCallback(callback) {
+        this.onBeaconDrop = callback;
     }
 
     // Draw background elements (behind terrain)
     drawBackground(renderer) {
-        // Far clouds (behind everything)
+        const ctx = renderer.ctx;
+        const skyBottom = this.canvasHeight * SPACE_BATTLE_CONFIG.skyBottomPct;
+
+        // =====================================================================
+        // EPIC SPACE BATTLE - Layered back to front
+        // =====================================================================
+
+        // 1. Distant flashes (furthest back - far-off explosions)
+        for (const flash of this.distantFlashes) {
+            flash.draw(renderer);
+        }
+
+        // 2. Space dust (atmospheric particles)
+        for (const dust of this.spaceDust) {
+            dust.draw(renderer);
+        }
+
+        // 3. Dreadnoughts (massive, furthest layer, dimmest)
+        for (const ship of this.dreadnoughts) {
+            ship.draw(renderer);
+        }
+
+        // 4. Smoke trails from damaged ships
+        for (const smoke of this.smokeParticles) {
+            smoke.draw(renderer);
+        }
+
+        // 5. Cruisers (medium layer)
+        for (const ship of this.cruisers) {
+            ship.draw(renderer);
+        }
+
+        // 6. Fighters (nearest, brightest)
+        for (const fighter of this.fighters) {
+            fighter.draw(renderer);
+        }
+
+        // 7. Projectiles (laser bolts between ships)
+        for (const proj of this.projectilePool) {
+            proj.draw(renderer);
+        }
+
+        // 8. Impacts (shield flickers and explosions)
+        for (const impact of this.impactPool) {
+            impact.draw(renderer);
+        }
+
+        // === DEPTH OVERLAY - Push the entire battle back visually ===
+        // Dark gradient overlay makes the battle feel miles away
+        const depthAlpha = SPACE_BATTLE_CONFIG.depthOverlayAlpha || 0.25;
+        ctx.globalAlpha = depthAlpha;
+        const depthGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
+        depthGradient.addColorStop(0, 'rgba(0, 0, 0, 0.4)');
+        depthGradient.addColorStop(0.5, 'rgba(5, 5, 15, 0.3)');
+        depthGradient.addColorStop(1, 'rgba(10, 5, 20, 0.2)');
+        ctx.fillStyle = depthGradient;
+        ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
+        ctx.globalAlpha = 1;
+
+        // Very subtle atmospheric haze across whole sky
+        ctx.globalAlpha = SPACE_BATTLE_CONFIG.hazeAlpha;
+        const hazeGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
+        hazeGradient.addColorStop(0, 'transparent');
+        hazeGradient.addColorStop(0.5, 'rgba(30, 20, 40, 0.03)');
+        hazeGradient.addColorStop(1, 'rgba(20, 15, 35, 0.05)');
+        ctx.fillStyle = hazeGradient;
+        ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
+        ctx.globalAlpha = 1;
+
+        // Far clouds (behind everything else, but after space battle)
         for (const cloud of this.farClouds) {
             cloud.draw(renderer);
         }
@@ -721,6 +2167,11 @@ export class AmbientSystem {
         // UFO shots
         for (const shot of this.ufoShots) {
             shot.draw(renderer);
+        }
+
+        // Lightning strikes (dramatic, above everything)
+        for (const strike of this.lightningStrikes) {
+            strike.draw(renderer);
         }
 
         // Weather particles
