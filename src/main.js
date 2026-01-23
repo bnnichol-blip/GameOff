@@ -18,21 +18,30 @@ import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 // Game Constants
 // ============================================================================
 
-// Display canvas (actual screen size)
-const CANVAS_WIDTH = 1920;
-const CANVAS_HEIGHT = 900;
+// Display canvas (actual screen size) - smaller to fit typical browser windows
+const CANVAS_WIDTH = 1280;
+const CANVAS_HEIGHT = 720;
 
 // Virtual world dimensions (2x larger, rendered at 0.5x scale)
-const VIRTUAL_WIDTH = 3840;
-const VIRTUAL_HEIGHT = 1800;
+const VIRTUAL_WIDTH = CANVAS_WIDTH * 2;   // 2560
+const VIRTUAL_HEIGHT = CANVAS_HEIGHT * 2; // 1440
 const WORLD_SCALE = CANVAS_WIDTH / VIRTUAL_WIDTH;  // 0.5
 
-const NUM_PLAYERS = 5;  // Support 5-6 players
+// === HARD WORLD BOUNDARIES ===
+// Walls at 20px from edges - same as working bounce code in events.js
+// Terrain is pushed down at edges so projectiles won't hit it after bouncing
+const WALL_MARGIN = 20;
+const WORLD_LEFT = WALL_MARGIN;
+const WORLD_RIGHT = VIRTUAL_WIDTH - WALL_MARGIN;
+const WORLD_TOP = WALL_MARGIN;
+const WORLD_BOTTOM = VIRTUAL_HEIGHT;
+
+const NUM_PLAYERS = 3;  // Reduced for smaller world
 const DEFAULT_GRAVITY = 0.15;   // Lower gravity for longer flight paths in larger world
 const MAX_POWER = 28;           // Adjusted for 2x world size
 const CHARGE_RATE = 0.012;      // Slower charge for more precise timing (~3 sec for full)
 const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
-const VOID_RISE_PER_ROUND = 0;  // Disabled - was causing premature game ends
+const VOID_RISE_PER_ROUND = 50;  // Void rises 50px per round (~3% of arena height)
 const TANK_RADIUS = 25;
 const TURN_DELAY_MS = 800;
 
@@ -61,11 +70,50 @@ const PLAYER_COLORS = [
     '#8888ff'   // Blue - P6
 ];
 
+// ============================================================================
+// BOUNDARY ENFORCEMENT - Keep everything inside the world box
+// ============================================================================
+
+/**
+ * Safety backup: enforce world boundaries on a projectile
+ * Main bounce logic is in update functions, this is just a safety clamp
+ */
+function enforceProjectileBounds(proj) {
+    // Simple clamp - main bounce logic handles the actual bouncing
+    if (proj.x < WORLD_LEFT) proj.x = WORLD_LEFT;
+    if (proj.x > WORLD_RIGHT) proj.x = WORLD_RIGHT;
+    if (proj.y < WORLD_TOP) proj.y = WORLD_TOP;
+}
+
+/**
+ * Enforce world boundaries on a tank (hard clamp, no bounce)
+ * Call this EVERY FRAME for EVERY player
+ */
+function enforceTankBounds(player) {
+    // LEFT WALL
+    if (player.x < WORLD_LEFT + TANK_RADIUS) {
+        player.x = WORLD_LEFT + TANK_RADIUS;
+        player.vx = 0;
+    }
+
+    // RIGHT WALL
+    if (player.x > WORLD_RIGHT - TANK_RADIUS) {
+        player.x = WORLD_RIGHT - TANK_RADIUS;
+        player.vx = 0;
+    }
+
+    // TOP (shouldn't happen but just in case)
+    if (player.y < WORLD_TOP + TANK_RADIUS) {
+        player.y = WORLD_TOP + TANK_RADIUS;
+        player.vy = 0;
+    }
+}
+
 /**
  * Generate spawn X positions evenly spaced across the virtual world
  */
 function getSpawnPositions(numPlayers) {
-    const margin = 800;  // Large margin for 2x world (keeps tanks away from edges)
+    const margin = 400;  // Keep tanks away from edges (scaled for smaller world)
     const spacing = (VIRTUAL_WIDTH - margin * 2) / (numPlayers - 1);
     const positions = [];
     for (let i = 0; i < numPlayers; i++) {
@@ -84,6 +132,7 @@ function createPlayers(numPlayers, isAIGame = false) {
         players.push({
             x: spawnXs[i],
             y: 0,  // Will be set by terrain
+            vx: 0,  // Horizontal velocity (knockback)
             vy: 0,
             angle: i < numPlayers / 2 ? 45 : 135,  // Left side aims right, right side aims left
             power: 0,
@@ -95,8 +144,8 @@ function createPlayers(numPlayers, isAIGame = false) {
             isAI: isAIGame && i > 0,  // In AI mode, all except P1 are AI
             shield: 0,
             coins: STARTING_COINS,
-            weapon: 'BABY_SHOT',
-            voidGraceTimer: 0     // For VOIDBORN ability
+            weapon: 'MORTAR',
+            voidGraceTimer: 0     // Legacy field
         });
     }
     return players;
@@ -116,78 +165,76 @@ const WEAPON_TIERS = {
 const WEAPONS = {
     // === CHEAP TIER (15-30 coins) ===
     // NOTE: All damage values doubled (×2) for increased lethality, except Napalm
-    BABY_SHOT: {
-        name: 'Baby Shot',
-        description: 'Weak but accurate',
-        cost: 15,
-        tier: 'CHEAP',
-        damage: 40,        // Was 20, doubled
-        blastRadius: 40,
-        bounces: 1,
-        projectileRadius: 5,
-        projectileSpeed: 1.0,
-        color: '#88ffff'
-    },
+    // REMOVED: BABY_SHOT, MIRV, SHIELD
     BOUNCER: {
         name: 'Bouncer',
-        description: '4 bounces, trick shots',
+        description: 'Pinball chaos - explodes on every bounce',
         cost: 20,
         tier: 'CHEAP',
-        damage: 50,        // Was 25, doubled
-        blastRadius: 35,
-        bounces: 4,
-        projectileRadius: 5,
+        damage: 80,        // Mortar-level damage on each bounce
+        blastRadius: 80,   // Mortar-level blast radius
+        bounces: 4,        // Base bounces (randomized 4-7 at fire time)
+        bouncesMin: 4,     // Minimum random bounces
+        bouncesMax: 7,     // Maximum random bounces
+        projectileRadius: 6,
         projectileSpeed: 1.1,
-        color: '#ffff44'
+        color: '#ffff44',
+        behavior: 'bouncer',
+        finalBlastMultiplier: 2.0  // 2x blast radius on final explosion
     },
     DIRT_BALL: {
         name: 'Dirt Ball',
-        description: 'Builds terrain mound',
+        description: 'Creates massive jagged peak',
         cost: 20,
         tier: 'CHEAP',
-        damage: 10,        // Was 5, doubled
-        blastRadius: 45,
+        damage: 0,         // Utility only - no damage
+        blastRadius: 120,  // Same size as Digger
         bounces: 1,
-        projectileRadius: 8,
-        projectileSpeed: 0.75,
+        projectileRadius: 10,
+        projectileSpeed: 0.7,
         color: '#aa7744',
-        terrainEffect: 'build'
+        terrainEffect: 'buildJagged',
+        behavior: 'dirtBall'
     },
     DIGGER: {
         name: 'Digger',
-        description: 'Removes terrain',
+        description: 'Massive jagged crater to void',
         cost: 25,
         tier: 'CHEAP',
-        damage: 0,         // No damage, unchanged
-        blastRadius: 70,
+        damage: 0,         // Utility only - no direct damage
+        blastRadius: 120,  // Large crater
         bounces: 1,
-        projectileRadius: 6,
-        projectileSpeed: 0.9,
+        projectileRadius: 8,
+        projectileSpeed: 0.85,
         color: '#996633',
-        terrainEffect: 'dig'
+        terrainEffect: 'digJagged',
+        behavior: 'digger'
     },
     ROLLER: {
         name: 'Roller',
-        description: 'Rolls along terrain',
+        description: 'Shockwaves while rolling',
         cost: 30,
         tier: 'CHEAP',
-        damage: 60,        // Was 30, doubled
-        blastRadius: 45,
+        damage: 60,        // Final explosion damage
+        blastRadius: 50,
         bounces: 1,
-        projectileRadius: 7,
-        projectileSpeed: 0.85,
+        projectileRadius: 8,
+        projectileSpeed: 0.8,
         color: '#aaaaaa',
-        behavior: 'roller'
+        behavior: 'roller',
+        shockwaveInterval: 0.3,   // Emit shockwave every 0.3s
+        shockwaveDamage: 20,      // ~25% of Mortar damage
+        shockwaveRadius: 20       // ~25% of Mortar radius
     },
 
     // === MID TIER (40-70 coins) ===
     MORTAR: {
         name: 'Mortar',
-        description: 'Large blast, reliable',
+        description: 'Reliable AoE baseline',
         cost: 40,
         tier: 'MID',
-        damage: 80,        // Was 40, doubled
-        blastRadius: 80,
+        damage: 80,        // THE baseline damage
+        blastRadius: 80,   // THE baseline blast radius
         bounces: 1,
         projectileRadius: 8,
         projectileSpeed: 0.95,
@@ -195,129 +242,114 @@ const WEAPONS = {
     },
     SPLITTER: {
         name: 'Splitter',
-        description: 'Splits into 3 on bounce',
+        description: 'Double airburst split',
         cost: 45,
         tier: 'MID',
-        damage: 40,        // Was 20, doubled
+        damage: 35,        // Per fragment damage
         blastRadius: 30,
         bounces: 1,
-        projectileRadius: 6,
-        projectileSpeed: 1.0,
+        projectileRadius: 7,
+        projectileSpeed: 0.9,
         color: '#ff8844',
-        behavior: 'splitter',
-        splitCount: 3
+        behavior: 'splitterAirburst',
+        splitCount: 4,         // First split count
+        secondSplitCount: 2,   // Each fragment splits again
+        airburstDelay: 0.8     // Seconds before first split
     },
     HEAVY_SHELL: {
         name: 'Heavy Shell',
-        description: 'Slow, massive damage',
+        description: 'Siege + aftershock',
         cost: 50,
         tier: 'MID',
-        damage: 140,       // Was 70, doubled
-        blastRadius: 60,
+        damage: 150,       // Very high damage
+        blastRadius: 120,  // 1.5x Mortar radius for terrain carve
         bounces: 1,
-        projectileRadius: 10,
-        projectileSpeed: 0.6,
-        color: '#ff4444'
+        projectileRadius: 12,
+        projectileSpeed: 0.5,  // Very slow
+        color: '#ff4444',
+        behavior: 'heavyShell',
+        aftershockDamage: 20,   // ~25% of Mortar damage
+        aftershockRadius: 200   // Wide but weak
     },
     DRILL: {
         name: 'Drill',
-        description: 'Pierces terrain',
+        description: 'Tunnel borer - pierces terrain',
         cost: 55,
         tier: 'MID',
-        damage: 90,        // Was 45, doubled
-        blastRadius: 40,
+        damage: 80,        // Normal mid-tier damage on exit
+        blastRadius: 50,
         bounces: 0,
-        projectileRadius: 5,
-        projectileSpeed: 1.2,
+        projectileRadius: 6,
+        projectileSpeed: 1.1,
         color: '#cccccc',
-        behavior: 'drill'
+        behavior: 'drill',
+        tunnelWidth: 40    // Medium-width tunnel carve
     },
-    SHIELD: {
-        name: 'Shield',
-        description: '50% damage reduction',
-        cost: 55,
-        tier: 'MID',
-        damage: 0,         // No damage, unchanged
-        blastRadius: 40,
-        bounces: 0,
-        projectileRadius: 10,
-        projectileSpeed: 0.6,
-        color: '#44ffff',
-        behavior: 'shield',
-        shieldReduction: 0.5
-    },
+    // REMOVED: SHIELD weapon
     SEEKER: {
         name: 'Seeker',
-        description: 'Slight homing',
+        description: 'Lock-on homing missile',
         cost: 60,
         tier: 'MID',
-        damage: 70,        // Was 35, doubled
-        blastRadius: 45,
-        bounces: 1,
-        projectileRadius: 6,
-        projectileSpeed: 0.9,
-        color: '#ff44ff',
-        behavior: 'seeker',
-        seekStrength: 0.02
-    },
-    CLUSTER: {
-        name: 'Cluster',
-        description: 'Splits into 5 bomblets',
-        cost: 65,
-        tier: 'MID',
-        damage: 30,        // Was 15, doubled
-        blastRadius: 35,
+        damage: 70,
+        blastRadius: 50,
         bounces: 1,
         projectileRadius: 7,
         projectileSpeed: 0.85,
+        color: '#ff44ff',
+        behavior: 'seekerLockOn',
+        seekStrength: 0.15,       // Strong homing after lock
+        lockOnDelay: 0.5,         // Seconds to reach apex and lock
+        ignoresTerrain: true      // Keeps chasing through terrain
+    },
+    CLUSTER: {
+        name: 'Cluster',
+        description: 'Wide spray of bomblets',
+        cost: 65,
+        tier: 'MID',
+        damage: 25,        // Low damage each
+        blastRadius: 30,
+        bounces: 1,
+        projectileRadius: 8,
+        projectileSpeed: 0.8,
         color: '#ffaa00',
         behavior: 'cluster',
-        clusterCount: 5
+        clusterCount: 8    // Many bomblets, wide spray
     },
 
     // === PREMIUM TIER (80-120 coins) ===
     RAILGUN: {
         name: 'Railgun',
-        description: 'Direct hit bonus',
+        description: 'Charge beam with ricochet',
         cost: 80,
         tier: 'PREMIUM',
-        damage: 190,       // Was 95, doubled
-        blastRadius: 30,
-        bounces: 2,
-        projectileRadius: 5,
-        projectileSpeed: 1.35,
+        damage: 120,       // Line damage to everything along path
+        blastRadius: 20,   // Small explosion at terminus
+        bounces: 2,        // Beam bounces off walls/ceiling
+        projectileRadius: 4,
+        projectileSpeed: 0,  // Instant beam (handled specially)
         color: '#ffffff',
-        directHitRadius: 12,
-        directHitBonus: 1.5,
-        minDamageFalloff: 0.4
+        behavior: 'railgunBeam',
+        chargeTime: 1.5,       // Seconds to charge
+        beamWidth: 8,
+        maxBeamLength: 3000    // Long range
     },
-    MIRV: {
-        name: 'MIRV',
-        description: '3 clusters of 3',
-        cost: 90,
-        tier: 'PREMIUM',
-        damage: 20,        // Was 10, doubled
-        blastRadius: 25,
-        bounces: 1,
-        projectileRadius: 8,
-        projectileSpeed: 0.8,
-        color: '#ff6600',
-        behavior: 'mirv',
-        splitCount: 3,
-        clusterCount: 3
-    },
+    // REMOVED: MIRV weapon
     QUAKE: {
         name: 'Quake',
-        description: 'Hurts grounded enemies',
+        description: 'Spreading ground shockwaves',
         cost: 100,
         tier: 'PREMIUM',
-        damage: 80,        // Was 40, doubled
-        blastRadius: 100,
+        damage: 80,        // Impact damage
+        blastRadius: 60,   // Initial impact radius
         bounces: 0,
-        projectileRadius: 9,
-        projectileSpeed: 0.7,
+        projectileRadius: 10,
+        projectileSpeed: 0.65,
         color: '#886644',
-        behavior: 'quake'
+        behavior: 'quakeSpread',
+        shockwaveCount: 4,     // Number of shockwave rings
+        shockwaveDelay: 0.15,  // Delay between rings
+        shockwaveFalloff: 0.25 // Damage reduction per ring
     },
     TELEPORTER: {
         name: 'Teleporter',
@@ -350,52 +382,109 @@ const WEAPONS = {
     // === SPECTACLE TIER (130-180 coins) ===
     NAPALM: {
         name: 'Napalm',
-        description: 'Burning field 8 sec',
+        description: 'Lingering fire field x2 radius',
         cost: 130,
         tier: 'SPECTACLE',
         damage: 15,        // UNCHANGED - Napalm exempt from damage boost
-        blastRadius: 60,
+        blastRadius: 120,  // Field radius x2 (was 60)
         bounces: 1,
         projectileRadius: 8,
         projectileSpeed: 0.85,
         color: '#ff4400',
         behavior: 'napalm',
-        fieldDuration: 8,
-        fieldDamage: 10
+        fieldDuration: 8,  // Duration unchanged
+        fieldDamage: 10    // Damage per second unchanged
     },
     CHAIN_LIGHTNING: {
         name: 'Chain Lightning',
-        description: 'Arcs to nearby target',
+        description: 'Overload - huge first hit, one jump',
         cost: 150,
         tier: 'SPECTACLE',
-        damage: 80,        // Was 40, doubled
-        blastRadius: 30,
+        damage: 140,       // Huge damage on first target (Overload)
+        blastRadius: 25,
         bounces: 1,
         projectileRadius: 6,
         projectileSpeed: 1.3,
         color: '#44ffff',
-        behavior: 'chainLightning',
-        chainDamage: 50,   // Was 25, doubled
-        chainRange: 200
+        behavior: 'chainLightningOverload',
+        chainDamage: 70,   // 50% of first hit damage
+        chainRange: 250,   // Good range for the jump
+        maxChains: 1       // Only one additional jump
     },
     NUKE: {
         name: 'Nuke',
-        description: 'Massive blast, 3s fuse',
+        description: 'Cinematic multi-stage detonation',
         cost: 180,
         tier: 'SPECTACLE',
-        damage: 160,       // Was 80, doubled
-        blastRadius: 350,  // Was 150, more than doubled for cinematic effect
+        damage: 180,       // Massive damage
+        blastRadius: 400,  // Huge blast
         bounces: 0,
-        projectileRadius: 12,
-        projectileSpeed: 0.5,
+        projectileRadius: 14,
+        projectileSpeed: 0.45,  // Very slow approach
         color: '#ffff00',
-        behavior: 'nuke',
-        fuseTime: 3
+        behavior: 'nukeCinematic',
+        fuseTime: 3,
+        // Multi-stage detonation
+        stageCount: 4,         // Number of explosion stages
+        stageDelay: 0.25,      // Delay between stages
+        mushroomCloudDuration: 2.0,  // How long the mushroom cloud lingers
+        slowMoFactor: 0.3      // Slow motion during detonation
+    },
+
+    // === ORBITAL TIER (Limited Stock - purchased from space battle) ===
+    ORBITAL_BEACON: {
+        name: 'Orbital Beacon',
+        description: 'Call down devastating beam from capital ship (2.5s delay)',
+        cost: 300,
+        tier: 'ORBITAL',
+        damage: 75,
+        blastRadius: 150,
+        edgeDamage: 50,
+        bounces: 0,
+        projectileRadius: 8,
+        projectileSpeed: 0.9,
+        color: '#ff6600',
+        behavior: 'orbitalBeacon'
+    },
+    STRAFING_RUN: {
+        name: 'Strafing Run',
+        description: 'Call in fighters to strafe 400px area (1.5s warning)',
+        cost: 200,
+        tier: 'ORBITAL',
+        damagePerBullet: 10,
+        damage: 10,  // For display
+        blastRadius: 400,  // Coverage width for display
+        bounces: 0,
+        projectileRadius: 6,
+        projectileSpeed: 1.0,
+        color: '#ffff00',
+        behavior: 'strafingRun',
+        fighterCount: 4,
+        bulletsPerFighter: 5,
+        coverageWidth: 400
+    },
+    // Dying Light is granted by desperation beacon, not purchasable
+    DYING_LIGHT: {
+        name: 'Dying Light',
+        description: 'Final strike from dying ship. Use within 3 turns!',
+        cost: 0,
+        tier: 'SPECIAL',
+        damage: 90,
+        blastRadius: 180,
+        bounces: 1,
+        projectileRadius: 12,
+        projectileSpeed: 1.0,
+        color: '#ffcc00',
+        behavior: 'dyingLight'
     }
 };
 
-// Weapon keys for iteration
-const WEAPON_KEYS = Object.keys(WEAPONS);
+// Weapon keys for iteration (exclude non-purchasable and orbital weapons from regular rotation)
+const WEAPON_KEYS = Object.keys(WEAPONS).filter(k =>
+    WEAPONS[k].tier !== 'SPECIAL' && WEAPONS[k].tier !== 'ORBITAL'
+);
+// Orbital weapons handled separately in shop with limited stock
+const ORBITAL_WEAPON_KEYS = Object.keys(WEAPONS).filter(k => WEAPONS[k].tier === 'ORBITAL');
 
 // ============================================================================
 // Tank Types (kept for visual shapes, will use WEAPONS for stats)
@@ -487,45 +576,23 @@ const TANK_TYPES = {
 // ============================================================================
 
 const TANK_ARCHETYPES = {
-    GUARDIAN: {
-        name: 'GUARDIAN',
-        description: 'Defensive specialist',
-        abilityName: 'Energy Shield',
-        abilityDesc: 'Start with 25 shield, +5 per turn (max 50)',
-        abilityRules: { startShield: 25, shieldPerTurn: 5, maxShield: 50 },
-        palette: { base: '#00aaff', glow: '#00ddff' },  // Light blue
-        chassisShape: 8,   // Octagon - defensive
-        turretLength: 30,
-        turretWidth: 6
-    },
     STRIKER: {
         name: 'STRIKER',
         description: 'Offensive powerhouse',
         abilityName: 'Overdrive',
-        abilityDesc: '+20% damage on all weapons',
-        abilityRules: { damageBonus: 0.20 },
+        abilityDesc: '+33% damage dealt',
+        abilityRules: { damageBonus: 0.33 },
         palette: { base: '#ff4444', glow: '#ff6666' },  // Red
         chassisShape: 3,   // Triangle - aggressive
         turretLength: 38,
         turretWidth: 5
     },
-    SPECTER: {
-        name: 'SPECTER',
-        description: 'Aerial mobility',
-        abilityName: 'Hover Jets',
-        abilityDesc: 'Fall 50% slower, reduced fall damage',
-        abilityRules: { fallSpeedMult: 0.5, fallDamageReduction: 0.5 },
-        palette: { base: '#aa44ff', glow: '#cc66ff' },  // Purple
-        chassisShape: 5,   // Pentagon - floaty
-        turretLength: 32,
-        turretWidth: 4
-    },
     FORTRESS: {
         name: 'FORTRESS',
         description: 'Immovable anchor',
-        abilityName: 'Stabilizers',
-        abilityDesc: 'Immune to knockback and recoil',
-        abilityRules: { knockbackImmune: true },
+        abilityName: 'Armor Plating',
+        abilityDesc: '-33% damage taken',
+        abilityRules: { damageReduction: 0.33 },
         palette: { base: '#888888', glow: '#aaaaaa' },  // Gray
         chassisShape: 4,   // Square - solid
         turretLength: 28,
@@ -535,41 +602,30 @@ const TANK_ARCHETYPES = {
         name: 'HUNTER',
         description: 'Precision tracker',
         abilityName: 'Target Lock',
-        abilityDesc: 'All projectiles have slight homing',
-        abilityRules: { homingStrength: 0.015 },
+        abilityDesc: 'All projectiles home slightly',
+        abilityRules: { homingStrength: 0.02 },
         palette: { base: '#ffaa00', glow: '#ffcc00' },  // Orange
         chassisShape: 6,   // Hexagon - tactical
         turretLength: 35,
         turretWidth: 4
     },
-    RICOCHET: {
-        name: 'RICOCHET',
-        description: 'Bounce master',
-        abilityName: 'Elastic Rounds',
-        abilityDesc: '+1 bounce on all weapons',
-        abilityRules: { bonusBounces: 1 },
-        palette: { base: '#00ff88', glow: '#44ffaa' },  // Teal/green
-        chassisShape: 5,   // Pentagon
-        turretLength: 34,
-        turretWidth: 5
-    },
-    VOIDBORN: {
-        name: 'VOIDBORN',
-        description: 'Void-touched survivor',
-        abilityName: 'Void Resistance',
-        abilityDesc: 'Survive void contact for 1 second',
-        abilityRules: { voidGracePeriod: 1.0 },  // seconds
-        palette: { base: '#ff00ff', glow: '#ff44ff' },  // Magenta
-        chassisShape: 6,   // Hexagon
-        turretLength: 30,
-        turretWidth: 6
+    SPECTER: {
+        name: 'SPECTER',
+        description: 'Aerial phantom',
+        abilityName: 'Hover Jets',
+        abilityDesc: 'Hover 20px above terrain',
+        abilityRules: { hoverHeight: 20 },
+        palette: { base: '#aa44ff', glow: '#cc66ff' },  // Purple
+        chassisShape: 5,   // Pentagon - floaty
+        turretLength: 32,
+        turretWidth: 4
     },
     MERCHANT: {
         name: 'MERCHANT',
         description: 'Economic advantage',
         abilityName: 'Trade Routes',
-        abilityDesc: '+15 bonus coins per turn',
-        abilityRules: { bonusCoins: 15 },
+        abilityDesc: '+20 bonus coins per turn',
+        abilityRules: { bonusCoins: 20 },
         palette: { base: '#ffff00', glow: '#ffff66' },  // Yellow/gold
         chassisShape: 4,   // Square - merchant cart
         turretLength: 26,
@@ -602,6 +658,10 @@ const state = {
     nukes: [],   // { x, y, fuseTimer, firedByPlayer, weaponKey, color }
     // Nuke shockwave effect
     nukeShockwave: null,  // { x, y, radius, maxRadius, timer, duration }
+    mushroomCloud: null,  // { x, y, timer, duration, radius, stemWidth, riseSpeed, capY }
+    // Railgun charging state
+    railgunCharge: null,  // { timer, maxTime, player, angle, beamPath }
+    railgunBeam: null,    // { path: [{x,y}], timer, damage, color }
     voidY: VIRTUAL_HEIGHT + 100,
     winner: null,
     time: 0,
@@ -630,7 +690,24 @@ const state = {
     // UFO buff state (per player, stackable, one-turn duration)
     ufoBuffs: Array.from({ length: NUM_PLAYERS }, () => ({ damage: 0, blast: 0, bounces: 0 })),
     // UFO buff notification
-    buffNotification: null  // { playerIndex, buffType, timer }
+    buffNotification: null,  // { playerIndex, buffType, timer }
+
+    // === ORBITAL STRIKE SYSTEMS ===
+    orbitalStock: {
+        ORBITAL_BEACON: { total: 2, remaining: 2 },
+        STRAFING_RUN: { total: 3, remaining: 3 }
+    },
+    orbitalBeacons: [],      // Active beacon sequences { x, y, phase, timer, targetingShip, firedByPlayer }
+    strafingRuns: [],        // Active strafing runs { targetX, phase, timer, direction, fighters, firedByPlayer }
+    desperationBeacons: [],  // Falling/landed beacons { x, y, vy, landed, timer, maxTime, claimed, claimedBy }
+
+    // Dying Light tracking (per player)
+    dyingLightTurns: Array.from({ length: NUM_PLAYERS }, () => 0),  // Turns remaining for dying light
+    storedWeapons: Array.from({ length: NUM_PLAYERS }, () => null),  // Previous weapon before dying light
+
+    // Turn flow safety (prevents race conditions)
+    turnEndLocked: false,   // Prevents multiple endTurn() calls
+    firingStartTime: 0      // For safety timeout
 };
 
 // Tank type keys for selection
@@ -659,39 +736,27 @@ function getArchetype(player) {
 }
 
 /**
- * Apply turn-start abilities (GUARDIAN shield regen, MERCHANT coins)
+ * Apply turn-start abilities (MERCHANT: +20 coins per turn)
  */
 function applyTurnStartAbilities(player) {
     const arch = getArchetype(player);
     if (!arch) return;
 
-    // GUARDIAN: Shield regeneration
-    if (arch.abilityRules.shieldPerTurn) {
-        const maxShield = arch.abilityRules.maxShield || 50;
-        player.shield = Math.min(player.shield + arch.abilityRules.shieldPerTurn, maxShield);
-    }
-
-    // MERCHANT: Bonus coins
+    // MERCHANT: Bonus coins each turn
     if (arch.abilityRules.bonusCoins) {
         player.coins += arch.abilityRules.bonusCoins;
     }
 }
 
 /**
- * Apply initial abilities when game starts (GUARDIAN starting shield)
+ * Apply initial abilities when game starts (currently no start abilities)
  */
 function applyGameStartAbilities(player) {
-    const arch = getArchetype(player);
-    if (!arch) return;
-
-    // GUARDIAN: Starting shield
-    if (arch.abilityRules.startShield) {
-        player.shield = arch.abilityRules.startShield;
-    }
+    // All 5 archetypes have passive abilities, no start setup needed
 }
 
 /**
- * Get damage multiplier from archetype (STRIKER)
+ * Get damage multiplier from archetype (STRIKER: +33% damage dealt)
  */
 function getArchetypeDamageMultiplier(player) {
     const arch = getArchetype(player);
@@ -702,18 +767,18 @@ function getArchetypeDamageMultiplier(player) {
 }
 
 /**
- * Get bonus bounces from archetype (RICOCHET)
+ * Get damage reduction from archetype (FORTRESS: -33% damage taken)
  */
-function getArchetypeBonusBounces(player) {
+function getArchetypeDamageReduction(player) {
     const arch = getArchetype(player);
-    if (arch && arch.abilityRules.bonusBounces) {
-        return arch.abilityRules.bonusBounces;
+    if (arch && arch.abilityRules.damageReduction) {
+        return arch.abilityRules.damageReduction;
     }
     return 0;
 }
 
 /**
- * Get homing strength from archetype (HUNTER)
+ * Get homing strength from archetype (HUNTER: slight homing)
  */
 function getArchetypeHomingStrength(player) {
     const arch = getArchetype(player);
@@ -724,33 +789,60 @@ function getArchetypeHomingStrength(player) {
 }
 
 /**
- * Get fall speed multiplier from archetype (SPECTER)
+ * Get hover height from archetype (SPECTER: hover 20px above terrain)
  */
-function getArchetypeFallSpeedMult(player) {
+function getArchetypeHoverHeight(player) {
     const arch = getArchetype(player);
-    if (arch && arch.abilityRules.fallSpeedMult) {
-        return arch.abilityRules.fallSpeedMult;
-    }
-    return 1;
-}
-
-/**
- * Check if player is immune to knockback (FORTRESS)
- */
-function isKnockbackImmune(player) {
-    const arch = getArchetype(player);
-    return arch && arch.abilityRules.knockbackImmune;
-}
-
-/**
- * Get void grace period from archetype (VOIDBORN)
- */
-function getVoidGracePeriod(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.voidGracePeriod) {
-        return arch.abilityRules.voidGracePeriod;
+    if (arch && arch.abilityRules.hoverHeight) {
+        return arch.abilityRules.hoverHeight;
     }
     return 0;
+}
+
+/**
+ * Legacy functions kept for compatibility - return neutral values
+ */
+function getArchetypeBonusBounces(player) { return 0; }
+function getArchetypeFallSpeedMult(player) { return 1; }
+function isKnockbackImmune(player) { return false; }
+function getVoidGracePeriod(player) { return 0; }
+
+/**
+ * Apply radial blast knockback to all players within range
+ * @param {number} epicenterX - Explosion center X
+ * @param {number} epicenterY - Explosion center Y
+ * @param {number} blastRadius - Radius of effect
+ * @param {number} maxForce - Maximum knockback force at epicenter
+ * @param {number} excludePlayer - Player index to exclude (e.g., firing player), or -1 for none
+ */
+function applyBlastKnockback(epicenterX, epicenterY, blastRadius, maxForce, excludePlayer = -1) {
+    for (let i = 0; i < state.players.length; i++) {
+        const player = state.players[i];
+        if (player.health <= 0) continue;
+        if (i === excludePlayer) continue;
+        if (isKnockbackImmune(player)) continue;
+
+        const dx = player.x - epicenterX;
+        const dy = player.y - epicenterY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < blastRadius && dist > 0) {
+            // Falloff: stronger at center, weaker at edge
+            const falloff = 1 - (dist / blastRadius);
+            const force = maxForce * falloff;
+
+            // Normalize direction and apply force
+            const dirX = dx / dist;
+            const dirY = dy / dist;
+
+            // Apply impulse to player velocity
+            player.vx += dirX * force;
+            player.vy += dirY * force * 0.5;  // Less vertical knockback (feels better)
+
+            // Visual feedback
+            particles.sparks(player.x, player.y, Math.floor(force * 2), '#ffaa00');
+        }
+    }
 }
 
 /**
@@ -763,46 +855,55 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     const y = player.y;
     const color = player.color;
 
-    // SAVAGE TERRAIN DESTRUCTION
-    const deathBlastRadius = isVoidDeath ? 80 : 120;
+    // MASSIVE TERRAIN DESTRUCTION (2-3x bigger)
+    const deathBlastRadius = isVoidDeath ? 150 : 200;
     terrain.destroy(x, y, deathBlastRadius);
 
-    // MULTI-STAGE EXPLOSION
+    // SPECTACULAR MULTI-STAGE EXPLOSION (3x particles)
     if (isVoidDeath) {
         // Void death: purple/magenta themed explosion being sucked into void
-        particles.explosion(x, y, 150, COLORS.magenta, 100);
-        particles.explosion(x, y, 100, '#8800ff', 80);
-        particles.explosion(x, y, 80, color, 60);
-        particles.sparks(x, y, 60, COLORS.magenta);
+        particles.explosion(x, y, 300, COLORS.magenta, 200);
+        particles.explosion(x, y, 200, '#8800ff', 150);
+        particles.explosion(x, y, 150, color, 100);
+        particles.sparks(x, y, 120, COLORS.magenta);
+        particles.sparks(x, y, 80, '#8800ff');
         // Downward particle trail as if being pulled into void
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 30; i++) {
             setTimeout(() => {
-                particles.sparks(x + (Math.random() - 0.5) * 40, y + i * 5, 5, '#8800ff');
-            }, i * 20);
+                particles.sparks(x + (Math.random() - 0.5) * 60, y + i * 6, 8, '#8800ff');
+            }, i * 15);
         }
     } else {
-        // Combat death: brilliant white-hot explosion
-        particles.explosion(x, y, 200, COLORS.white, 150);
-        particles.explosion(x, y, 150, color, 120);
-        particles.explosion(x, y, 100, COLORS.orange, 80);
-        particles.sparks(x, y, 80, COLORS.yellow);
-        particles.sparks(x, y, 60, color);
+        // Combat death: MASSIVE white-hot explosion (3x particles)
+        particles.explosion(x, y, 400, COLORS.white, 300);
+        particles.explosion(x, y, 300, color, 200);
+        particles.explosion(x, y, 200, COLORS.orange, 150);
+        particles.explosion(x, y, 150, COLORS.yellow, 100);
+        particles.sparks(x, y, 150, COLORS.yellow);
+        particles.sparks(x, y, 100, color);
+        particles.sparks(x, y, 80, COLORS.white);
     }
 
-    // Delayed secondary explosions (debris)
+    // Delayed secondary explosions (bigger debris chain)
     setTimeout(() => {
-        particles.explosion(x - 30, y - 20, 40, COLORS.orange, 40);
-        particles.sparks(x + 40, y, 30, COLORS.yellow);
-    }, 100);
+        particles.explosion(x - 50, y - 30, 80, COLORS.orange, 60);
+        particles.sparks(x + 60, y, 50, COLORS.yellow);
+        terrain.destroy(x - 40, y, 50);
+    }, 80);
     setTimeout(() => {
-        particles.explosion(x + 25, y + 15, 35, color, 35);
-        terrain.destroy(x, y + 30, 40);  // Additional terrain damage
-    }, 200);
+        particles.explosion(x + 40, y + 20, 70, color, 50);
+        terrain.destroy(x + 30, y + 20, 60);
+    }, 160);
+    setTimeout(() => {
+        particles.explosion(x, y - 40, 60, COLORS.orange, 40);
+        particles.sparks(x, y, 40, COLORS.white);
+    }, 240);
 
-    // Screen effects
-    renderer.addScreenShake(isVoidDeath ? 40 : 50);
-    renderer.flash(isVoidDeath ? COLORS.magenta : COLORS.white, 0.5);
-    setTimeout(() => renderer.flash(color, 0.25), 100);
+    // INTENSE screen effects (stronger shake and flash)
+    renderer.addScreenShake(isVoidDeath ? 60 : 80);
+    renderer.flash(isVoidDeath ? COLORS.magenta : COLORS.white, 0.7);
+    setTimeout(() => renderer.flash(color, 0.4), 80);
+    setTimeout(() => renderer.flash(COLORS.orange, 0.2), 160);
 
     // Audio
     audio.playKill();
@@ -829,7 +930,8 @@ function resetGame() {
     const spawnXs = getSpawnPositions(NUM_PLAYERS);
 
     // Generate terrain with spawn positions for balancing (use virtual dimensions)
-    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, spawnXs);
+    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, spawnXs, 250);  // Large edge margin to push terrain down at walls
+    terrain.generateProps();  // Add stylized props (trees, buildings, pylons)
 
     // Position tanks on terrain
     state.players.forEach(p => {
@@ -875,13 +977,28 @@ function resetGame() {
     // Reset active nukes
     state.nukes = [];
     state.nukeShockwave = null;
+    state.mushroomCloud = null;
+
+    // Reset orbital strike systems
+    state.orbitalStock = {
+        ORBITAL_BEACON: { total: 2, remaining: 2 },
+        STRAFING_RUN: { total: 3, remaining: 3 }
+    };
+    state.orbitalBeacons = [];
+    state.strafingRuns = [];
+    state.desperationBeacons = [];
+    state.dyingLightTurns = Array.from({ length: NUM_PLAYERS }, () => 0);
+    state.storedWeapons = Array.from({ length: NUM_PLAYERS }, () => null);
+    // Reset turn flow safety state
+    state.turnEndLocked = false;
+    state.firingStartTime = 0;
 }
 
 function startGame() {
     // Called after both players select tanks
     state.phase = 'aiming';
 
-    // Apply initial archetype abilities (e.g., GUARDIAN starting shield)
+    // Apply initial archetype abilities (if any)
     state.players.forEach(p => applyGameStartAbilities(p));
 
     // Roll initial glitch event for round 1 (both players will share it)
@@ -915,6 +1032,12 @@ function fireProjectile() {
 
     const angleRad = degToRad(180 - player.angle);
 
+    // RAILGUN BEAM - special handling
+    if (weapon.behavior === 'railgunBeam') {
+        fireRailgunBeam(player, weapon, angleRad);
+        return;
+    }
+
     // Apply nonlinear charge curve for better range at high charge
     const effectivePower = chargeToPower(player.power);
     // Apply velocity multiplier from events (TIME DILATION, MUZZLE OVERCHARGE/DAMPEN)
@@ -926,6 +1049,12 @@ function fireProjectile() {
     const blastBonus = buffs.blast * UFO_BUFF_TYPES.BLAST.bonus;
     const bounceBonus = buffs.bounces * UFO_BUFF_TYPES.BOUNCES.bonus;
 
+    // BOUNCER: randomize bounces between 4-7
+    let weaponBounces = weapon.bounces;
+    if (weapon.behavior === 'bouncer' && weapon.bouncesMin && weapon.bouncesMax) {
+        weaponBounces = weapon.bouncesMin + Math.floor(Math.random() * (weapon.bouncesMax - weapon.bouncesMin + 1));
+    }
+
     state.projectile = {
         x: player.x,
         y: player.y - 20,
@@ -934,8 +1063,8 @@ function fireProjectile() {
         radius: weapon.projectileRadius,
         color: weapon.color || player.color,
         bounces: 0,
-        // Apply extra bounces from ELASTIC WORLD event + UFO buff + archetype (RICOCHET)
-        maxBounces: weapon.bounces + state.extraBounces + bounceBonus + getArchetypeBonusBounces(player),
+        // Apply extra bounces from ELASTIC WORLD event + UFO buff
+        maxBounces: weaponBounces + state.extraBounces + bounceBonus + getArchetypeBonusBounces(player),
         trail: [],
         weaponKey: player.weapon,  // Store weapon key for explosion handling
         tankType: player.tankType, // Keep for backwards compatibility
@@ -948,6 +1077,13 @@ function fireProjectile() {
 
     // Clear buffs NOW (after applying to projectile) - buffs gained mid-flight persist until next shot
     state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    // Restore weapon after firing Dying Light
+    if (player.weapon === 'DYING_LIGHT') {
+        player.weapon = state.storedWeapons[state.currentPlayer] || 'MORTAR';
+        state.storedWeapons[state.currentPlayer] = null;
+        state.dyingLightTurns[state.currentPlayer] = 0;
+    }
 
     // Apply RECOIL KICK - push tank backward from shot direction
     // FORTRESS archetype is immune to knockback
@@ -964,6 +1100,224 @@ function fireProjectile() {
     player.power = 0;
     player.charging = false;
     state.phase = 'firing';
+    state.firingStartTime = performance.now();  // For safety timeout
+}
+
+/**
+ * Fire the RAILGUN beam weapon - instant beam with ricochet and line damage
+ */
+function fireRailgunBeam(player, weapon, angleRad) {
+    // Get buffs
+    const buffs = state.ufoBuffs[state.currentPlayer];
+    const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
+    const archetypeDmgMult = getArchetypeDamageMultiplier(player);
+    const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
+
+    // Trace beam path with bounces
+    const maxLength = weapon.maxBeamLength || 3000;
+    const maxBounces = weapon.bounces + (buffs.bounces * UFO_BUFF_TYPES.BOUNCES.bonus);
+    const beamPath = traceBeamPath(player.x, player.y - 20, angleRad, maxLength, maxBounces);
+
+    // Store beam for rendering
+    state.railgunBeam = {
+        path: beamPath.points,
+        timer: 0.5,  // Display for 0.5 seconds
+        maxTimer: 0.5,
+        damage: effectiveDamage,
+        color: weapon.color,
+        width: weapon.beamWidth || 8
+    };
+
+    // Apply line damage to all players along the beam path
+    let totalEnemyDamage = 0;
+    const hitPlayers = new Set();
+
+    for (let i = 0; i < beamPath.points.length - 1; i++) {
+        const p1 = beamPath.points[i];
+        const p2 = beamPath.points[i + 1];
+
+        // Check each player for intersection with beam segment
+        for (let pi = 0; pi < state.players.length; pi++) {
+            if (pi === state.currentPlayer) continue;  // Don't hit yourself
+            const target = state.players[pi];
+            if (target.health <= 0) continue;
+            if (hitPlayers.has(target)) continue;  // Only hit each player once
+
+            // Check if player is within beam segment
+            const dist = pointToSegmentDistance(target.x, target.y, p1.x, p1.y, p2.x, p2.y);
+            if (dist < TANK_RADIUS + weapon.beamWidth) {
+                hitPlayers.add(target);
+
+                // Deal damage
+                const dmg = effectiveDamage;
+                target.health = Math.max(0, target.health - dmg);
+
+                // Track enemy damage for coins
+                if (pi !== state.currentPlayer) {
+                    totalEnemyDamage += dmg;
+                }
+
+                // Visual hit effect
+                particles.explosion(target.x, target.y, 50, COLORS.white, 30);
+                particles.sparks(target.x, target.y, 40, weapon.color);
+                particles.sparks(target.x, target.y, 30, COLORS.cyan);
+
+                // Check for kill
+                if (target.health <= 0) {
+                    if (pi !== state.currentPlayer) {
+                        player.coins += KILL_BONUS;
+                    }
+                    triggerDeathExplosion(target, false);
+                    audio.playKill();
+                }
+            }
+        }
+    }
+
+    // Award coins for damage
+    if (totalEnemyDamage > 0) {
+        player.coins += Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
+    }
+
+    // Terrain damage at terminus point
+    const terminus = beamPath.points[beamPath.points.length - 1];
+    terrain.destroy(terminus.x, terminus.y, weapon.blastRadius);
+
+    // Visual effects
+    renderer.addScreenShake(25);
+    renderer.flash(COLORS.white, 0.5);
+    renderer.flash(weapon.color, 0.3);
+    audio.playExplosion(1.2);
+
+    // Particles along beam
+    for (const point of beamPath.points) {
+        particles.sparks(point.x, point.y, 15, weapon.color);
+    }
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    // Reset charge and end turn
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();  // For safety timeout
+
+    // Schedule turn end (let beam display)
+    setTimeout(() => {
+        if (state.phase === 'firing') {
+            endTurn();
+        }
+    }, 400);
+}
+
+/**
+ * Trace a beam path with wall/ceiling bounces
+ * @returns {{ points: Array<{x, y}> }}
+ */
+function traceBeamPath(startX, startY, angle, maxLength, maxBounces) {
+    const points = [{ x: startX, y: startY }];
+    let x = startX;
+    let y = startY;
+    let dx = Math.cos(angle);
+    let dy = -Math.sin(angle);  // Note: negative because canvas Y increases downward
+    let remainingLength = maxLength;
+    let bounces = 0;
+
+    while (remainingLength > 0 && bounces <= maxBounces) {
+        // Step along beam checking for collisions
+        const stepSize = 5;
+        let hitSomething = false;
+
+        for (let step = 0; step < remainingLength / stepSize; step++) {
+            const nextX = x + dx * stepSize;
+            const nextY = y + dy * stepSize;
+
+            // Check wall bounce (left/right)
+            if (nextX < WORLD_LEFT || nextX > WORLD_RIGHT) {
+                x = nextX < WORLD_LEFT ? WORLD_LEFT : WORLD_RIGHT;
+                y = nextY;
+                points.push({ x, y });
+                dx = -dx;  // Reflect horizontally
+                bounces++;
+                hitSomething = true;
+                remainingLength -= step * stepSize;
+                break;
+            }
+
+            // Check ceiling bounce
+            if (nextY < WORLD_TOP) {
+                x = nextX;
+                y = WORLD_TOP;
+                points.push({ x, y });
+                dy = -dy;  // Reflect vertically
+                bounces++;
+                hitSomething = true;
+                remainingLength -= step * stepSize;
+                break;
+            }
+
+            // Railgun melts through terrain - destroy it and continue
+            if (terrain.isPointBelowTerrain(nextX, nextY)) {
+                // Carve a path through the terrain
+                terrain.destroy(nextX, nextY, 15);  // Small radius carve as beam passes
+                // Continue - don't stop the beam
+            }
+
+            // Check void hit (terminates beam)
+            if (nextY > state.voidY) {
+                points.push({ x: nextX, y: state.voidY });
+                return { points };  // Beam stops at void
+            }
+
+            x = nextX;
+            y = nextY;
+            remainingLength -= stepSize;
+        }
+
+        if (!hitSomething) {
+            // Ran out of length without hitting anything
+            points.push({ x, y });
+            break;
+        }
+    }
+
+    return { points };
+}
+
+/**
+ * Calculate distance from point to line segment
+ */
+function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+
+    if (lenSq !== 0) {
+        param = dot / lenSq;
+    }
+
+    let xx, yy;
+
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    } else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    } else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+
+    const dx = px - xx;
+    const dy = py - yy;
+    return Math.sqrt(dx * dx + dy * dy);
 }
 
 function updateProjectile(dt) {
@@ -1015,10 +1369,47 @@ function updateProjectile(dt) {
         }
     }
 
-    // SEEKER behavior - slight homing toward nearest enemy
+    // Get weapon for behavior checks
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-    if (weapon && weapon.behavior === 'seeker' && !proj.isRolling) {
+
+    // SPLITTER AIRBURST behavior - split in midair after delay
+    if (weapon && weapon.behavior === 'splitterAirburst' && !proj.isSplit && !proj.isAirburstFragment) {
+        proj.airburstTimer = (proj.airburstTimer || 0) + dt;
+        if (proj.airburstTimer >= (weapon.airburstDelay || 0.8)) {
+            // First airburst split
+            spawnAirburstFragments(proj, weapon.splitCount || 4, false);
+            state.projectile = null;
+            return;
+        }
+    }
+
+    // SPLITTER second-stage airburst (fragments split again)
+    if (weapon && weapon.behavior === 'splitterAirburst' && proj.isAirburstFragment && !proj.hasSecondSplit) {
+        proj.secondAirburstTimer = (proj.secondAirburstTimer || 0) + dt;
+        if (proj.secondAirburstTimer >= 0.4) {  // Shorter delay for second split
+            proj.hasSecondSplit = true;
+            spawnAirburstFragments(proj, weapon.secondSplitCount || 2, true);
+            // Remove this fragment from projectiles array
+            const idx = state.projectiles.indexOf(proj);
+            if (idx >= 0) state.projectiles.splice(idx, 1);
+            return;
+        }
+    }
+
+    // SEEKER LOCK-ON behavior - locks on at apex then strong homing
+    if (weapon && (weapon.behavior === 'seeker' || weapon.behavior === 'seekerLockOn') && !proj.isRolling) {
         const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+
+        // Track flight time for lock-on delay
+        proj.flightTime = (proj.flightTime || 0) + dt;
+
+        // Detect apex (when vertical velocity changes from negative to positive)
+        if (!proj.hasLockedOn && proj.vy >= 0 && proj.flightTime > 0.1) {
+            proj.hasLockedOn = true;
+            // Visual lock-on indicator
+            particles.sparks(proj.x, proj.y, 20, '#ff44ff');
+            audio.playBounce();  // Click sound for lock
+        }
 
         // Find nearest living enemy
         let targetPlayer = null;
@@ -1039,9 +1430,15 @@ function updateProjectile(dt) {
             const dy = targetPlayer.y - proj.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist > 0) {
-                const seekStrength = weapon.seekStrength || 0.02;
+                // Use strong homing ONLY after lock-on
+                const seekStrength = proj.hasLockedOn ? (weapon.seekStrength || 0.15) : 0.01;
                 proj.vx += (dx / dist) * seekStrength;
                 proj.vy += (dy / dist) * seekStrength;
+
+                // Trail effect while homing
+                if (proj.hasLockedOn && Math.random() < 0.5) {
+                    particles.trail(proj.x, proj.y, '#ff44ff');
+                }
             }
         }
     }
@@ -1063,6 +1460,41 @@ function updateProjectile(dt) {
         // Keep on terrain surface
         proj.y = terrain.getHeightAt(proj.x) - proj.radius;
         proj.vy = 0;
+
+        // === ROLLER SHOCKWAVES ===
+        // Emit shockwaves every 0.3s while rolling
+        const rollerWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+        if (rollerWeapon && rollerWeapon.shockwaveInterval) {
+            proj.shockwaveTimer = (proj.shockwaveTimer || 0) + dt;
+            if (proj.shockwaveTimer >= rollerWeapon.shockwaveInterval) {
+                proj.shockwaveTimer = 0;
+
+                const swDamage = rollerWeapon.shockwaveDamage || 20;
+                const swRadius = rollerWeapon.shockwaveRadius || 20;
+
+                // Visual shockwave effect
+                particles.sparks(proj.x, proj.y, 15, '#aaaaff');
+                renderer.addScreenShake(5);
+
+                // Small terrain damage
+                terrain.destroy(proj.x, proj.y, swRadius * 0.5);
+
+                // Apply shockwave damage to nearby players
+                const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+                for (const player of state.players) {
+                    if (player.health <= 0) continue;
+                    const dist = distance(proj.x, proj.y, player.x, player.y);
+                    if (dist < swRadius * 2) {
+                        const falloff = 1 - (dist / (swRadius * 2));
+                        const dmg = swDamage * falloff;
+                        player.health = Math.max(0, player.health - dmg);
+                        if (dmg > 5) {
+                            particles.sparks(player.x, player.y, 8, '#aaaaff');
+                        }
+                    }
+                }
+            }
+        }
 
         // Check for player collision while rolling
         for (const player of state.players) {
@@ -1086,26 +1518,33 @@ function updateProjectile(dt) {
             proj.rollTimer = 0;
         }
 
-        // Wall bounce while rolling (use virtual dimensions)
-        if (proj.x < proj.radius) {
-            proj.x = proj.radius;
-            proj.vx = -proj.vx * 0.7;  // Bounce with energy loss
-            particles.sparks(proj.x, proj.y, 15, COLORS.yellow);
-            audio.playBounce();
-        }
-        if (proj.x > VIRTUAL_WIDTH - proj.radius) {
-            proj.x = VIRTUAL_WIDTH - proj.radius;
-            proj.vx = -proj.vx * 0.7;  // Bounce with energy loss
-            particles.sparks(proj.x, proj.y, 15, COLORS.yellow);
-            audio.playBounce();
-        }
+        // === ENFORCE WORLD BOUNDARIES WHILE ROLLING ===
+        enforceProjectileBounds(proj);
 
         return; // Skip normal physics while rolling
     }
 
-    // Move
+    // Move first (same pattern as working events.js bounce code)
     proj.x += proj.vx;
     proj.y += proj.vy;
+
+    // Wall bounces - simple pattern that works
+    if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
+        proj.vx = -proj.vx * 0.9;
+        proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
+        onBounce(proj);
+        particles.sparks(proj.x, proj.y, 10, proj.color);
+        audio.playBounce();
+    }
+
+    // Ceiling bounce
+    if (proj.y < WORLD_TOP) {
+        proj.vy = -proj.vy * 0.9;
+        proj.y = WORLD_TOP;
+        onBounce(proj);
+        particles.sparks(proj.x, proj.y, 10, proj.color);
+        audio.playBounce();
+    }
 
     // Spawn trail particles occasionally
     if (Math.random() < 0.3) {
@@ -1114,25 +1553,6 @@ function updateProjectile(dt) {
 
     // Check for UFO collision (grants buffs)
     checkUFOCollision(proj.x, proj.y, proj.radius);
-
-    // Bounce off walls
-    if (proj.x < proj.radius) {
-        proj.x = proj.radius;
-        proj.vx = -proj.vx * 0.9;
-        onBounce(proj);
-    }
-    if (proj.x > VIRTUAL_WIDTH - proj.radius) {
-        proj.x = VIRTUAL_WIDTH - proj.radius;
-        proj.vx = -proj.vx * 0.9;
-        onBounce(proj);
-    }
-
-    // Bounce off ceiling
-    if (proj.y < proj.radius) {
-        proj.y = proj.radius;
-        proj.vy = -proj.vy * 0.9;
-        onBounce(proj);
-    }
 
     // Check projectile termination conditions (Codex suggestion)
     // 1. Hits terrain
@@ -1152,18 +1572,79 @@ function updateProjectile(dt) {
             return;
         }
 
-        // DRILL behavior - pierce through terrain
+        // BOUNCER behavior - bounce off terrain like a pinball
+        if (projWeapon && projWeapon.behavior === 'bouncer') {
+            // Calculate terrain slope for reflection
+            const sampleDist = 10;
+            const heightLeft = terrain.getHeightAt(proj.x - sampleDist);
+            const heightRight = terrain.getHeightAt(proj.x + sampleDist);
+            const heightCenter = terrain.getHeightAt(proj.x);
+
+            // Terrain slope (rise over run)
+            const slope = (heightRight - heightLeft) / (sampleDist * 2);
+
+            // Calculate terrain normal (perpendicular to surface, pointing up)
+            // Normal = normalize(-slope, 1) for a surface with slope dy/dx
+            const normalLen = Math.sqrt(slope * slope + 1);
+            const nx = -slope / normalLen;
+            const ny = -1 / normalLen;  // Negative because y increases downward
+
+            // Reflect velocity: v' = v - 2(v·n)n
+            const dot = proj.vx * nx + proj.vy * ny;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;  // Energy loss on bounce
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
+
+            // Ensure minimum upward velocity so it doesn't get stuck
+            if (proj.vy > -3) proj.vy = -3;
+
+            // Move projectile above terrain surface
+            proj.y = heightCenter - proj.radius - 2;
+
+            // Trigger bounce effects (explosion on every bounce for bouncer)
+            onBounce(proj);
+            particles.sparks(proj.x, proj.y, 20, proj.color);
+            particles.sparks(proj.x, proj.y, 10, '#ffffff');
+            audio.playBounce();
+
+            // Check if out of bounces
+            if (proj.bounces >= proj.maxBounces) {
+                proj.isFinalBounce = true;
+                onExplode(proj);
+                state.projectile = null;
+            }
+            return;
+        }
+
+        // DRILL behavior - pierce through terrain, carving a tunnel
         if (projWeapon && projWeapon.behavior === 'drill') {
             // Track that we're in terrain
             proj.inTerrain = true;
+
+            // Carve tunnel while drilling - continuous terrain destruction
+            const tunnelWidth = projWeapon.tunnelWidth || 40;
+            terrain.destroy(proj.x, proj.y, tunnelWidth * 0.5);
+
             // Slow down slightly while drilling
-            proj.vx *= 0.99;
-            proj.vy *= 0.99;
-            // Spawn drill particles
-            if (Math.random() < 0.5) {
-                particles.sparks(proj.x, proj.y, 3, '#886644');
+            proj.vx *= 0.995;
+            proj.vy *= 0.995;
+
+            // Spawn drill particles (more dramatic)
+            if (Math.random() < 0.6) {
+                particles.sparks(proj.x, proj.y, 5, '#886644');
+                particles.sparks(proj.x, proj.y, 3, '#aa8866');
             }
-            // Check for player collision while drilling (instant kill zone)
+
+            // Visual drill glow
+            if (Math.random() < 0.3) {
+                particles.trail(proj.x, proj.y, '#cccccc');
+            }
+
+            // Small screen shake while drilling
+            if (Math.random() < 0.1) {
+                renderer.addScreenShake(2);
+            }
+
+            // Check for player collision while drilling (direct hit)
             for (const player of state.players) {
                 const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
                 if (dist < proj.radius + TANK_RADIUS * 0.5) {
@@ -1176,7 +1657,7 @@ function updateProjectile(dt) {
         }
 
         // NUKE behavior - land and start fuse timer instead of exploding
-        if (projWeapon && projWeapon.behavior === 'nuke') {
+        if (projWeapon && (projWeapon.behavior === 'nuke' || projWeapon.behavior === 'nukeCinematic')) {
             const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
             // Place nuke on terrain surface
             const landY = terrain.getHeightAt(proj.x) - proj.radius;
@@ -1197,9 +1678,88 @@ function updateProjectile(dt) {
             particles.sparks(proj.x, landY, 20, '#ff8800');
             renderer.addScreenShake(15);
             audio.playBounce();
-            // Clear projectile and end turn
+            // Clear projectile - turn ends when nuke explodes (in triggerCinematicNukeExplosion)
+            state.projectile = null;
+            state.firingStartTime = performance.now();  // Reset timeout for fuse duration
+            return;
+        }
+
+        // ORBITAL BEACON behavior - land and start targeting sequence
+        if (projWeapon && projWeapon.behavior === 'orbitalBeacon') {
+            const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+            const landY = terrain.getHeightAt(proj.x) - proj.radius;
+            const ambient = getAmbient();
+            const targetShip = ambient ? ambient.findNearestCapitalShip(proj.x) : null;
+            state.orbitalBeacons.push({
+                x: proj.x,
+                y: landY,
+                phase: 'landed',
+                timer: 0,
+                targetingShip: targetShip,
+                firedByPlayer: firingPlayer,
+                weaponKey: proj.weaponKey,
+                color: proj.color
+            });
+            // Restore previous weapon (orbital weapons are one-time use)
+            const player = state.players[firingPlayer];
+            if (state.storedWeapons[firingPlayer]) {
+                player.weapon = state.storedWeapons[firingPlayer];
+                state.storedWeapons[firingPlayer] = null;
+            } else {
+                player.weapon = 'MORTAR';  // Fallback
+            }
+            // Visual feedback - beacon lands
+            particles.sparks(proj.x, landY, 25, '#ff6600');
+            particles.sparks(proj.x, landY, 15, '#ffffff');
+            renderer.addScreenShake(10);
+            audio.playBounce();
             state.projectile = null;
             endTurn();
+            return;
+        }
+
+        // STRAFING RUN behavior - mark target area and start warning
+        if (projWeapon && projWeapon.behavior === 'strafingRun') {
+            const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+            const direction = Math.random() < 0.5 ? 1 : -1;
+            const fighterCount = projWeapon.fighterCount || 4;
+            const fighters = [];
+            // Spawn fighters off-screen
+            for (let i = 0; i < fighterCount; i++) {
+                fighters.push({
+                    x: direction === 1 ? -100 - i * 60 : VIRTUAL_WIDTH + 100 + i * 60,
+                    y: VIRTUAL_HEIGHT * 0.12 + (Math.random() - 0.5) * 50,
+                    shotsFired: 0
+                });
+            }
+            state.strafingRuns.push({
+                targetX: proj.x,
+                phase: 'warning',
+                timer: 0,
+                direction: direction,
+                fighters: fighters,
+                firedByPlayer: firingPlayer,
+                weaponKey: proj.weaponKey,
+                color: proj.color,
+                coverageWidth: projWeapon.coverageWidth || 400,
+                pendingTurnEnd: true  // Turn ends when strafing run completes
+            });
+            // Restore previous weapon (orbital weapons are one-time use)
+            const player = state.players[firingPlayer];
+            if (state.storedWeapons[firingPlayer]) {
+                player.weapon = state.storedWeapons[firingPlayer];
+                state.storedWeapons[firingPlayer] = null;
+            } else {
+                player.weapon = 'MORTAR';  // Fallback
+            }
+            // Visual feedback - marker lands
+            particles.sparks(proj.x, proj.y, 20, '#ffff00');
+            renderer.addScreenShake(8);
+            audio.playBounce();
+            state.projectile = null;
+            // Stay in firing phase - turn ends when strafing run completes
+            state.phase = 'firing';
+            state.firingStartTime = performance.now();  // For safety timeout
             return;
         }
 
@@ -1277,8 +1837,51 @@ function checkUFOCollision(px, py, radius) {
 function onBounce(proj) {
     proj.bounces++;
 
-    // SPLITTER behavior - split into multiple projectiles on first bounce
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+
+    // BOUNCER behavior - Mortar-level explosion on EVERY bounce
+    if (weapon && weapon.behavior === 'bouncer') {
+        // Trigger a Mortar-level explosion at bounce point
+        const mortarDamage = WEAPONS.MORTAR.damage;
+        const mortarRadius = WEAPONS.MORTAR.blastRadius;
+
+        // Visual explosion (Mortar-level)
+        particles.explosion(proj.x, proj.y, 80, proj.color, mortarRadius);
+        particles.sparks(proj.x, proj.y, 40, COLORS.yellow);
+        renderer.addScreenShake(15);
+        renderer.flash(proj.color, 0.2);
+        audio.playExplosion(0.7);
+
+        // Terrain damage (same as Mortar)
+        terrain.destroy(proj.x, proj.y, mortarRadius);
+
+        // Apply damage to players
+        const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+        for (const player of state.players) {
+            if (player.health <= 0) continue;
+            const dist = distance(proj.x, proj.y, player.x, player.y);
+            if (dist < mortarRadius) {
+                const falloff = 1 - (dist / mortarRadius);
+                const dmg = mortarDamage * falloff;
+                player.health = Math.max(0, player.health - dmg);
+                particles.sparks(player.x, player.y, 20, COLORS.white);
+            }
+        }
+
+        // Check if out of bounces - final explosion with 2x blast radius
+        if (proj.bounces >= proj.maxBounces) {
+            proj.isFinalBounce = true;  // Mark for enhanced final explosion
+            onExplode(proj);
+            state.projectile = null;
+            return;
+        }
+
+        // Continue bouncing
+        audio.playBounce();
+        return;
+    }
+
+    // SPLITTER behavior - split into multiple projectiles on first bounce (legacy - now airburst)
     if (weapon && weapon.behavior === 'splitter' && proj.bounces === 1 && !proj.isSplit) {
         spawnSplitProjectiles(proj, weapon.splitCount || 3);
         state.projectile = null;
@@ -1299,6 +1902,52 @@ function onBounce(proj) {
 }
 
 function onExplode(proj) {
+    // === CLAMP EXPLOSION POSITION TO VALID BOUNDS ===
+    // Use WORLD boundaries to match the bounce walls
+    proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
+    proj.y = Math.max(WORLD_TOP, Math.min(VIRTUAL_HEIGHT, proj.y));
+
+    // === STRAFING BULLET EXPLOSION - Handle before weapon lookup ===
+    if (proj.isStrafeBullet) {
+        const damage = proj.damage || 10;
+        const blastRadius = proj.blastRadius || 25;
+        const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+
+        // Destroy terrain
+        terrain.destroy(proj.x, proj.y, blastRadius * 0.5);
+
+        // Apply damage to nearby players
+        for (let i = 0; i < state.players.length; i++) {
+            const player = state.players[i];
+            if (player.health <= 0) continue;
+            const dist = distance(proj.x, proj.y, player.x, player.y);
+            if (dist < blastRadius) {
+                const falloff = 1 - (dist / blastRadius);
+                const dmg = damage * falloff;
+                // Apply FORTRESS damage reduction
+                const reduction = getArchetypeDamageReduction(player);
+                const finalDmg = dmg * (1 - reduction);
+                player.health = Math.max(0, player.health - finalDmg);
+                particles.sparks(player.x, player.y, 15, '#ffff00');
+                if (player.health <= 0) {
+                    triggerDeathExplosion(player, false);
+                }
+            }
+        }
+
+        // Visual effects
+        particles.explosion(proj.x, proj.y, 20, '#ffff00', blastRadius * 0.5);
+        particles.sparks(proj.x, proj.y, 10, '#ff8800');
+        renderer.addScreenShake(5);
+        audio.playExplosion(0.3);
+
+        // Remove from projectiles array
+        const idx = state.projectiles.indexOf(proj);
+        if (idx > -1) state.projectiles.splice(idx, 1);
+
+        return;  // Done - don't fall through to normal weapon handling
+    }
+
     // Get weapon data - prefer weaponKey (new system), fallback to tankType (legacy)
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : TANK_TYPES[proj.tankType];
     if (!weapon) return;
@@ -1342,7 +1991,20 @@ function onExplode(proj) {
     // RAILGUN gets special high-impact visuals
     const isRailgun = proj.weaponKey === 'RAILGUN' || proj.tankType === 'PHANTOM';
 
-    if (isRailgun) {
+    // BOUNCER final explosion - 2x blast radius with spectacular effects
+    let finalBlastRadius = effectiveBlastRadius;
+    if (weapon.behavior === 'bouncer' && proj.isFinalBounce) {
+        finalBlastRadius = effectiveBlastRadius * (weapon.finalBlastMultiplier || 2.0);
+        // Spectacular final explosion
+        particles.explosion(proj.x, proj.y, 150, COLORS.white, finalBlastRadius * 0.5);
+        particles.explosion(proj.x, proj.y, 120, proj.color, finalBlastRadius);
+        particles.sparks(proj.x, proj.y, 80, COLORS.yellow);
+        particles.sparks(proj.x, proj.y, 60, COLORS.orange);
+        renderer.addScreenShake(35);
+        renderer.flash(COLORS.white, 0.4);
+        renderer.flash(proj.color, 0.3);
+        audio.playExplosion(1.0);
+    } else if (isRailgun) {
         // Railgun: Focused, intense impact - bright white core with colored burst
         particles.explosion(proj.x, proj.y, 80, COLORS.white, effectiveBlastRadius * 0.6);
         particles.explosion(proj.x, proj.y, 50, proj.color, effectiveBlastRadius);
@@ -1352,31 +2014,19 @@ function onExplode(proj) {
         renderer.flash(proj.color, 0.2);  // Colored afterflash
     } else if (weapon.terrainEffect) {
         // Terrain weapons: Unique visual effects
-        if (weapon.terrainEffect === 'dig') {
+        if (weapon.terrainEffect === 'dig' || weapon.terrainEffect === 'digJagged') {
             // DIGGER: Brown/orange digging effect
-            particles.explosion(proj.x, proj.y, 60, '#aa6633', effectiveBlastRadius);
-            particles.sparks(proj.x, proj.y, 40, '#886622');
-            renderer.addScreenShake(15);
-            renderer.flash('#553311', 0.2);
+            particles.explosion(proj.x, proj.y, 80, '#aa6633', effectiveBlastRadius);
+            particles.sparks(proj.x, proj.y, 50, '#886622');
+            renderer.addScreenShake(20);
+            renderer.flash('#553311', 0.25);
         } else {
-            // BUILDER: Earthy mound effect
-            particles.explosion(proj.x, proj.y, 50, '#996644', effectiveBlastRadius * 0.7);
-            particles.sparks(proj.x, proj.y, 30, '#664422');
-            renderer.addScreenShake(12);
-            renderer.flash('#442211', 0.15);
+            // DIRT_BALL: Earthy mound effect
+            particles.explosion(proj.x, proj.y, 70, '#996644', effectiveBlastRadius * 0.7);
+            particles.sparks(proj.x, proj.y, 40, '#664422');
+            renderer.addScreenShake(18);
+            renderer.flash('#442211', 0.2);
         }
-    } else if (weapon.behavior === 'shield') {
-        // SHIELD: Cyan forcefield effect at player position (not impact point)
-        const owner = state.players[proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer];
-        // Grant shield to the player who fired
-        owner.shield = weapon.shieldReduction || 0.5;
-        // Visual effect at owner's position
-        particles.explosion(owner.x, owner.y, 60, COLORS.cyan, 50);
-        particles.sparks(owner.x, owner.y, 30, COLORS.white);
-        renderer.addScreenShake(8);
-        renderer.flash(COLORS.cyan, 0.25);
-        // Also small effect at impact point
-        particles.sparks(proj.x, proj.y, 20, COLORS.cyan);
     } else {
         // Normal explosion for other weapons
         const particleCount = Math.floor(effectiveBlastRadius * 1.5);
@@ -1386,13 +2036,33 @@ function onExplode(proj) {
     }
 
     // Handle terrain modification based on weapon type
-    if (weapon.terrainEffect === 'build') {
-        // BUILDER/DIRT_BALL: Add terrain mound
+    if (weapon.terrainEffect === 'buildJagged') {
+        // DIRT_BALL: Create massive jagged peak
+        terrain.raiseJagged(proj.x, proj.y, effectiveBlastRadius, state.voidY);
+        // Check if any tanks should be lifted to top of peak
+        for (const player of state.players) {
+            const dist = Math.abs(player.x - proj.x);
+            if (dist < effectiveBlastRadius * 0.5) {
+                // Lift tank to top of new terrain
+                player.y = terrain.getHeightAt(player.x) - TANK_RADIUS;
+            }
+        }
+    } else if (weapon.terrainEffect === 'digJagged') {
+        // DIGGER: Create massive jagged crater (can reach void)
+        terrain.digJagged(proj.x, proj.y, effectiveBlastRadius, state.voidY);
+    } else if (weapon.terrainEffect === 'build') {
+        // Legacy rounded mound
         terrain.raise(proj.x, proj.y, effectiveBlastRadius);
     } else {
-        // Normal weapons and DIGGER: Destroy terrain
-        terrain.destroy(proj.x, proj.y, effectiveBlastRadius);
+        // Normal weapons: Destroy terrain
+        // Use finalBlastRadius for BOUNCER final explosion
+        terrain.destroy(proj.x, proj.y, weapon.behavior === 'bouncer' ? finalBlastRadius : effectiveBlastRadius);
     }
+
+    // === BLAST KNOCKBACK ===
+    // Scale knockback force with blast radius (bigger explosions = more push)
+    const knockbackForce = effectiveBlastRadius * 0.08;  // Tune this for feel
+    applyBlastKnockback(proj.x, proj.y, effectiveBlastRadius * 1.2, knockbackForce, firingPlayerIdx);
 
     // Track if anyone was hit for juice effects
     let hitOccurred = false;
@@ -1436,6 +2106,14 @@ function onExplode(proj) {
                 hitPlayer = player;
                 state.lastHitPos = { x: proj.x, y: proj.y };
 
+                // Apply FORTRESS damage reduction (-33% damage taken)
+                const damageReduction = getArchetypeDamageReduction(player);
+                if (damageReduction > 0) {
+                    damage *= (1 - damageReduction);
+                    // Visual feedback for armor
+                    particles.sparks(player.x, player.y, 15, '#888888');
+                }
+
                 // Apply shield damage reduction if player has a shield
                 if (player.shield > 0) {
                     const reducedDamage = damage * (1 - player.shield);
@@ -1472,54 +2150,106 @@ function onExplode(proj) {
         }
     }
 
-    // QUAKE behavior - damage grounded enemies (even outside blast radius)
-    if (weapon.behavior === 'quake') {
-        for (let i = 0; i < state.players.length; i++) {
-            const player = state.players[i];
-            if (player.health <= 0) continue;
+    // HEAVY_SHELL behavior - aftershock damages grounded tanks
+    if (weapon.behavior === 'heavyShell') {
+        const aftershockDamage = weapon.aftershockDamage || 20;
+        const aftershockRadius = weapon.aftershockRadius || 200;
 
-            // Check if player is on terrain (grounded)
-            const terrainY = terrain.getHeightAt(player.x);
-            const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 10;
+        // Schedule aftershock (delayed ground shake)
+        setTimeout(() => {
+            // Aftershock visual
+            particles.sparks(proj.x, proj.y, 40, '#886644');
+            renderer.addScreenShake(12);
 
-            if (isGrounded) {
-                // Already damaged by normal explosion? Add bonus ground damage
-                const dist = distance(proj.x, proj.y, player.x, player.y);
-                if (dist >= effectiveBlastRadius) {
-                    // Outside blast radius but grounded - apply quake damage
-                    const quakeDamage = effectiveDamage * 0.5;
-                    player.health = Math.max(0, player.health - quakeDamage);
-                    hitOccurred = true;
+            // Damage grounded tanks in aftershock radius
+            for (let i = 0; i < state.players.length; i++) {
+                const player = state.players[i];
+                if (player.health <= 0) continue;
 
-                    // Track damage for coins
-                    if (i !== firingPlayerIndex) {
-                        totalEnemyDamage += quakeDamage;
+                const terrainY = terrain.getHeightAt(player.x);
+                const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 15;
+
+                if (isGrounded) {
+                    const dist = distance(proj.x, proj.y, player.x, player.y);
+                    if (dist < aftershockRadius) {
+                        const falloff = 1 - (dist / aftershockRadius);
+                        const dmg = aftershockDamage * falloff;
+                        player.health = Math.max(0, player.health - dmg);
+                        particles.sparks(player.x, player.y, 15, '#aa6644');
                     }
-
-                    // Visual feedback
-                    particles.sparks(player.x, player.y, 20, '#886644');
-                    renderer.addScreenShake(8);
                 }
             }
-        }
+        }, 300);  // 300ms delay for aftershock
+    }
 
-        // Quake visual - ground ripple effect
-        particles.explosion(proj.x, proj.y + 20, 30, '#886644', 150);
-        renderer.addScreenShake(20);
+    // QUAKE behavior - spreading ground shockwaves
+    if (weapon.behavior === 'quake' || weapon.behavior === 'quakeSpread') {
+        const shockwaveCount = weapon.shockwaveCount || 4;
+        const shockwaveDelay = (weapon.shockwaveDelay || 0.15) * 1000;
+        const falloffPerRing = weapon.shockwaveFalloff || 0.25;
+
+        // Initial impact visual
+        particles.explosion(proj.x, proj.y + 20, 40, '#886644', effectiveBlastRadius);
+        renderer.addScreenShake(25);
+
+        // Schedule multiple shockwave rings spreading outward
+        for (let ring = 1; ring < shockwaveCount; ring++) {
+            const ringRadius = effectiveBlastRadius + ring * 80;
+            const ringDamage = effectiveDamage * Math.max(0.1, 1 - ring * falloffPerRing);
+            const delay = ring * shockwaveDelay;
+
+            setTimeout(() => {
+                // Visual shockwave ring
+                particles.sparks(proj.x, proj.y - ring * 5, Math.max(8, 25 - ring * 5), '#aa8866');
+                renderer.addScreenShake(Math.max(3, 12 - ring * 2));
+
+                // Damage grounded tanks in this ring
+                for (let i = 0; i < state.players.length; i++) {
+                    const player = state.players[i];
+                    if (player.health <= 0) continue;
+
+                    const terrainY = terrain.getHeightAt(player.x);
+                    const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 15;
+
+                    if (isGrounded) {
+                        const dist = distance(proj.x, proj.y, player.x, player.y);
+                        // Ring affects area between previous ring and this ring
+                        const innerRadius = effectiveBlastRadius + (ring - 1) * 80;
+                        const outerRadius = ringRadius;
+
+                        if (dist >= innerRadius && dist < outerRadius) {
+                            const falloff = 1 - ((dist - innerRadius) / (outerRadius - innerRadius)) * 0.5;
+                            const dmg = ringDamage * falloff;
+                            player.health = Math.max(0, player.health - dmg);
+                            particles.sparks(player.x, player.y, 12, '#cc9966');
+
+                            // Track damage for coins
+                            if (i !== firingPlayerIndex) {
+                                totalEnemyDamage += dmg;
+                            }
+                            hitOccurred = true;
+                        }
+                    }
+                }
+            }, delay);
+        }
     }
 
     // TELEPORTER behavior - warp firing player to impact point
     if (weapon.behavior === 'teleporter') {
         const owner = state.players[firingPlayerIndex];
         if (owner && owner.health > 0) {
+            // Clamp teleport destination to valid bounds
+            const clampedX = Math.max(TANK_RADIUS, Math.min(VIRTUAL_WIDTH - TANK_RADIUS, proj.x));
+
             // Find safe landing position on terrain
-            const landingY = terrain.getHeightAt(proj.x) - TANK_RADIUS;
+            const landingY = terrain.getHeightAt(clampedX) - TANK_RADIUS;
 
             // Visual effect at old position
             particles.explosion(owner.x, owner.y, 40, weapon.color, 30);
 
-            // Teleport
-            owner.x = proj.x;
+            // Teleport (to clamped position)
+            owner.x = clampedX;
             owner.y = landingY;
 
             // Visual effect at new position
@@ -1563,58 +2293,97 @@ function onExplode(proj) {
         particles.explosion(proj.x, proj.y, 40, '#ffaa00', effectiveBlastRadius * 0.6);
     }
 
-    // CHAIN LIGHTNING behavior - arc to secondary target
-    if (weapon.behavior === 'chainLightning') {
-        const chainRange = weapon.chainRange || 200;
-        const chainDamage = weapon.chainDamage || 25;
+    // CHAIN LIGHTNING OVERLOAD behavior - huge first hit, one jump at 50% damage
+    if (weapon.behavior === 'chainLightning' || weapon.behavior === 'chainLightningOverload') {
+        const chainRange = weapon.chainRange || 250;
+        const chainDamage = weapon.chainDamage || 70;  // 50% of first hit
+        const maxChains = weapon.maxChains || 1;
 
-        // Find nearest enemy that wasn't the primary target (or any enemy if primary missed)
-        let secondaryTarget = null;
-        let minDist = chainRange;
+        // Find nearest enemy for chain (different from primary target if possible)
+        let chainTargets = [];
+        let alreadyHit = new Set();
 
+        // Mark primary target area as already considered
         for (const player of state.players) {
-            if (player.health <= 0) continue;
             const dist = distance(proj.x, proj.y, player.x, player.y);
-            if (dist < minDist && dist > 0) {
-                minDist = dist;
-                secondaryTarget = player;
+            if (dist < effectiveBlastRadius) {
+                alreadyHit.add(player);
             }
         }
 
-        if (secondaryTarget) {
-            // Deal chain damage
-            secondaryTarget.health = Math.max(0, secondaryTarget.health - chainDamage);
+        // Find chain targets
+        let currentX = proj.x;
+        let currentY = proj.y;
 
-            // Track for coins
-            const targetIndex = state.players.indexOf(secondaryTarget);
-            if (targetIndex !== firingPlayerIndex) {
-                totalEnemyDamage += chainDamage;
+        for (let chain = 0; chain < maxChains; chain++) {
+            let bestTarget = null;
+            let bestDist = chainRange;
+
+            for (const player of state.players) {
+                if (player.health <= 0) continue;
+                if (alreadyHit.has(player)) continue;
+
+                const dist = distance(currentX, currentY, player.x, player.y);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestTarget = player;
+                }
             }
 
-            // Store lightning arc for rendering
+            if (bestTarget) {
+                chainTargets.push({
+                    target: bestTarget,
+                    fromX: currentX,
+                    fromY: currentY
+                });
+                alreadyHit.add(bestTarget);
+                currentX = bestTarget.x;
+                currentY = bestTarget.y;
+            }
+        }
+
+        // Apply chain damage and visual effects
+        for (let i = 0; i < chainTargets.length; i++) {
+            const { target, fromX, fromY } = chainTargets[i];
+            const dmg = chainDamage;  // 50% of first hit (already configured in weapon)
+
+            target.health = Math.max(0, target.health - dmg);
+
+            // Track for coins
+            const targetIndex = state.players.indexOf(target);
+            if (targetIndex !== firingPlayerIndex) {
+                totalEnemyDamage += dmg;
+            }
+
+            // Store lightning arc for rendering (chain effect)
             state.lightningArc = {
-                x1: proj.x,
-                y1: proj.y,
-                x2: secondaryTarget.x,
-                y2: secondaryTarget.y,
-                timer: 0.5,  // Display for 0.5 seconds
+                x1: fromX,
+                y1: fromY,
+                x2: target.x,
+                y2: target.y,
+                timer: 0.6,
                 color: weapon.color
             };
 
-            // Visual feedback
-            particles.sparks(secondaryTarget.x, secondaryTarget.y, 30, weapon.color);
-            particles.sparks(secondaryTarget.x, secondaryTarget.y, 20, COLORS.white);
-            renderer.flash(weapon.color, 0.25);
+            // Visual feedback - electric burst
+            particles.sparks(target.x, target.y, 40, weapon.color);
+            particles.sparks(target.x, target.y, 25, COLORS.white);
+            renderer.flash(weapon.color, 0.3);
+            renderer.addScreenShake(12);
 
             // Check for killing blow
-            if (secondaryTarget.health <= 0) {
+            if (target.health <= 0) {
                 killingBlow = true;
-                hitPlayer = secondaryTarget;
+                hitPlayer = target;
                 if (targetIndex !== firingPlayerIndex) {
                     firingPlayer.coins += KILL_BONUS;
                 }
             }
         }
+
+        // Extra overload visual at impact
+        particles.explosion(proj.x, proj.y, 60, weapon.color, 40);
+        particles.sparks(proj.x, proj.y, 50, COLORS.white);
     }
 
     // Award coins for damage dealt to enemies
@@ -1658,6 +2427,11 @@ function onExplode(proj) {
         // Remove this bomblet from the array
         const idx = state.projectiles.indexOf(proj);
         if (idx > -1) state.projectiles.splice(idx, 1);
+
+        // Strafing bullets don't control turn flow - they fire across turns
+        if (proj.isStrafeBullet) {
+            return;
+        }
 
         // Only end turn when all bomblets are done
         if (state.projectiles.length === 0) {
@@ -1758,7 +2532,55 @@ function spawnSplitProjectiles(proj, count) {
 }
 
 /**
+ * Spawn airburst fragments for SPLITTER weapon (double airburst)
+ * @param {Object} proj - Parent projectile
+ * @param {number} count - Number of fragments
+ * @param {boolean} isFinalStage - Whether this is the second (final) split
+ */
+function spawnAirburstFragments(proj, count, isFinalStage) {
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+
+    // Spawn fragments in a radial burst pattern
+    for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+        const speed = 3 + Math.random() * 2;  // Some variation
+
+        // Inherit some of parent's velocity
+        const inheritFactor = 0.5;
+
+        state.projectiles.push({
+            x: proj.x + Math.cos(angle) * 5,
+            y: proj.y + Math.sin(angle) * 5,
+            vx: proj.vx * inheritFactor + Math.cos(angle) * speed,
+            vy: proj.vy * inheritFactor + Math.sin(angle) * speed,
+            radius: isFinalStage ? proj.radius * 0.6 : proj.radius * 0.75,
+            color: proj.color,
+            bounces: 0,
+            maxBounces: 1,
+            trail: [],
+            weaponKey: proj.weaponKey,
+            isSplit: true,
+            isAirburstFragment: !isFinalStage,  // Can split again if not final
+            hasSecondSplit: isFinalStage,       // Final fragments don't split
+            isCluster: true,  // Use cluster system
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            firedByPlayer: proj.firedByPlayer
+        });
+    }
+
+    // Visual feedback - bigger burst for first split
+    const sparkCount = isFinalStage ? 15 : 30;
+    particles.sparks(proj.x, proj.y, sparkCount, proj.color);
+    particles.sparks(proj.x, proj.y, sparkCount * 0.5, COLORS.white);
+    renderer.addScreenShake(isFinalStage ? 6 : 12);
+    renderer.flash(proj.color, isFinalStage ? 0.08 : 0.15);
+    audio.playBounce();
+}
+
+/**
  * Spawn MIRV projectiles - first stage (3 projectiles that will each split into 3 more)
+ * NOTE: MIRV has been removed from weapons roster
  */
 function spawnMIRVProjectiles(proj) {
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
@@ -1848,6 +2670,10 @@ function spawnMIRVStage2(proj) {
 // ============================================================================
 
 function endTurn() {
+    // Prevent multiple calls in same resolution window (race condition guard)
+    if (state.turnEndLocked) return;
+    state.turnEndLocked = true;
+
     state.phase = 'resolving';
 
     // Note: UFO buffs are cleared in fireProjectile() after being applied to the shot
@@ -1891,10 +2717,21 @@ function endTurn() {
             }
         });
 
-        // Apply turn-start archetype abilities to current player (GUARDIAN shield, MERCHANT coins)
+        // Apply turn-start archetype abilities to current player (MERCHANT coins)
         const currentPlayer = state.players[state.currentPlayer];
         if (currentPlayer.health > 0) {
             applyTurnStartAbilities(currentPlayer);
+        }
+
+        // Handle Dying Light expiration for current player
+        if (state.dyingLightTurns[state.currentPlayer] > 0) {
+            state.dyingLightTurns[state.currentPlayer]--;
+            if (state.dyingLightTurns[state.currentPlayer] <= 0 &&
+                currentPlayer.weapon === 'DYING_LIGHT') {
+                // Restore previous weapon
+                currentPlayer.weapon = state.storedWeapons[state.currentPlayer] || 'MORTAR';
+                state.storedWeapons[state.currentPlayer] = null;
+            }
         }
 
         // Full round = all players have had a turn (use player count)
@@ -1904,6 +2741,19 @@ function endTurn() {
         if (isNewRound) {
             state.voidY -= VOID_RISE_PER_ROUND;
 
+            // Visual feedback for void rising
+            if (VOID_RISE_PER_ROUND > 0) {
+                // Purple flash and rumble
+                renderer.flash('#660088', 0.25);
+                renderer.addScreenShake(8);
+                // Particle effect along the void line
+                for (let i = 0; i < 20; i++) {
+                    const px = Math.random() * VIRTUAL_WIDTH;
+                    particles.sparks(px, state.voidY, 5, '#aa00ff');
+                }
+                audio.playGlitch();
+            }
+
             // Revert previous round's event
             if (state.activeEvent) {
                 events.revertEvent(state);
@@ -1912,6 +2762,7 @@ function endTurn() {
 
             // Transition to shop phase (skip shop on round 1)
             if (state.turnCount >= state.players.length) {
+                state.turnEndLocked = false;  // Unlock turn guard
                 enterShopPhase();
                 return;  // Don't continue to aiming yet
             }
@@ -1921,6 +2772,7 @@ function endTurn() {
         }
 
         state.phase = 'aiming';
+        state.turnEndLocked = false;  // Unlock turn guard
 
         // Prepare AI if next player is AI
         if (getCurrentPlayer().isAI) {
@@ -1980,6 +2832,17 @@ function generateShopOfferings() {
 
     // Sort by cost for display
     offerings.sort((a, b) => WEAPONS[a].cost - WEAPONS[b].cost);
+
+    // Add orbital weapons if stock remaining (always at end, sorted by cost)
+    const orbitalOfferings = [];
+    for (const key of ORBITAL_WEAPON_KEYS) {
+        const stock = state.orbitalStock[key];
+        if (stock && stock.remaining > 0) {
+            orbitalOfferings.push(key);
+        }
+    }
+    orbitalOfferings.sort((a, b) => WEAPONS[a].cost - WEAPONS[b].cost);
+    offerings.push(...orbitalOfferings);
 
     return offerings;
 }
@@ -2073,11 +2936,27 @@ function handleShopInput() {
             const weaponKey = state.shopOfferings[selection];
             const weapon = WEAPONS[weaponKey];
 
-            if (player.coins >= weapon.cost) {
+            // Check orbital stock if applicable
+            const orbitalStock = state.orbitalStock[weaponKey];
+            if (orbitalStock && orbitalStock.remaining <= 0) {
+                // Out of stock - play error
+                audio.playError();
+            } else if (player.coins >= weapon.cost) {
                 player.coins -= weapon.cost;
+
+                // Store previous weapon before equipping orbital weapon
+                if (weapon.tier === 'ORBITAL') {
+                    state.storedWeapons[playerIndex] = player.weapon;
+                }
+
                 player.weapon = weaponKey;
                 state.shopReady[playerIndex] = true;
                 audio.playPurchase();
+
+                // Decrement orbital stock if applicable
+                if (orbitalStock) {
+                    orbitalStock.remaining--;
+                }
             } else {
                 // Can't afford - play error sound
                 audio.playError();
@@ -2206,12 +3085,11 @@ function updateAI(dt) {
 
 function checkWinCondition() {
     // Check for void deaths first (mark players as dead)
-    // VOIDBORN archetype has a grace period before dying to void
     for (const player of state.players) {
         if (player.health > 0 && player.y + TANK_RADIUS > state.voidY) {
             const gracePeriod = getVoidGracePeriod(player);
             if (gracePeriod > 0) {
-                // VOIDBORN: Start or continue grace timer
+                // Start or continue void grace timer (if any)
                 if (player.voidGraceTimer === undefined || player.voidGraceTimer <= 0) {
                     player.voidGraceTimer = gracePeriod;
                 }
@@ -2260,24 +3138,41 @@ function checkWinCondition() {
 // ============================================================================
 
 function updateTankPhysics(player) {
-    // === HORIZONTAL BOUNDARY CLAMPING ===
-    // Keep tanks within playfield (use virtual world dimensions)
-    if (player.x < TANK_RADIUS) {
-        player.x = TANK_RADIUS;
+    // === HORIZONTAL MOVEMENT (knockback sliding) ===
+    if (player.vx && Math.abs(player.vx) > 0.1) {
+        // Apply horizontal velocity
+        player.x += player.vx;
+
+        // Friction/damping (ground friction stronger than air)
+        const groundY = terrain.getHeightAt(player.x);
+        const isGrounded = player.y + TANK_RADIUS >= groundY - 5;
+        const friction = isGrounded ? 0.85 : 0.95;  // More friction on ground
+        player.vx *= friction;
+
+        // Stop if very slow
+        if (Math.abs(player.vx) < 0.1) {
+            player.vx = 0;
+        }
     }
-    if (player.x > VIRTUAL_WIDTH - TANK_RADIUS) {
-        player.x = VIRTUAL_WIDTH - TANK_RADIUS;
-    }
+
+    // === ENFORCE WORLD BOUNDARIES ===
+    enforceTankBounds(player);
 
     // === VERTICAL PHYSICS (falling) ===
     const groundY = terrain.getHeightAt(player.x);
+    const hoverHeight = getArchetypeHoverHeight(player);  // SPECTER hovers above terrain
+    const targetY = groundY - TANK_RADIUS - hoverHeight;  // Target position (on ground or hovering)
     const tankBottom = player.y + TANK_RADIUS;
 
-    if (tankBottom < groundY) {
-        // Tank is above ground — fall
-        // SPECTER archetype: Reduced fall speed (hover jets)
-        const fallMult = getArchetypeFallSpeedMult(player);
-        player.vy += state.gravity * fallMult;
+    if (hoverHeight > 0) {
+        // SPECTER: Smoothly hover at fixed height above terrain
+        // Don't apply gravity - just smoothly move toward target hover height
+        const diff = targetY - player.y;
+        player.y += diff * 0.15;  // Smooth interpolation
+        player.vy = 0;  // No falling velocity
+    } else if (tankBottom < groundY) {
+        // Normal tank: above ground — fall
+        player.vy += state.gravity;
         player.y += player.vy;
 
         // Check if landed
@@ -2290,6 +3185,10 @@ function updateTankPhysics(player) {
         player.y = groundY - TANK_RADIUS;
         player.vy = 0;
     }
+
+    // === FINAL SAFETY CHECK - ALWAYS ENFORCE BOUNDS ===
+    // This runs at the END to catch ANY edge case
+    enforceTankBounds(player);
 }
 
 // ============================================================================
@@ -2302,8 +3201,11 @@ function update(dt) {
     // Always update ambient world systems (clouds, UFOs, weather) for all phases
     const ambient = getAmbient();
     if (ambient) {
-        ambient.update(dt, state.voidY);
+        ambient.update(dt, state.voidY, state.players);
     }
+
+    // Update terrain circuit pulse animations
+    terrain.updateCircuitPulses(dt);
 
     // Title screen
     if (state.phase === 'title') {
@@ -2460,19 +3362,43 @@ function update(dt) {
         }
     }
 
-    // Update projectile
-    if (state.phase === 'firing') {
+    // Update projectile (also update in 'resolving' phase for cluster bomblets)
+    if (state.phase === 'firing' || state.phase === 'resolving') {
+        // Safety timeout - force turn end if stuck for 30 seconds
+        if (state.firingStartTime > 0) {
+            const firingDuration = (performance.now() - state.firingStartTime) / 1000;
+            if (firingDuration > 30) {
+                console.warn('Safety timeout: forcing turn end after', firingDuration.toFixed(1), 'seconds');
+                state.projectile = null;
+                state.projectiles = [];
+                state.strafingRuns = [];
+                state.firingStartTime = 0;
+                endTurn();
+            }
+        }
+
         updateProjectile(dt);
 
-        // Update cluster bomblets
+        // === EXTRA SAFETY: Enforce bounds on main projectile ===
+        if (state.projectile) {
+            enforceProjectileBounds(state.projectile);
+        }
+
+        // Update cluster bomblets and strafing bullets
         for (const bomblet of [...state.projectiles]) {
             updateClusterBomblet(bomblet, dt);
+            enforceProjectileBounds(bomblet);
         }
     }
 
     // Update tank physics (falling) for all players
     for (const p of state.players) {
         updateTankPhysics(p);
+    }
+
+    // === EXTRA SAFETY: Enforce bounds on ALL players every frame ===
+    for (const p of state.players) {
+        enforceTankBounds(p);
     }
 
     // Check win conditions continuously (for void/falling deaths)
@@ -2514,6 +3440,11 @@ function update(dt) {
     // Update active nukes (fuse countdown)
     updateNukes(dt);
 
+    // Update orbital strike systems
+    updateOrbitalBeacons(dt);
+    updateStrafingRuns(dt);
+    updateDesperationBeacons(dt);
+
     // Update nuke shockwave effect
     if (state.nukeShockwave) {
         state.nukeShockwave.timer += dt;
@@ -2521,6 +3452,27 @@ function update(dt) {
         state.nukeShockwave.radius = state.nukeShockwave.maxRadius * progress;
         if (state.nukeShockwave.timer >= state.nukeShockwave.duration) {
             state.nukeShockwave = null;
+        }
+    }
+
+    // Update mushroom cloud effect (rises slowly, fades out)
+    if (state.mushroomCloud) {
+        state.mushroomCloud.timer += dt;
+        // Rise the mushroom cap
+        state.mushroomCloud.capY -= state.mushroomCloud.riseSpeed * dt;
+        // Expand the cap slightly as it rises
+        state.mushroomCloud.radius *= 1 + 0.2 * dt;
+        // Check if done
+        if (state.mushroomCloud.timer >= state.mushroomCloud.duration) {
+            state.mushroomCloud = null;
+        }
+    }
+
+    // Update railgun beam display
+    if (state.railgunBeam) {
+        state.railgunBeam.timer -= dt;
+        if (state.railgunBeam.timer <= 0) {
+            state.railgunBeam = null;
         }
     }
 
@@ -2580,6 +3532,12 @@ function updateFields(dt) {
                     particles.sparks(player.x, player.y, 5, '#ff6600');
                 }
 
+                // Gentle knockback from fire (push away from center)
+                if (!isKnockbackImmune(player) && Math.random() < 0.1) {
+                    const pushDir = player.x > field.x ? 1 : -1;
+                    player.vx += pushDir * 1.5;  // Small periodic push
+                }
+
                 // Check for kill
                 if (player.health <= 0) {
                     if (p !== field.firedByPlayer) {
@@ -2627,6 +3585,318 @@ function updateNukes(dt) {
     }
 }
 
+// ============================================================================
+// Orbital Strike System Updates
+// ============================================================================
+
+/**
+ * Update orbital beacons - targeting sequence then devastating beam
+ */
+function updateOrbitalBeacons(dt) {
+    const ambient = getAmbient();
+
+    for (let i = state.orbitalBeacons.length - 1; i >= 0; i--) {
+        const beacon = state.orbitalBeacons[i];
+        beacon.timer += dt;
+
+        if (beacon.phase === 'landed' && beacon.timer > 0.5) {
+            // Transition to targeting phase
+            beacon.phase = 'targeting';
+            beacon.timer = 0;
+            // Find nearest capital ship if not already found
+            if (!beacon.targetingShip && ambient) {
+                beacon.targetingShip = ambient.findNearestCapitalShip(beacon.x);
+            }
+        }
+
+        if (beacon.phase === 'targeting') {
+            // Pulsing beacon effect
+            if (Math.random() < 0.5) {
+                particles.sparks(beacon.x, beacon.y, 3, '#ff6600');
+            }
+
+            // After 2 seconds, fire the beam
+            if (beacon.timer > 2.0) {
+                beacon.phase = 'firing';
+                beacon.timer = 0;
+                // Pause the space battle briefly
+                if (ambient && ambient.pauseBattle) {
+                    ambient.pauseBattle(0.5);
+                }
+            }
+        }
+
+        if (beacon.phase === 'firing') {
+            // Deal damage on first frame
+            if (beacon.timer < dt * 2) {
+                const weapon = WEAPONS[beacon.weaponKey];
+                const damage = weapon ? weapon.damage : 75;
+                const blastRadius = weapon ? weapon.blastRadius : 150;
+                const edgeDamage = weapon ? weapon.edgeDamage : 50;
+
+                // Destroy terrain
+                terrain.destroy(beacon.x, beacon.y, blastRadius * 0.8);
+
+                // Deal damage to all players
+                for (const player of state.players) {
+                    if (player.health <= 0) continue;
+                    const dist = distance(beacon.x, beacon.y, player.x, player.y);
+                    if (dist < blastRadius) {
+                        const falloff = 1 - (dist / blastRadius);
+                        const dmg = edgeDamage + (damage - edgeDamage) * falloff;
+                        player.health = Math.max(0, player.health - dmg);
+                        particles.sparks(player.x, player.y, 30, '#ffffff');
+                        if (player.health <= 0) {
+                            triggerDeathExplosion(player, false);
+                        }
+                    }
+                }
+
+                // Massive visual effects
+                renderer.addScreenShake(50);
+                renderer.flash('#ffffff', 0.9);
+                audio.playOrbitalBeam ? audio.playOrbitalBeam() : audio.playExplosion(4.0);
+                particles.explosion(beacon.x, beacon.y, 200, '#ffffff', blastRadius);
+                particles.explosion(beacon.x, beacon.y, 150, '#ff6600', blastRadius * 0.7);
+                particles.sparks(beacon.x, beacon.y, 100, '#ffcc00');
+            }
+
+            // Beam lasts 0.8 seconds
+            if (beacon.timer > 0.8) {
+                beacon.phase = 'done';
+            }
+        }
+
+        if (beacon.phase === 'done') {
+            state.orbitalBeacons.splice(i, 1);
+        }
+    }
+}
+
+/**
+ * Update strafing runs - warning phase then fighter strafe
+ */
+function updateStrafingRuns(dt) {
+    for (let i = state.strafingRuns.length - 1; i >= 0; i--) {
+        const run = state.strafingRuns[i];
+        run.timer += dt;
+
+        if (run.phase === 'warning') {
+            // Warning indicator pulsing
+            if (Math.random() < 0.3) {
+                const offsetX = (Math.random() - 0.5) * run.coverageWidth;
+                particles.sparks(run.targetX + offsetX, VIRTUAL_HEIGHT * 0.15, 2, '#ff4444');
+            }
+
+            // After 1.5 seconds, start strafing
+            if (run.timer > 1.5) {
+                run.phase = 'strafing';
+                run.timer = 0;
+                audio.playExplosion(1.0);  // Fighter engines approaching
+            }
+        }
+
+        if (run.phase === 'strafing') {
+            const weapon = WEAPONS[run.weaponKey];
+            const bulletsPerFighter = weapon ? weapon.bulletsPerFighter : 5;
+            const damagePerBullet = weapon ? weapon.damagePerBullet : 10;
+            const fighterSpeed = 800;  // pixels per second
+            const halfWidth = run.coverageWidth / 2;
+
+            // Move fighters across the screen
+            let allDone = true;
+            for (const fighter of run.fighters) {
+                fighter.x += run.direction * fighterSpeed * dt;
+
+                // Check if fighter is in strafe zone
+                const inZone = Math.abs(fighter.x - run.targetX) < halfWidth;
+
+                // Fire bullets as fighter crosses zone
+                if (inZone && fighter.shotsFired < bulletsPerFighter) {
+                    const fireRate = bulletsPerFighter / (run.coverageWidth / fighterSpeed);
+                    if (Math.random() < fireRate * dt) {
+                        fighter.shotsFired++;
+                        // Create strafe bullet projectile
+                        const bulletX = fighter.x + (Math.random() - 0.5) * 40;
+                        const bulletY = fighter.y;
+                        state.projectiles.push({
+                            x: bulletX,
+                            y: bulletY,
+                            vx: (Math.random() - 0.5) * 3,
+                            vy: 12,  // Fast downward (frame-based physics)
+                            radius: 4,
+                            color: '#ffff00',
+                            damage: damagePerBullet,
+                            blastRadius: 25,
+                            maxBounces: 99,  // High so bounce limit doesn't trigger - explodes on terrain/void
+                            bounces: 0,
+                            trail: [],
+                            firedByPlayer: run.firedByPlayer,
+                            isStrafeBullet: true,
+                            isCluster: true,  // Process like cluster bombs for proper explosion
+                            weaponKey: null,
+                            createdAt: performance.now(),  // For lifetime tracking
+                            maxLifetime: 5000  // 5 second max lifetime
+                        });
+                        particles.sparks(bulletX, bulletY, 5, '#ffff00');
+                        audio.playFire();  // Gunfire sound
+                    }
+                }
+
+                // Check if fighter has crossed the entire screen
+                if (run.direction === 1 && fighter.x < VIRTUAL_WIDTH + 200) allDone = false;
+                if (run.direction === -1 && fighter.x > -200) allDone = false;
+            }
+
+            if (allDone) {
+                run.phase = 'done';
+            }
+        }
+
+        if (run.phase === 'done') {
+            // Check if all strafing bullets have resolved
+            const strafeBullets = state.projectiles.filter(p => p.isStrafeBullet);
+            if (strafeBullets.length === 0) {
+                // End turn if this strafing run was controlling the turn
+                if (run.pendingTurnEnd) {
+                    state.strafingRuns.splice(i, 1);
+                    endTurn();
+                } else {
+                    state.strafingRuns.splice(i, 1);
+                }
+            }
+            // If bullets still flying, wait for them
+        }
+    }
+}
+
+/**
+ * Update desperation beacons - falling from critical ships
+ */
+function updateDesperationBeacons(dt) {
+    for (let i = state.desperationBeacons.length - 1; i >= 0; i--) {
+        const beacon = state.desperationBeacons[i];
+
+        if (!beacon.landed) {
+            // Apply gravity
+            beacon.vy += state.gravity * 60 * dt;
+            beacon.y += beacon.vy * dt;
+
+            // Check for terrain collision
+            if (terrain.isPointBelowTerrain(beacon.x, beacon.y)) {
+                beacon.landed = true;
+                beacon.y = terrain.getHeightAt(beacon.x) - 10;
+                beacon.vy = 0;
+                beacon.timer = 0;
+                particles.sparks(beacon.x, beacon.y, 30, '#ffcc00');
+                audio.playBounce();
+            }
+
+            // Check for void
+            if (beacon.y > state.voidY) {
+                state.desperationBeacons.splice(i, 1);
+                continue;
+            }
+        } else {
+            // Countdown timer while landed
+            beacon.timer += dt;
+
+            // Pulsing effect
+            if (Math.random() < 0.4) {
+                const pulse = Math.sin(state.time * 10) * 0.5 + 0.5;
+                particles.sparks(beacon.x, beacon.y - 5, 2 + pulse * 3, '#ffcc00');
+            }
+
+            // Expire after maxTime
+            if (beacon.timer >= beacon.maxTime) {
+                particles.explosion(beacon.x, beacon.y, 30, '#ffcc00', 40);
+                state.desperationBeacons.splice(i, 1);
+                continue;
+            }
+        }
+
+        // Check for projectile collision to claim beacon
+        if (beacon.landed && !beacon.claimed) {
+            // Check main projectile
+            if (state.projectile) {
+                const proj = state.projectile;
+                const dist = distance(proj.x, proj.y, beacon.x, beacon.y);
+                if (dist < 30) {
+                    claimDesperationBeacon(beacon, proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer);
+                }
+            }
+
+            // Check cluster projectiles
+            for (const proj of state.projectiles) {
+                const dist = distance(proj.x, proj.y, beacon.x, beacon.y);
+                if (dist < 30) {
+                    claimDesperationBeacon(beacon, proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Grant Dying Light weapon to a player who claimed a desperation beacon
+ */
+function claimDesperationBeacon(beacon, playerIndex) {
+    if (beacon.claimed) return;
+
+    beacon.claimed = true;
+    beacon.claimedBy = playerIndex;
+
+    const player = state.players[playerIndex];
+    if (!player || player.health <= 0) return;
+
+    // Store current weapon and grant Dying Light
+    state.storedWeapons[playerIndex] = player.weapon;
+    player.weapon = 'DYING_LIGHT';
+    state.dyingLightTurns[playerIndex] = 3;
+
+    // Visual and audio feedback
+    renderer.flash('#ffcc00', 0.5);
+    audio.playPurchase();
+    particles.explosion(beacon.x, beacon.y, 100, '#ffcc00', 80);
+    particles.sparks(beacon.x, beacon.y, 60, '#ffffff');
+
+    // Show notification
+    state.buffNotification = {
+        playerIndex: playerIndex,
+        buffType: 'DYING_LIGHT',
+        timer: 2.5
+    };
+
+    // Remove the beacon
+    const idx = state.desperationBeacons.indexOf(beacon);
+    if (idx !== -1) {
+        state.desperationBeacons.splice(idx, 1);
+    }
+}
+
+/**
+ * Drop a desperation beacon from a critically damaged capital ship
+ */
+function dropDesperationBeacon(shipX, shipY) {
+    // Convert from ambient sky coordinates to game world coordinates
+    // Beacon starts falling from where the ship is
+    state.desperationBeacons.push({
+        x: shipX,
+        y: shipY,
+        vy: 0,
+        landed: false,
+        timer: 0,
+        maxTime: 15,
+        claimed: false,
+        claimedBy: -1
+    });
+
+    // Visual effect
+    particles.sparks(shipX, shipY, 40, '#ffcc00');
+    particles.sparks(shipX, shipY, 30, '#ff6600');
+}
+
 /**
  * Trigger a cinematic multi-stage nuke explosion - THE BIG ONE
  */
@@ -2666,9 +3936,22 @@ function triggerCinematicNukeExplosion(nuke) {
         x: nuke.x,
         y: nuke.y,
         radius: 0,
-        maxRadius: effectiveBlastRadius * 2.0,  // Bigger shockwave
+        maxRadius: effectiveBlastRadius * 2.5,  // Even bigger shockwave
         timer: 0,
-        duration: 1.2  // Slower, more dramatic expansion
+        duration: 1.5  // Slower, more dramatic expansion
+    };
+
+    // === STAGE 3.5: MUSHROOM CLOUD ===
+    // Create lingering mushroom cloud effect
+    state.mushroomCloud = {
+        x: nuke.x,
+        y: nuke.y,
+        timer: 0,
+        duration: weapon.mushroomCloudDuration || 2.0,
+        radius: effectiveBlastRadius * 0.6,
+        stemWidth: effectiveBlastRadius * 0.3,
+        riseSpeed: 80,
+        capY: nuke.y  // Will rise over time
     };
 
     // === STAGE 4: RADIAL SECONDARY EXPLOSIONS ===
@@ -2754,6 +4037,11 @@ function triggerCinematicNukeExplosion(nuke) {
     // === TERRAIN DESTRUCTION ===
     terrain.destroy(nuke.x, nuke.y, effectiveBlastRadius);
 
+    // === MASSIVE BLAST KNOCKBACK ===
+    // Nuke has much stronger knockback than regular explosions
+    const knockbackForce = effectiveBlastRadius * 0.15;  // Nearly double normal force
+    applyBlastKnockback(nuke.x, nuke.y, effectiveBlastRadius * 1.5, knockbackForce, nuke.firedByPlayer);
+
     // === EXTENDED LINGERING EFFECTS ===
     // Longer slow-mo for dramatic effect
     state.slowMoUntil = performance.now() + 800;
@@ -2785,9 +4073,25 @@ function triggerCinematicNukeExplosion(nuke) {
     setTimeout(() => {
         renderer.addScreenShake(10);
     }, 1000);
+
+    // End turn after all nuke effects complete
+    setTimeout(() => {
+        if (state.nukes.length === 0 && state.phase === 'firing') {
+            endTurn();
+        }
+    }, 1200);
 }
 
 function updateClusterBomblet(proj, dt) {
+    // Safety: check lifetime for strafing bullets that might get stuck
+    if (proj.createdAt && proj.maxLifetime) {
+        const age = performance.now() - proj.createdAt;
+        if (age > proj.maxLifetime) {
+            onExplode(proj);  // Force explosion
+            return;
+        }
+    }
+
     // Store trail position
     proj.trail.push({ x: proj.x, y: proj.y, age: 0 });
     if (proj.trail.length > 10) proj.trail.shift();
@@ -2800,9 +4104,27 @@ function updateClusterBomblet(proj, dt) {
         proj.vx += state.wind;
     }
 
-    // Move
+    // Move first
     proj.x += proj.vx;
     proj.y += proj.vy;
+
+    // Wall bounces - simple pattern
+    if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
+        proj.vx = -proj.vx * 0.9;
+        proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
+        proj.bounces++;
+        particles.sparks(proj.x, proj.y, 8, proj.color);
+        audio.playBounce();
+    }
+
+    // Ceiling bounce
+    if (proj.y < WORLD_TOP) {
+        proj.vy = -proj.vy * 0.9;
+        proj.y = WORLD_TOP;
+        proj.bounces++;
+        particles.sparks(proj.x, proj.y, 8, proj.color);
+        audio.playBounce();
+    }
 
     // Check for UFO collision (grants buffs)
     checkUFOCollision(proj.x, proj.y, proj.radius);
@@ -2812,23 +4134,25 @@ function updateClusterBomblet(proj, dt) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // Bounce off walls (use virtual dimensions)
-    if (proj.x < proj.radius || proj.x > VIRTUAL_WIDTH - proj.radius) {
-        proj.vx = -proj.vx * 0.9;
-        proj.x = clamp(proj.x, proj.radius, VIRTUAL_WIDTH - proj.radius);
-        proj.bounces++;
-        particles.sparks(proj.x, proj.y, 8, COLORS.yellow);
+    // SPLITTER second-stage airburst (fragments split again)
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    if (weapon && weapon.behavior === 'splitterAirburst' && proj.isAirburstFragment && !proj.hasSecondSplit) {
+        proj.secondAirburstTimer = (proj.secondAirburstTimer || 0) + dt;
+        if (proj.secondAirburstTimer >= 0.4) {  // Shorter delay for second split
+            proj.hasSecondSplit = true;
+            spawnAirburstFragments(proj, weapon.secondSplitCount || 2, true);
+            // Remove this fragment from projectiles array
+            const idx = state.projectiles.indexOf(proj);
+            if (idx >= 0) state.projectiles.splice(idx, 1);
+            // Check if all projectiles are done
+            if (state.projectiles.length === 0 && !state.projectile) {
+                endTurn();
+            }
+            return;
+        }
     }
 
-    // Bounce off ceiling
-    if (proj.y < proj.radius) {
-        proj.vy = -proj.vy * 0.9;
-        proj.y = proj.radius;
-        proj.bounces++;
-        particles.sparks(proj.x, proj.y, 8, COLORS.yellow);
-    }
-
-    // Check termination (use virtual dimensions)
+    // Check termination
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100 ||
@@ -2858,35 +4182,35 @@ function updateAnomalyProjectile(dt) {
         proj.vx += state.wind;
     }
 
-    // Move
+    // Move first
     proj.x += proj.vx;
     proj.y += proj.vy;
+
+    // Wall bounces - simple pattern
+    let didBounce = false;
+    if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
+        proj.vx = -proj.vx * 0.9;
+        proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
+        didBounce = true;
+    }
+
+    // Ceiling bounce
+    if (proj.y < WORLD_TOP) {
+        proj.vy = -proj.vy * 0.9;
+        proj.y = WORLD_TOP;
+        didBounce = true;
+    }
+
+    if (didBounce) {
+        onAnomalyBounce(proj);
+    }
 
     // Spawn trail particles (purple for anomaly)
     if (Math.random() < 0.4) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // Bounce off walls (use virtual dimensions)
-    if (proj.x < proj.radius) {
-        proj.x = proj.radius;
-        proj.vx = -proj.vx * 0.9;
-        onAnomalyBounce(proj);
-    }
-    if (proj.x > VIRTUAL_WIDTH - proj.radius) {
-        proj.x = VIRTUAL_WIDTH - proj.radius;
-        proj.vx = -proj.vx * 0.9;
-        onAnomalyBounce(proj);
-    }
-
-    // Bounce off ceiling
-    if (proj.y < proj.radius) {
-        proj.y = proj.radius;
-        proj.vy = -proj.vy * 0.9;
-        onAnomalyBounce(proj);
-    }
-
-    // Check termination: terrain, void, or out of bounds (use virtual dimensions)
+    // Check termination: terrain, void, or out of bounds
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100) {
@@ -2909,6 +4233,10 @@ function onAnomalyBounce(proj) {
 }
 
 function onAnomalyExplode(proj) {
+    // === CLAMP EXPLOSION POSITION TO VALID BOUNDS ===
+    proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
+    proj.y = Math.max(WORLD_TOP, Math.min(VIRTUAL_HEIGHT, proj.y));
+
     const tankType = TANK_TYPES.SIEGE;  // Uses SIEGE explosion stats
 
     // ENHANCED Visual effects - anomaly has eerie purple explosion
@@ -2918,6 +4246,9 @@ function onAnomalyExplode(proj) {
 
     // Destroy terrain
     terrain.destroy(proj.x, proj.y, tankType.blastRadius);
+
+    // Apply knockback (anomaly affects everyone)
+    applyBlastKnockback(proj.x, proj.y, tankType.blastRadius * 1.2, tankType.blastRadius * 0.1, -1);
 
     // Apply damage to ALL players (neutral projectile)
     let hitOccurred = false;
@@ -3015,6 +4346,32 @@ function render() {
     // Draw terrain
     terrain.draw(renderer);
 
+    // Draw terrain props (trees, buildings, pylons, rocks)
+    terrain.drawProps(renderer);
+
+    // === DRAW VISIBLE WORLD BOUNDARIES (bright for debugging) ===
+    ctx.strokeStyle = '#ffff00';  // Bright yellow - very visible
+    ctx.lineWidth = 6;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = '#ffff00';
+    // Left wall
+    ctx.beginPath();
+    ctx.moveTo(WORLD_LEFT, WORLD_TOP);
+    ctx.lineTo(WORLD_LEFT, WORLD_BOTTOM);
+    ctx.stroke();
+    // Right wall
+    ctx.beginPath();
+    ctx.moveTo(WORLD_RIGHT, WORLD_TOP);
+    ctx.lineTo(WORLD_RIGHT, WORLD_BOTTOM);
+    ctx.stroke();
+    // Ceiling
+    ctx.beginPath();
+    ctx.moveTo(WORLD_LEFT, WORLD_TOP);
+    ctx.lineTo(WORLD_RIGHT, WORLD_TOP);
+    ctx.stroke();
+    // Clear glow
+    ctx.shadowBlur = 0;
+
     // Draw ambient midground (near clouds - after terrain for depth)
     if (ambient) {
         ambient.drawMidground(renderer);
@@ -3033,14 +4390,33 @@ function render() {
         drawNuke(nuke);
     }
 
+    // Draw orbital strike systems
+    renderOrbitalBeacons();
+    renderStrafingRuns();
+    renderDesperationBeacons();
+
     // Draw nuke shockwave
     if (state.nukeShockwave) {
         drawNukeShockwave(state.nukeShockwave);
     }
 
-    // Draw all tanks
+    // Draw mushroom cloud
+    if (state.mushroomCloud) {
+        drawMushroomCloud(state.mushroomCloud);
+    }
+
+    // Draw railgun beam
+    if (state.railgunBeam) {
+        drawRailgunBeam(state.railgunBeam);
+    }
+
+    // Draw all tanks (skip dead tanks - they're gone!)
     for (let i = 0; i < state.players.length; i++) {
         const player = state.players[i];
+
+        // SKIP DEAD TANKS - they exploded and are gone
+        if (player.health <= 0) continue;
+
         const isActive = i === state.currentPlayer && state.phase === 'aiming';
 
         // Get archetype visuals (fallback to defaults)
@@ -3542,6 +4918,260 @@ function drawNuke(nuke) {
     }
 }
 
+// ============================================================================
+// Orbital Strike System Rendering
+// ============================================================================
+
+/**
+ * Render orbital beacons (landed, targeting laser, and firing beam)
+ */
+function renderOrbitalBeacons() {
+    const ctx = renderer.ctx;
+
+    for (const beacon of state.orbitalBeacons) {
+        if (beacon.phase === 'landed' || beacon.phase === 'targeting') {
+            // Draw pulsing beacon on ground
+            const pulse = Math.sin(state.time * 8) * 0.3 + 0.7;
+            renderer.setGlow('#ff6600', 20 * pulse);
+            ctx.fillStyle = '#ff6600';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 10 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Inner bright core
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            renderer.clearGlow();
+
+            // Targeting laser from ship (if targeting)
+            if (beacon.phase === 'targeting' && beacon.targetingShip) {
+                const ship = beacon.targetingShip;
+                const dashPhase = (state.time * 5) % 1;
+
+                ctx.save();
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([10, 10]);
+                ctx.lineDashOffset = -dashPhase * 20;
+                ctx.globalAlpha = 0.5 + Math.sin(state.time * 10) * 0.3;
+
+                ctx.beginPath();
+                ctx.moveTo(ship.x, ship.y);
+                ctx.lineTo(beacon.x, beacon.y);
+                ctx.stroke();
+
+                ctx.setLineDash([]);
+                ctx.restore();
+
+                // Countdown text
+                const timeLeft = Math.ceil(2 - beacon.timer);
+                if (timeLeft > 0) {
+                    ctx.save();
+                    ctx.font = 'bold 24px monospace';
+                    ctx.textAlign = 'center';
+                    renderer.setGlow('#ff6600', 10);
+                    ctx.fillStyle = '#ff6600';
+                    ctx.fillText(timeLeft.toString(), beacon.x, beacon.y - 30);
+                    renderer.clearGlow();
+                    ctx.restore();
+                }
+            }
+        }
+
+        if (beacon.phase === 'firing') {
+            // Draw massive beam from sky to ground
+            const beamAlpha = 1 - (beacon.timer / 0.8);  // Fade out over 0.8s
+            const beamWidth = 60 + Math.sin(state.time * 30) * 10;
+
+            // Outer glow
+            renderer.setGlow('#00ffff', 50);
+            ctx.globalAlpha = beamAlpha * 0.5;
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(beacon.x - beamWidth, -100, beamWidth * 2, beacon.y + 200);
+
+            // Inner white core
+            ctx.globalAlpha = beamAlpha * 0.8;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(beacon.x - beamWidth * 0.5, -100, beamWidth, beacon.y + 200);
+
+            // Bright center line
+            ctx.globalAlpha = beamAlpha;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(beacon.x - 5, -100, 10, beacon.y + 200);
+
+            renderer.clearGlow();
+            ctx.globalAlpha = 1;
+
+            // Ground impact circle
+            renderer.setGlow('#ff6600', 40);
+            ctx.strokeStyle = '#ff6600';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 80 + beacon.timer * 100, 0, Math.PI * 2);
+            ctx.stroke();
+            renderer.clearGlow();
+        }
+    }
+}
+
+/**
+ * Render strafing runs (warning zone and fighters)
+ */
+function renderStrafingRuns() {
+    const ctx = renderer.ctx;
+
+    for (const run of state.strafingRuns) {
+        const halfWidth = run.coverageWidth / 2;
+
+        if (run.phase === 'warning') {
+            // Draw red danger zone
+            const flash = Math.sin(state.time * 8) * 0.2 + 0.3;
+            ctx.globalAlpha = flash;
+            ctx.fillStyle = '#ff0000';
+            ctx.fillRect(run.targetX - halfWidth, 0, run.coverageWidth, state.voidY);
+            ctx.globalAlpha = 1;
+
+            // Direction arrows
+            const arrowY = VIRTUAL_HEIGHT * 0.15;
+            ctx.strokeStyle = '#ff4444';
+            ctx.lineWidth = 3;
+            for (let i = 0; i < 3; i++) {
+                const arrowX = run.targetX + (i - 1) * 100;
+                const dir = run.direction;
+                ctx.beginPath();
+                ctx.moveTo(arrowX - dir * 20, arrowY - 10);
+                ctx.lineTo(arrowX + dir * 20, arrowY);
+                ctx.lineTo(arrowX - dir * 20, arrowY + 10);
+                ctx.stroke();
+            }
+
+            // "INCOMING" text
+            ctx.save();
+            ctx.font = 'bold 28px monospace';
+            ctx.textAlign = 'center';
+            renderer.setGlow('#ff0000', 10);
+            ctx.fillStyle = '#ff0000';
+            ctx.fillText('INCOMING', run.targetX, VIRTUAL_HEIGHT * 0.08);
+            renderer.clearGlow();
+            ctx.restore();
+        }
+
+        if (run.phase === 'strafing') {
+            // Draw fighters
+            for (const fighter of run.fighters) {
+                ctx.save();
+                ctx.translate(fighter.x, fighter.y);
+
+                // Fighter body (small triangle)
+                renderer.setGlow('#ffff00', 10);
+                ctx.fillStyle = '#888888';
+                ctx.beginPath();
+                if (run.direction === 1) {
+                    ctx.moveTo(25, 0);
+                    ctx.lineTo(-15, -12);
+                    ctx.lineTo(-15, 12);
+                } else {
+                    ctx.moveTo(-25, 0);
+                    ctx.lineTo(15, -12);
+                    ctx.lineTo(15, 12);
+                }
+                ctx.closePath();
+                ctx.fill();
+
+                // Engine glow
+                ctx.fillStyle = '#ffaa00';
+                const engineX = run.direction === 1 ? -20 : 20;
+                ctx.beginPath();
+                ctx.arc(engineX, 0, 5, 0, Math.PI * 2);
+                ctx.fill();
+
+                renderer.clearGlow();
+                ctx.restore();
+
+                // Engine trail
+                for (let t = 1; t <= 5; t++) {
+                    const trailX = fighter.x - run.direction * t * 15;
+                    ctx.globalAlpha = 0.4 - t * 0.07;
+                    ctx.fillStyle = '#ff6600';
+                    ctx.beginPath();
+                    ctx.arc(trailX, fighter.y, 4 - t * 0.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.globalAlpha = 1;
+            }
+        }
+    }
+}
+
+/**
+ * Render desperation beacons (falling or landed, waiting to be claimed)
+ */
+function renderDesperationBeacons() {
+    const ctx = renderer.ctx;
+
+    for (const beacon of state.desperationBeacons) {
+        const pulse = Math.sin(state.time * 6) * 0.3 + 0.7;
+
+        // Outer glow
+        renderer.setGlow('#ffcc00', 25 * pulse);
+
+        if (!beacon.landed) {
+            // Falling beacon with trail
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Trail
+            for (let t = 1; t <= 6; t++) {
+                ctx.globalAlpha = 0.5 - t * 0.08;
+                ctx.fillStyle = '#ff6600';
+                ctx.beginPath();
+                ctx.arc(beacon.x, beacon.y - beacon.vy * t * 0.02, 6 - t * 0.8, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        } else {
+            // Landed beacon
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 12 * pulse, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Inner core
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Timer bar
+            const timeLeft = beacon.maxTime - beacon.timer;
+            const barWidth = 40;
+            const barHeight = 6;
+            const fillWidth = (timeLeft / beacon.maxTime) * barWidth;
+
+            ctx.fillStyle = '#333333';
+            ctx.fillRect(beacon.x - barWidth / 2, beacon.y - 25, barWidth, barHeight);
+
+            const urgency = 1 - (timeLeft / beacon.maxTime);
+            ctx.fillStyle = urgency > 0.7 ? '#ff0000' : (urgency > 0.4 ? '#ffaa00' : '#ffcc00');
+            ctx.fillRect(beacon.x - barWidth / 2, beacon.y - 25, fillWidth, barHeight);
+
+            // "CLAIM!" text
+            ctx.save();
+            ctx.font = 'bold 16px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ffcc00';
+            ctx.fillText('CLAIM!', beacon.x, beacon.y - 35);
+            ctx.restore();
+        }
+
+        renderer.clearGlow();
+    }
+}
+
 /**
  * Draw expanding nuke shockwave
  */
@@ -3580,6 +5210,127 @@ function drawNukeShockwave(shockwave) {
     }
 
     renderer.clearGlow();
+}
+
+/**
+ * Draw cinematic mushroom cloud
+ */
+function drawMushroomCloud(cloud) {
+    const ctx = renderer.ctx;
+    const progress = cloud.timer / cloud.duration;
+    const alpha = Math.max(0, 1 - progress * 0.8);  // Slower fade
+
+    // Stem of mushroom cloud
+    const stemTop = cloud.capY + cloud.radius * 0.3;
+    const stemBottom = cloud.y;
+    const stemWidth = cloud.stemWidth * (1 - progress * 0.3);
+
+    // Draw stem (fire column rising)
+    const stemGradient = ctx.createLinearGradient(cloud.x, stemBottom, cloud.x, stemTop);
+    stemGradient.addColorStop(0, `rgba(255, 100, 0, ${alpha * 0.6})`);
+    stemGradient.addColorStop(0.5, `rgba(255, 150, 0, ${alpha * 0.7})`);
+    stemGradient.addColorStop(1, `rgba(255, 200, 50, ${alpha * 0.5})`);
+
+    ctx.fillStyle = stemGradient;
+    ctx.beginPath();
+    ctx.moveTo(cloud.x - stemWidth * 0.5, stemBottom);
+    ctx.lineTo(cloud.x + stemWidth * 0.5, stemBottom);
+    ctx.lineTo(cloud.x + stemWidth * 0.8, stemTop);
+    ctx.lineTo(cloud.x - stemWidth * 0.8, stemTop);
+    ctx.closePath();
+    ctx.fill();
+
+    // Cap of mushroom cloud
+    const capRadius = cloud.radius;
+    const capY = cloud.capY;
+
+    // Outer dark smoke ring
+    renderer.setGlow('#ff4400', 40 * alpha);
+    ctx.fillStyle = `rgba(80, 40, 20, ${alpha * 0.5})`;
+    ctx.beginPath();
+    ctx.ellipse(cloud.x, capY, capRadius * 1.3, capRadius * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Middle orange layer
+    ctx.fillStyle = `rgba(255, 100, 0, ${alpha * 0.6})`;
+    ctx.beginPath();
+    ctx.ellipse(cloud.x, capY - capRadius * 0.1, capRadius * 1.0, capRadius * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Inner bright core
+    renderer.setGlow('#ffff00', 60 * alpha);
+    ctx.fillStyle = `rgba(255, 200, 50, ${alpha * 0.7})`;
+    ctx.beginPath();
+    ctx.ellipse(cloud.x, capY - capRadius * 0.15, capRadius * 0.6, capRadius * 0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Hot white center
+    if (progress < 0.5) {
+        const whiteAlpha = (1 - progress * 2) * alpha;
+        ctx.fillStyle = `rgba(255, 255, 200, ${whiteAlpha})`;
+        ctx.beginPath();
+        ctx.ellipse(cloud.x, capY - capRadius * 0.2, capRadius * 0.3, capRadius * 0.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    renderer.clearGlow();
+}
+
+/**
+ * Draw railgun beam with glow effect
+ */
+function drawRailgunBeam(beam) {
+    const ctx = renderer.ctx;
+    const alpha = beam.timer / beam.maxTimer;
+
+    if (beam.path.length < 2) return;
+
+    // Draw multiple passes for glow effect
+    for (let pass = 0; pass < 4; pass++) {
+        const width = pass === 0 ? beam.width * 3 : (pass === 1 ? beam.width * 2 : (pass === 2 ? beam.width : beam.width * 0.5));
+        const passAlpha = pass === 0 ? alpha * 0.2 : (pass === 1 ? alpha * 0.4 : (pass === 2 ? alpha * 0.8 : alpha));
+        const color = pass < 2 ? beam.color : (pass === 2 ? '#aaffff' : '#ffffff');
+
+        ctx.save();
+        ctx.globalAlpha = passAlpha;
+        renderer.setGlow(beam.color, 40);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        ctx.beginPath();
+        ctx.moveTo(beam.path[0].x, beam.path[0].y);
+        for (let i = 1; i < beam.path.length; i++) {
+            ctx.lineTo(beam.path[i].x, beam.path[i].y);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw impact points at bounces
+    for (let i = 1; i < beam.path.length - 1; i++) {
+        const p = beam.path[i];
+        ctx.globalAlpha = alpha;
+        renderer.setGlow(beam.color, 30);
+        ctx.fillStyle = COLORS.white;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // Draw terminus explosion
+    const terminus = beam.path[beam.path.length - 1];
+    const explosionSize = 15 + (1 - alpha) * 30;
+    ctx.globalAlpha = alpha * 0.8;
+    renderer.setGlow(beam.color, 50);
+    ctx.fillStyle = COLORS.white;
+    ctx.beginPath();
+    ctx.arc(terminus.x, terminus.y, explosionSize, 0, Math.PI * 2);
+    ctx.fill();
+
+    renderer.clearGlow();
+    ctx.globalAlpha = 1;
 }
 
 /**
@@ -3877,45 +5628,63 @@ function renderShop() {
         const isSelected = i === selection;
         const canAfford = p1.coins >= weapon.cost;
 
+        // Check orbital stock
+        const orbitalStock = state.orbitalStock[weaponKey];
+        const inStock = !orbitalStock || orbitalStock.remaining > 0;
+        const isOrbital = weapon.tier === 'ORBITAL';
+        const canPurchase = canAfford && inStock;
+
         // Selection highlight
         if (isSelected) {
-            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 25, 500, 55, COLORS.cyan, 2, true);
+            const highlightColor = !inStock ? '#444444' : COLORS.cyan;
+            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 25, 500, 55, highlightColor, 2, inStock);
 
             // Animated projectile preview
-            const previewX = CANVAS_WIDTH / 2 - 230;
-            const bounce = Math.sin(state.time * 8) * 3;
-            const pulse = 0.8 + Math.sin(state.time * 6) * 0.2;
-            const previewRadius = (weapon.projectileRadius || 6) * pulse;
+            if (inStock) {
+                const previewX = CANVAS_WIDTH / 2 - 230;
+                const bounce = Math.sin(state.time * 8) * 3;
+                const pulse = 0.8 + Math.sin(state.time * 6) * 0.2;
+                const previewRadius = (weapon.projectileRadius || 6) * pulse;
 
-            renderer.setGlow(weapon.color, 15);
-            renderer.drawCircle(previewX, y + bounce, previewRadius, weapon.color, true);
-            renderer.clearGlow();
+                renderer.setGlow(weapon.color, 15);
+                renderer.drawCircle(previewX, y + bounce, previewRadius, weapon.color, true);
+                renderer.clearGlow();
 
-            // Trail effect
-            for (let t = 1; t <= 3; t++) {
-                const trailX = previewX - t * 8;
-                const alpha = 0.4 - t * 0.1;
-                renderer.ctx.globalAlpha = alpha;
-                renderer.drawCircle(trailX, y + bounce, previewRadius * (1 - t * 0.2), weapon.color, true);
+                // Trail effect
+                for (let t = 1; t <= 3; t++) {
+                    const trailX = previewX - t * 8;
+                    const alpha = 0.4 - t * 0.1;
+                    renderer.ctx.globalAlpha = alpha;
+                    renderer.drawCircle(trailX, y + bounce, previewRadius * (1 - t * 0.2), weapon.color, true);
+                }
+                renderer.ctx.globalAlpha = 1;
             }
-            renderer.ctx.globalAlpha = 1;
         }
 
-        // Weapon name
+        // Weapon name (with orbital indicator)
         let nameColor = isSelected ? COLORS.white : '#888888';
-        if (!canAfford) nameColor = '#444444';
-        renderer.drawText(weapon.name, CANVAS_WIDTH / 2 - 200, y - 5, nameColor, isSelected ? 20 : 16, 'left', isSelected);
+        if (!canPurchase) nameColor = '#444444';
+        let displayName = weapon.name;
+        if (isOrbital && inStock) {
+            displayName += ` [${orbitalStock.remaining}/${orbitalStock.total}]`;
+        }
+        renderer.drawText(displayName, CANVAS_WIDTH / 2 - 200, y - 5, nameColor, isSelected ? 20 : 16, 'left', isSelected && inStock);
 
-        // Weapon description
-        const descColor = isSelected ? '#aaaaaa' : '#555555';
-        renderer.drawText(weapon.description, CANVAS_WIDTH / 2 - 200, y + 15, canAfford ? descColor : '#333333', 11, 'left', false);
+        // SOLD OUT indicator for orbital weapons
+        if (isOrbital && !inStock) {
+            renderer.drawText('SOLD OUT', CANVAS_WIDTH / 2 - 200, y + 15, '#ff4444', 14, 'left', true);
+        } else {
+            // Weapon description
+            const descColor = isSelected ? '#aaaaaa' : '#555555';
+            renderer.drawText(weapon.description, CANVAS_WIDTH / 2 - 200, y + 15, canPurchase ? descColor : '#333333', 11, 'left', false);
+        }
 
         // Cost
-        const costColor = canAfford ? COLORS.yellow : '#663333';
-        renderer.drawText(`${weapon.cost}`, CANVAS_WIDTH / 2 + 200, y, costColor, 18, 'right', canAfford && isSelected);
+        const costColor = canPurchase ? COLORS.yellow : '#663333';
+        renderer.drawText(`${weapon.cost}`, CANVAS_WIDTH / 2 + 200, y, costColor, 18, 'right', canPurchase && isSelected);
 
         // Stats
-        const statsColor = canAfford ? '#666666' : '#333333';
+        const statsColor = canPurchase ? '#666666' : '#333333';
         renderer.drawText(`DMG:${weapon.damage} BLS:${weapon.blastRadius} BNC:${weapon.bounces}`, CANVAS_WIDTH / 2 + 200, y + 18, statsColor, 9, 'right', false);
     }
 
@@ -3988,10 +5757,40 @@ function init() {
     renderer.resize(CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Initialize ambient world systems (clouds, UFOs, weather) - use virtual dimensions
-    initAmbient(VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+    const ambient = initAmbient(VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+    // Set up damage callbacks for UFO shots and lightning
+    ambient.setDamageCallbacks(
+        // Terrain damage callback
+        (x, y, radius) => {
+            terrain.destroy(x, y, radius);
+            particles.sparks(x, y, 15, '#ffaa00');
+        },
+        // Tank damage callback
+        (player, damage, x, y) => {
+            if (player.health > 0) {
+                // Apply FORTRESS damage reduction
+                const reduction = getArchetypeDamageReduction(player);
+                const finalDamage = damage * (1 - reduction);
+                player.health = Math.max(0, player.health - finalDamage);
+                particles.sparks(x, y, 20, '#ff0000');
+                renderer.addScreenShake(8);
+                // Check for death
+                if (player.health <= 0) {
+                    triggerDeathExplosion(player, false);
+                }
+            }
+        }
+    );
+
+    // Set up desperation beacon drop callback
+    ambient.setBeaconDropCallback((shipX, shipY) => {
+        dropDesperationBeacon(shipX, shipY);
+    });
 
     // Generate terrain for title screen background (use virtual dimensions)
-    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, getSpawnPositions(NUM_PLAYERS));
+    terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, getSpawnPositions(NUM_PLAYERS), 250);
+    terrain.generateProps();  // Add stylized props
 
     // Position initial players on terrain (for title screen preview)
     state.players.forEach(p => {

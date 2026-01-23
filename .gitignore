@@ -1,0 +1,6 @@
+# Ignore push script with credentials
+push.bat
+
+# OS files
+.DS_Store
+Thumbs.db
