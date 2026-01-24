@@ -219,6 +219,30 @@ export function isPointBelowTerrain(x, y) {
 // ============================================================================
 
 /**
+ * Slowly burn/erode terrain over time (for NAPALM fire fields)
+ * Unlike destroy(), this is a linear erosion that affects the entire radius uniformly
+ * @param {number} cx - Center X of burn area
+ * @param {number} radius - Radius of burn area
+ * @param {number} amount - Amount to lower terrain (in pixels)
+ */
+export function burn(cx, radius, amount) {
+    if (!heights) return;
+
+    const startX = Math.max(0, Math.floor(cx - radius));
+    const endX = Math.min(width - 1, Math.ceil(cx + radius));
+
+    for (let x = startX; x <= endX; x++) {
+        // Increment height (lower terrain) by the burn amount
+        heights[x] += amount;
+
+        // Clamp to prevent going below screen
+        if (heights[x] > canvasHeight + 100) {
+            heights[x] = canvasHeight + 100;
+        }
+    }
+}
+
+/**
  * Carve a semicircular crater into the terrain
  * @param {number} cx - Center X of explosion
  * @param {number} cy - Center Y of explosion
@@ -1075,6 +1099,7 @@ export const terrain = {
     generate,
     getHeightAt,
     isPointBelowTerrain,
+    burn,
     destroy,
     raise,
     raiseJagged,

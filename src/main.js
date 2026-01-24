@@ -4489,18 +4489,22 @@ function updateFields(dt) {
             continue;
         }
 
-        // Spawn fire particles
-        if (Math.random() < 0.3) {
-            const px = field.x + (Math.random() - 0.5) * field.radius * 1.5;
-            const py = field.y - Math.random() * 30;
-            particles.trail(px, py, Math.random() < 0.5 ? '#ff4400' : '#ffaa00');
+        // Spawn fire particles across the burn area (increased for visual polish)
+        // Multiple particles per frame to match the wider erosion area
+        const particleChance = 0.5;  // Higher spawn rate
+        for (let p = 0; p < 3; p++) {  // Up to 3 particles per frame
+            if (Math.random() < particleChance) {
+                const px = field.x + (Math.random() - 0.5) * field.radius * 2;
+                const py = terrain.getHeightAt(px) - Math.random() * 25;
+                particles.trail(px, py, Math.random() < 0.5 ? '#ff4400' : '#ffaa00');
+            }
         }
 
-        // TERRAIN BURNING: Fire slowly eats away at the terrain
-        const burnRate = field.radius * 0.4 * dt;  // Scale with field size and time
-        terrain.destroy(field.x, terrain.getHeightAt(field.x), burnRate);
+        // LINEAR TERRAIN BURN: Slow, even erosion across the entire fire radius
+        // 1.5 pixels/second = ~12 pixels total over 8 second duration
+        terrain.burn(field.x, field.radius, 1.5 * dt);
 
-        // Update field Y position as terrain burns away
+        // Update field Y position as terrain burns away (use center height)
         field.y = terrain.getHeightAt(field.x);
 
         // Deal damage to players standing in the field
