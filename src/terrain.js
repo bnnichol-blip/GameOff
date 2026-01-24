@@ -427,6 +427,79 @@ export function digJagged(cx, cy, radius, voidY = 9999) {
 }
 
 // ============================================================================
+// Fissure/Trench Carving (QUAKE weapon)
+// ============================================================================
+
+/**
+ * Carve a jagged fissure/trench into the terrain
+ * @param {number} cx - Center X of fissure origin
+ * @param {number} cy - Center Y of fissure origin
+ * @param {number} length - Total length of fissure (extends both directions)
+ * @param {number} depth - Maximum depth of fissure at center
+ */
+export function carveFissure(cx, cy, length, depth) {
+    if (!heights) return [];
+
+    const halfLength = length / 2;
+    const startX = Math.max(0, Math.floor(cx - halfLength));
+    const endX = Math.min(width - 1, Math.ceil(cx + halfLength));
+
+    // Generate jagged fissure points
+    const fissurePoints = [];
+    const numJags = 12 + Math.floor(Math.random() * 8);  // 12-20 jagged points
+
+    for (let i = 0; i <= numJags; i++) {
+        const t = i / numJags;
+        const jx = startX + (endX - startX) * t;
+
+        // Fissure is deepest at center, tapers at edges
+        const distFromCenter = Math.abs(jx - cx) / halfLength;
+        let baseDepth = (1 - distFromCenter * distFromCenter) * depth;
+
+        // Add jagged variation - randomize depth at each point
+        const jitter = (Math.random() - 0.4) * depth * 0.5;
+        baseDepth = Math.max(5, baseDepth + jitter);
+
+        fissurePoints.push({ x: jx, depth: baseDepth });
+    }
+
+    // Apply fissure with interpolation
+    for (let x = startX; x <= endX; x++) {
+        // Find the two nearest fissure points
+        let lowerPoint = fissurePoints[0];
+        let upperPoint = fissurePoints[fissurePoints.length - 1];
+
+        for (let i = 0; i < fissurePoints.length - 1; i++) {
+            if (x >= fissurePoints[i].x && x <= fissurePoints[i + 1].x) {
+                lowerPoint = fissurePoints[i];
+                upperPoint = fissurePoints[i + 1];
+                break;
+            }
+        }
+
+        // Linear interpolation between jagged points
+        const range = upperPoint.x - lowerPoint.x;
+        const t = range > 0 ? (x - lowerPoint.x) / range : 0;
+        const interpDepth = lowerPoint.depth * (1 - t) + upperPoint.depth * t;
+
+        // Calculate fissure bottom (terrain surface + depth)
+        const terrainY = heights[x];
+        const fissureBottom = terrainY + interpDepth;
+
+        // Only lower terrain, never raise it
+        if (fissureBottom > heights[x]) {
+            heights[x] = fissureBottom;
+        }
+    }
+
+    // Return fissure points for visual effects
+    return fissurePoints.map(p => ({
+        x: p.x,
+        y: getHeightAt(p.x)
+    }));
+}
+
+// ============================================================================
 // Circuit Board Generation (Tron aesthetic)
 // ============================================================================
 
@@ -1006,6 +1079,7 @@ export const terrain = {
     raise,
     raiseJagged,
     digJagged,
+    carveFissure,
     draw,
     generateProps,
     drawProps,

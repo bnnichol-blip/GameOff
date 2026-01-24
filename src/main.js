@@ -82,7 +82,7 @@ function enforceProjectileBounds(proj) {
     // Simple clamp - main bounce logic handles the actual bouncing
     if (proj.x < WORLD_LEFT) proj.x = WORLD_LEFT;
     if (proj.x > WORLD_RIGHT) proj.x = WORLD_RIGHT;
-    if (proj.y < WORLD_TOP) proj.y = WORLD_TOP;
+    // NO ceiling clamp - projectiles can arc high above the screen
 }
 
 /**
@@ -320,9 +320,9 @@ const WEAPONS = {
     // === PREMIUM TIER (80-120 coins) ===
     RAILGUN: {
         name: 'Railgun',
-        description: 'Charge beam with ricochet',
-        cost: 80,
-        tier: 'PREMIUM',
+        description: 'ORBITAL: Charge beam with ricochet (3 shots)',
+        cost: 120,
+        tier: 'ORBITAL',   // Moved to orbital tier - limited stock
         damage: 120,       // Line damage to everything along path
         blastRadius: 20,   // Small explosion at terminus
         bounces: 2,        // Beam bounces off walls/ceiling
@@ -337,19 +337,22 @@ const WEAPONS = {
     // REMOVED: MIRV weapon
     QUAKE: {
         name: 'Quake',
-        description: 'Spreading ground shockwaves',
+        description: 'DEVASTATING earthquake - cracks the earth!',
         cost: 100,
         tier: 'PREMIUM',
-        damage: 80,        // Impact damage
-        blastRadius: 60,   // Initial impact radius
+        damage: 140,           // Heavy impact damage (was 80)
+        blastRadius: 120,      // Larger initial impact (was 60)
         bounces: 0,
-        projectileRadius: 10,
-        projectileSpeed: 0.65,
-        color: '#886644',
+        projectileRadius: 12,
+        projectileSpeed: 0.55, // Slower, heavier feel
+        color: '#cc8844',      // More orange/earthy
         behavior: 'quakeSpread',
-        shockwaveCount: 4,     // Number of shockwave rings
-        shockwaveDelay: 0.15,  // Delay between rings
-        shockwaveFalloff: 0.25 // Damage reduction per ring
+        shockwaveCount: 5,     // More rings (was 4)
+        shockwaveDelay: 0.12,  // Faster spread (was 0.15)
+        shockwaveFalloff: 0.18,// Less falloff per ring (was 0.25)
+        trenchLength: 300,     // Length of fissure carved
+        trenchDepth: 45,       // Depth of fissure
+        groundedMultiplier: 1.6 // Extra damage to grounded tanks
     },
     TELEPORTER: {
         name: 'Teleporter',
@@ -413,9 +416,9 @@ const WEAPONS = {
     },
     NUKE: {
         name: 'Nuke',
-        description: 'Cinematic multi-stage detonation',
-        cost: 180,
-        tier: 'SPECTACLE',
+        description: 'ORBITAL: Cinematic multi-stage detonation (2 shots)',
+        cost: 250,
+        tier: 'ORBITAL',   // Moved to orbital tier - limited stock
         damage: 180,       // Massive damage
         blastRadius: 400,  // Huge blast
         bounces: 0,
@@ -448,16 +451,17 @@ const WEAPONS = {
     },
     STRAFING_RUN: {
         name: 'Strafing Run',
-        description: 'Call in fighters to strafe 400px area (1.5s warning)',
+        description: 'DEVASTATING fighter strafe - 400px carpet bomb!',
         cost: 200,
         tier: 'ORBITAL',
-        damagePerBullet: 10,
-        damage: 10,  // For display
-        blastRadius: 400,  // Coverage width for display
+        damagePerBullet: 20,   // 2x damage (was 10)
+        damage: 20,            // For display (was 10)
+        blastRadius: 400,      // Coverage width for display
+        bulletBlastRadius: 75, // 3x explosion radius per bullet (was 25)
         bounces: 0,
-        projectileRadius: 6,
+        projectileRadius: 8,   // Slightly bigger bullets
         projectileSpeed: 1.0,
-        color: '#ffff00',
+        color: '#ffaa00',      // Orange-yellow for bigger explosions
         behavior: 'strafingRun',
         fighterCount: 4,
         bulletsPerFighter: 5,
@@ -705,7 +709,9 @@ const state = {
     // === ORBITAL STRIKE SYSTEMS ===
     orbitalStock: {
         ORBITAL_BEACON: { total: 2, remaining: 2 },
-        STRAFING_RUN: { total: 3, remaining: 3 }
+        STRAFING_RUN: { total: 3, remaining: 3 },
+        RAILGUN: { total: 3, remaining: 3 },
+        NUKE: { total: 2, remaining: 2 }
     },
     orbitalBeacons: [],      // Active beacon sequences { x, y, phase, timer, targetingShip, firedByPlayer }
     strafingRuns: [],        // Active strafing runs { targetX, phase, timer, direction, fighters, firedByPlayer }
@@ -995,7 +1001,9 @@ function resetGame() {
     // Reset orbital strike systems
     state.orbitalStock = {
         ORBITAL_BEACON: { total: 2, remaining: 2 },
-        STRAFING_RUN: { total: 3, remaining: 3 }
+        STRAFING_RUN: { total: 3, remaining: 3 },
+        RAILGUN: { total: 3, remaining: 3 },
+        NUKE: { total: 2, remaining: 2 }
     };
     state.orbitalBeacons = [];
     state.strafingRuns = [];
@@ -1564,14 +1572,8 @@ function updateProjectile(dt) {
         audio.playBounce();
     }
 
-    // Ceiling bounce
-    if (proj.y < WORLD_TOP) {
-        proj.vy = -proj.vy * 0.9;
-        proj.y = WORLD_TOP;
-        onBounce(proj);
-        particles.sparks(proj.x, proj.y, 10, proj.color);
-        audio.playBounce();
-    }
+    // NO ceiling bounce - projectiles can arc high and fall back down
+    // (Removed ceiling bounce to allow skillful high-arc shots)
 
     // Spawn trail particles occasionally
     if (Math.random() < 0.3) {
@@ -1941,13 +1943,14 @@ function onExplode(proj) {
     checkExplosionClaimsBeacon(proj.x, proj.y, beaconBlastRadius, beaconClaimPlayer);
 
     // === STRAFING BULLET EXPLOSION - Handle before weapon lookup ===
+    // BUFFED: 3x blast radius, 2x damage, bigger visuals
     if (proj.isStrafeBullet) {
-        const damage = proj.damage || 10;
-        const blastRadius = proj.blastRadius || 25;
+        const damage = proj.damage || 20;        // 2x damage (was 10)
+        const blastRadius = proj.blastRadius || 75;  // 3x radius (was 25)
         const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
 
-        // Destroy terrain
-        terrain.destroy(proj.x, proj.y, blastRadius * 0.5);
+        // Destroy terrain - bigger craters
+        terrain.destroy(proj.x, proj.y, blastRadius * 0.6);
 
         // Apply damage to nearby players
         for (let i = 0; i < state.players.length; i++) {
@@ -1961,18 +1964,20 @@ function onExplode(proj) {
                 const reduction = getArchetypeDamageReduction(player);
                 const finalDmg = dmg * (1 - reduction);
                 player.health = Math.max(0, player.health - finalDmg);
-                particles.sparks(player.x, player.y, 15, '#ffff00');
+                particles.sparks(player.x, player.y, 20, '#ffaa00');
+                particles.explosion(player.x, player.y, 15, '#ff6600', 30);  // Hit feedback
                 if (player.health <= 0) {
                     triggerDeathExplosion(player, false);
                 }
             }
         }
 
-        // Visual effects
-        particles.explosion(proj.x, proj.y, 20, '#ffff00', blastRadius * 0.5);
-        particles.sparks(proj.x, proj.y, 10, '#ff8800');
-        renderer.addScreenShake(5);
-        audio.playExplosion(0.3);
+        // Visual effects - MUCH BIGGER explosions
+        particles.explosion(proj.x, proj.y, 40, '#ffaa00', blastRadius * 0.7);  // Main blast
+        particles.explosion(proj.x, proj.y, 25, '#ff6600', blastRadius * 0.5);  // Inner fire
+        particles.sparks(proj.x, proj.y, 20, '#ffff00');  // More sparks
+        renderer.addScreenShake(12);  // More shake
+        audio.playExplosion(0.5);  // Louder
 
         // Remove from projectiles array
         const idx = state.projectiles.indexOf(proj);
@@ -2215,57 +2220,146 @@ function onExplode(proj) {
         }, 300);  // 300ms delay for aftershock
     }
 
-    // QUAKE behavior - spreading ground shockwaves
+    // QUAKE behavior - DEVASTATING earthquake with terrain fissures
     if (weapon.behavior === 'quake' || weapon.behavior === 'quakeSpread') {
-        const shockwaveCount = weapon.shockwaveCount || 4;
-        const shockwaveDelay = (weapon.shockwaveDelay || 0.15) * 1000;
-        const falloffPerRing = weapon.shockwaveFalloff || 0.25;
+        const shockwaveCount = weapon.shockwaveCount || 5;
+        const shockwaveDelay = (weapon.shockwaveDelay || 0.12) * 1000;
+        const falloffPerRing = weapon.shockwaveFalloff || 0.18;
+        const trenchLength = weapon.trenchLength || 300;
+        const trenchDepth = weapon.trenchDepth || 45;
+        const groundedMult = weapon.groundedMultiplier || 1.6;
 
-        // Initial impact visual
-        particles.explosion(proj.x, proj.y + 20, 40, '#886644', effectiveBlastRadius);
-        renderer.addScreenShake(25);
+        // === MASSIVE INITIAL IMPACT ===
+        // Heavy screen shake - this is an EARTHQUAKE
+        renderer.addScreenShake(50);
 
-        // Schedule multiple shockwave rings spreading outward
-        for (let ring = 1; ring < shockwaveCount; ring++) {
-            const ringRadius = effectiveBlastRadius + ring * 80;
-            const ringDamage = effectiveDamage * Math.max(0.1, 1 - ring * falloffPerRing);
+        // Main impact explosion with earthy colors
+        particles.explosion(proj.x, proj.y, 60, '#cc8844', effectiveBlastRadius * 1.2);
+        particles.explosion(proj.x, proj.y + 15, 40, '#886644', effectiveBlastRadius);
+
+        // Dust cloud rising from impact
+        for (let i = 0; i < 30; i++) {
+            const dustAngle = -Math.PI/2 + (Math.random() - 0.5) * Math.PI * 0.8; // Upward spread
+            const dustSpeed = 2 + Math.random() * 4;
+            const dustX = proj.x + (Math.random() - 0.5) * 60;
+            particles.spawn(dustX, proj.y + Math.random() * 20, {
+                angle: dustAngle,
+                speed: dustSpeed,
+                life: 0.8 + Math.random() * 0.6,
+                color: Math.random() < 0.5 ? '#aa8866' : '#887755',
+                radius: 4 + Math.random() * 6,
+                gravity: 0.15
+            });
+        }
+
+        // === CARVE TERRAIN FISSURE ===
+        const fissurePoints = terrain.carveFissure(proj.x, proj.y, trenchLength, trenchDepth);
+
+        // Create visual crack effects along fissure
+        if (fissurePoints && fissurePoints.length > 0) {
+            // Dust bursts along the fissure
+            for (let i = 0; i < fissurePoints.length; i++) {
+                const fp = fissurePoints[i];
+                const delay = i * 20; // Staggered for crack-spreading effect
+
+                setTimeout(() => {
+                    // Small dust burst at each fissure point
+                    particles.sparks(fp.x, fp.y, 8, '#aa8866');
+
+                    // Rock debris particles
+                    for (let j = 0; j < 4; j++) {
+                        const debrisAngle = -Math.PI/2 + (Math.random() - 0.5) * 1.2; // Mostly upward
+                        const debrisSpeed = 3 + Math.random() * 3;
+                        particles.spawn(fp.x + (Math.random() - 0.5) * 10, fp.y, {
+                            angle: debrisAngle,
+                            speed: debrisSpeed,
+                            life: 0.4 + Math.random() * 0.3,
+                            color: '#665544',
+                            radius: 2 + Math.random() * 3,
+                            gravity: 0.25
+                        });
+                    }
+
+                    // Mini screen shake for crack propagation
+                    renderer.addScreenShake(3);
+                }, delay);
+            }
+        }
+
+        // === SPREADING SHOCKWAVE RINGS ===
+        for (let ring = 1; ring <= shockwaveCount; ring++) {
+            const ringRadius = effectiveBlastRadius + ring * 100; // Wider spread
+            const ringDamage = effectiveDamage * Math.max(0.15, 1 - ring * falloffPerRing);
             const delay = ring * shockwaveDelay;
 
             setTimeout(() => {
-                // Visual shockwave ring
-                particles.sparks(proj.x, proj.y - ring * 5, Math.max(8, 25 - ring * 5), '#aa8866');
-                renderer.addScreenShake(Math.max(3, 12 - ring * 2));
+                // Visual shockwave - dust erupting in a ring
+                const ringParticleCount = 12 + (shockwaveCount - ring) * 3;
+                for (let p = 0; p < ringParticleCount; p++) {
+                    const ringAngle = (p / ringParticleCount) * Math.PI * 2;
+                    const px = proj.x + Math.cos(ringAngle) * ringRadius * 0.7;
+                    const py = terrain.getHeightAt(px);
 
-                // Damage grounded tanks in this ring
+                    // Particle moves outward and upward
+                    const particleAngle = -Math.PI/2 + (Math.random() - 0.5) * 0.8;
+                    particles.spawn(px, py, {
+                        angle: particleAngle,
+                        speed: 2 + Math.random() * 2,
+                        life: 0.5 + Math.random() * 0.3,
+                        color: '#998877',
+                        radius: 3 + Math.random() * 3,
+                        gravity: 0.2
+                    });
+                }
+
+                // Rumbling screen shake
+                renderer.addScreenShake(Math.max(5, 20 - ring * 3));
+
+                // Damage grounded tanks in this ring - HEAVILY punished
                 for (let i = 0; i < state.players.length; i++) {
                     const player = state.players[i];
                     if (player.health <= 0) continue;
 
                     const terrainY = terrain.getHeightAt(player.x);
-                    const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 15;
+                    const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 20; // Slightly more generous check
 
-                    if (isGrounded) {
-                        const dist = distance(proj.x, proj.y, player.x, player.y);
-                        // Ring affects area between previous ring and this ring
-                        const innerRadius = effectiveBlastRadius + (ring - 1) * 80;
-                        const outerRadius = ringRadius;
+                    const dist = distance(proj.x, proj.y, player.x, player.y);
+                    const innerRadius = effectiveBlastRadius + (ring - 1) * 100;
+                    const outerRadius = ringRadius;
 
-                        if (dist >= innerRadius && dist < outerRadius) {
-                            const falloff = 1 - ((dist - innerRadius) / (outerRadius - innerRadius)) * 0.5;
-                            const dmg = ringDamage * falloff;
-                            player.health = Math.max(0, player.health - dmg);
-                            particles.sparks(player.x, player.y, 12, '#cc9966');
+                    if (dist >= innerRadius && dist < outerRadius) {
+                        const falloff = 1 - ((dist - innerRadius) / (outerRadius - innerRadius)) * 0.4;
+                        let dmg = ringDamage * falloff;
 
-                            // Track damage for coins
-                            if (i !== firingPlayerIndex) {
-                                totalEnemyDamage += dmg;
-                            }
-                            hitOccurred = true;
+                        // GROUNDED TANKS TAKE EXTRA DAMAGE
+                        if (isGrounded) {
+                            dmg *= groundedMult;
+                            // Extra visual feedback for grounded hit
+                            particles.sparks(player.x, player.y, 20, '#ffaa44');
+                            particles.explosion(player.x, player.y + 10, 15, '#cc8844', 30);
+                        } else {
+                            // Airborne takes reduced damage
+                            dmg *= 0.5;
+                            particles.sparks(player.x, player.y, 8, '#cc9966');
                         }
+
+                        player.health = Math.max(0, player.health - dmg);
+
+                        // Track damage for coins
+                        if (i !== firingPlayerIndex) {
+                            totalEnemyDamage += dmg;
+                        }
+                        hitOccurred = true;
                     }
                 }
             }, delay);
         }
+
+        // === FINAL AFTERSHOCK ===
+        setTimeout(() => {
+            renderer.addScreenShake(15);
+            particles.explosion(proj.x, proj.y, 25, '#775533', effectiveBlastRadius * 0.6);
+        }, shockwaveCount * shockwaveDelay + 200);
     }
 
     // TELEPORTER behavior - warp firing player to impact point
@@ -3075,13 +3169,50 @@ function aiShopSelectFor(playerIndex) {
     // Check orbital weapon availability and affordability
     const orbitalBeaconAvailable = state.orbitalStock.ORBITAL_BEACON.remaining > 0;
     const strafingRunAvailable = state.orbitalStock.STRAFING_RUN.remaining > 0;
+    const railgunAvailable = state.orbitalStock.RAILGUN.remaining > 0;
+    const nukeAvailable = state.orbitalStock.NUKE.remaining > 0;
     const orbitalBeaconCost = WEAPONS.ORBITAL_BEACON?.cost || 150;
-    const strafingRunCost = WEAPONS.STRAFING_RUN?.cost || 120;
+    const strafingRunCost = WEAPONS.STRAFING_RUN?.cost || 200;
+    const railgunCost = WEAPONS.RAILGUN?.cost || 120;
+    const nukeCost = WEAPONS.NUKE?.cost || 250;
 
     // Strategic saving: If close to affording orbital weapons, save coins
     const turnsToOrbital = 2;
     const expectedCoinsPerTurn = SURVIVAL_BONUS + 15;  // Survival + damage coins estimate
     const coinsInTurns = ai.coins + expectedCoinsPerTurn * turnsToOrbital;
+
+    // Find lowest health enemy for finishing blow consideration
+    const canFinishWithNuke = lowestEnemyHealth <= 180;
+
+    // Prioritize NUKE for finishing blow or late game devastation
+    if (nukeAvailable && ai.coins >= nukeCost && (round >= 4 || canFinishWithNuke)) {
+        const idx = state.shopOfferings.indexOf('NUKE');
+        if (idx >= 0) {
+            state.shopSelections[playerIndex] = idx;
+            ai.coins -= nukeCost;
+            state.storedWeapons[playerIndex] = ai.weapon;
+            ai.weapon = 'NUKE';
+            state.orbitalStock.NUKE.remaining--;
+            audio.playPurchase();
+            state.shopReady[playerIndex] = true;
+            return;
+        }
+    }
+
+    // Prioritize RAILGUN for precision shots
+    if (railgunAvailable && ai.coins >= railgunCost && round >= 2) {
+        const idx = state.shopOfferings.indexOf('RAILGUN');
+        if (idx >= 0) {
+            state.shopSelections[playerIndex] = idx;
+            ai.coins -= railgunCost;
+            state.storedWeapons[playerIndex] = ai.weapon;
+            ai.weapon = 'RAILGUN';
+            state.orbitalStock.RAILGUN.remaining--;
+            audio.playPurchase();
+            state.shopReady[playerIndex] = true;
+            return;
+        }
+    }
 
     // Prioritize orbital weapons if available and affordable
     if (orbitalBeaconAvailable && ai.coins >= orbitalBeaconCost && round >= 3) {
@@ -3089,7 +3220,9 @@ function aiShopSelectFor(playerIndex) {
         if (idx >= 0) {
             state.shopSelections[playerIndex] = idx;
             ai.coins -= orbitalBeaconCost;
+            state.storedWeapons[playerIndex] = ai.weapon;
             ai.weapon = 'ORBITAL_BEACON';
+            state.orbitalStock.ORBITAL_BEACON.remaining--;
             audio.playPurchase();
             state.shopReady[playerIndex] = true;
             return;
@@ -3101,16 +3234,23 @@ function aiShopSelectFor(playerIndex) {
         if (idx >= 0) {
             state.shopSelections[playerIndex] = idx;
             ai.coins -= strafingRunCost;
+            state.storedWeapons[playerIndex] = ai.weapon;
             ai.weapon = 'STRAFING_RUN';
+            state.orbitalStock.STRAFING_RUN.remaining--;
             audio.playPurchase();
             state.shopReady[playerIndex] = true;
             return;
         }
     }
 
-    // Save for orbital if close to affording
-    if ((orbitalBeaconAvailable && coinsInTurns >= orbitalBeaconCost && ai.coins < orbitalBeaconCost) ||
-        (strafingRunAvailable && coinsInTurns >= strafingRunCost && ai.coins < strafingRunCost)) {
+    // Save for orbital if close to affording (prioritize by power)
+    const bestOrbitalCost = Math.min(
+        nukeAvailable ? nukeCost : Infinity,
+        railgunAvailable ? railgunCost : Infinity,
+        orbitalBeaconAvailable ? orbitalBeaconCost : Infinity,
+        strafingRunAvailable ? strafingRunCost : Infinity
+    );
+    if (bestOrbitalCost < Infinity && coinsInTurns >= bestOrbitalCost && ai.coins < bestOrbitalCost) {
         // Skip buying, save for orbital
         state.shopReady[playerIndex] = true;
         return;
@@ -3343,15 +3483,16 @@ function simulateTrajectory(startX, startY, angleDeg, power, targetX, targetY, t
     const maxBounces = (weapon.bounces || 1) + state.extraBounces;
     let bounces = 0;
 
-    const maxSteps = 600;
+    // Increased steps for larger 3840px world
+    const maxSteps = 900;
 
     for (let step = 0; step < maxSteps; step++) {
         // Apply gravity
         vy += gravity;
 
-        // Apply wind
+        // Apply wind (must match updateProjectile exactly: proj.vx += state.wind)
         if (wind !== 0) {
-            vx += wind * 0.1;
+            vx += wind;
         }
 
         // Move
@@ -3369,11 +3510,7 @@ function simulateTrajectory(startX, startY, angleDeg, power, targetX, targetY, t
             vx = -vx * 0.9;
             bounces++;
         }
-        if (y < WORLD_TOP && bounces < maxBounces) {
-            y = WORLD_TOP;
-            vy = -vy * 0.9;
-            bounces++;
-        }
+        // NO ceiling bounce - projectiles can arc high and fall back down
 
         // Check terrain hit
         const groundY = terrain.getHeightAt(x);
@@ -3417,31 +3554,44 @@ function findOptimalShot(ai, target, weapon) {
     // Determine which direction to shoot
     const shootingRight = dx > 0;
 
+    // Calculate a smart default angle toward the target (used as fallback)
+    // ANGLE SYSTEM: angleDeg 95-165 shoots RIGHT, angleDeg 15-85 shoots LEFT
+    // (because angleRad = 180 - angleDeg, and cos(angleRad) determines vx direction)
+    const directAngle = Math.atan2(-dy, Math.abs(dx)) * (180 / Math.PI);
+    const smartDefaultAngle = shootingRight
+        ? clamp(130 - directAngle * 0.5, 95, 165)  // Right: higher angleDeg = shoots right
+        : clamp(50 + directAngle * 0.5, 15, 85);   // Left: lower angleDeg = shoots left
+
+    // Smart default power based on distance (scaled for 3840px world)
+    const smartDefaultPower = clamp(0.45 + (dist / 3000), 0.5, 0.92);
+
     // Search for best angle and power combination
-    let bestAngle = 90;
-    let bestPower = 0.7;
+    let bestAngle = smartDefaultAngle;
+    let bestPower = smartDefaultPower;
     let bestDistance = Infinity;
     let foundHit = false;
 
-    // Expanded angle range for bank shots
-    const angleMin = shootingRight ? 15 : 95;
-    const angleMax = shootingRight ? 85 : 165;
+    // CORRECTED angle ranges:
+    // To shoot RIGHT (vx > 0): angleDeg must be 95-165 (so 180-angle is 15-85, cos positive)
+    // To shoot LEFT (vx < 0): angleDeg must be 15-85 (so 180-angle is 95-165, cos negative)
+    const angleMin = shootingRight ? 95 : 15;
+    const angleMax = shootingRight ? 165 : 85;
 
-    // Also try bank shots (opposite direction for wall bounce)
-    const bankAngleMin = shootingRight ? 95 : 15;
-    const bankAngleMax = shootingRight ? 140 : 85;
+    // Bank shots (opposite direction - bounce off wall)
+    const bankAngleMin = shootingRight ? 15 : 95;
+    const bankAngleMax = shootingRight ? 85 : 165;
 
-    // Adjust power range based on distance and gravity
+    // Adjust power range based on distance and gravity (scaled for 3840px world)
     const gravityFactor = getEffectiveGravity() / DEFAULT_GRAVITY;
-    const basePowerMin = 0.35;
+    const basePowerMin = 0.4;
     const basePowerMax = 0.98;
 
-    // Direct shots
-    for (let angleStep = 0; angleStep <= 14; angleStep++) {
-        const testAngle = angleMin + (angleMax - angleMin) * (angleStep / 14);
+    // Direct shots - increased grid resolution for better accuracy
+    for (let angleStep = 0; angleStep <= 20; angleStep++) {
+        const testAngle = angleMin + (angleMax - angleMin) * (angleStep / 20);
 
-        for (let powerStep = 0; powerStep <= 12; powerStep++) {
-            const testPower = basePowerMin + (powerStep / 12) * (basePowerMax - basePowerMin);
+        for (let powerStep = 0; powerStep <= 16; powerStep++) {
+            const testPower = basePowerMin + (powerStep / 16) * (basePowerMax - basePowerMin);
 
             const result = simulateTrajectory(
                 ai.x, ai.y, testAngle, testPower,
@@ -3486,31 +3636,41 @@ function findOptimalShot(ai, target, weapon) {
         }
     }
 
-    // Fine-tune around best found solution
-    for (let fineAngle = bestAngle - 4; fineAngle <= bestAngle + 4; fineAngle += 0.5) {
-        for (let finePower = bestPower - 0.08; finePower <= bestPower + 0.08; finePower += 0.02) {
-            const result = simulateTrajectory(
-                ai.x, ai.y, fineAngle, clamp(finePower, 0.3, 0.98),
-                target.x, target.y, TANK_RADIUS, weapon
-            );
+    // Fine-tune around best found solution (only if we found something)
+    if (bestDistance < Infinity) {
+        for (let fineAngle = bestAngle - 4; fineAngle <= bestAngle + 4; fineAngle += 0.5) {
+            for (let finePower = bestPower - 0.08; finePower <= bestPower + 0.08; finePower += 0.02) {
+                const result = simulateTrajectory(
+                    ai.x, ai.y, fineAngle, clamp(finePower, 0.3, 0.98),
+                    target.x, target.y, TANK_RADIUS, weapon
+                );
 
-            if (result && result.distance < bestDistance) {
-                bestDistance = result.distance;
-                bestAngle = fineAngle;
-                bestPower = clamp(finePower, 0.3, 0.98);
+                if (result && result.distance < bestDistance) {
+                    bestDistance = result.distance;
+                    bestAngle = fineAngle;
+                    bestPower = clamp(finePower, 0.3, 0.98);
 
-                if (result.hitsTarget) {
-                    foundHit = true;
+                    if (result.hitsTarget) {
+                        foundHit = true;
+                    }
                 }
             }
         }
+    }
+
+    // SAFETY FALLBACK: If simulation found nothing useful, use smart defaults
+    // This ensures AI always has a reasonable shot toward the target
+    if (bestDistance === Infinity) {
+        bestAngle = smartDefaultAngle;
+        bestPower = smartDefaultPower;
+        foundHit = false;  // Not guaranteed to hit
     }
 
     return { angle: bestAngle, power: bestPower, perfect: foundHit, distance: bestDistance };
 }
 
 /**
- * Evaluate if AI should use orbital weapon
+ * Evaluate if AI should use orbital weapon (or other special weapons)
  */
 function shouldUseOrbitalWeapon(ai, enemies) {
     const weapon = WEAPONS[ai.weapon];
@@ -3532,6 +3692,17 @@ function shouldUseOrbitalWeapon(ai, enemies) {
         return enemies.length > 0;  // Use even for single target
     }
 
+    // NUKE: Always use it - it's devastating
+    if (ai.weapon === 'NUKE') {
+        return enemies.length > 0;
+    }
+
+    // RAILGUN: Not orbital-style, use normal aiming (returns false)
+    // Railgun uses direct beam, handled by normal shot logic
+    if (ai.weapon === 'RAILGUN') {
+        return false;  // Use normal aiming for precision beam
+    }
+
     return false;
 }
 
@@ -3545,6 +3716,18 @@ function getOrbitalTarget(ai, enemies) {
     if (ai.weapon === 'STRAFING_RUN') {
         const avgX = enemies.reduce((sum, p) => sum + p.x, 0) / enemies.length;
         return { x: avgX, y: enemies[0].y };
+    }
+
+    // For NUKE, target cluster of enemies for maximum devastation
+    if (ai.weapon === 'NUKE') {
+        // If multiple enemies, target the center for maximum splash
+        if (enemies.length >= 2) {
+            const avgX = enemies.reduce((sum, p) => sum + p.x, 0) / enemies.length;
+            const avgY = enemies.reduce((sum, p) => sum + p.y, 0) / enemies.length;
+            return { x: avgX, y: avgY };
+        }
+        // Single enemy - target them directly
+        return { x: enemies[0].x, y: enemies[0].y };
     }
 
     // For orbital beacon, target the lowest health enemy
@@ -3565,7 +3748,13 @@ function prepareAITurn() {
         enemies.push({ ...p, index: i });
     }
 
-    if (enemies.length === 0) return;  // No valid targets
+    // No valid targets - set a default shot (straight up, low power) and return
+    if (enemies.length === 0) {
+        state.aiTargetAngle = 90;  // Straight up
+        state.aiTargetPower = 0.5;
+        state.aiThinkTime = 500;
+        return;
+    }
 
     // Check if AI should use orbital weapon
     if (shouldUseOrbitalWeapon(ai, enemies)) {
@@ -3598,7 +3787,64 @@ function prepareAITurn() {
         }
     }
 
-    if (!target) return;
+    // No target found - set default and return (shouldn't happen but safety first)
+    if (!target) {
+        state.aiTargetAngle = ai.angle;  // Keep current angle
+        state.aiTargetPower = 0.6;
+        state.aiThinkTime = 500;
+        return;
+    }
+
+    // === WEAPON-SPECIFIC SHOT LOGIC ===
+
+    // RAILGUN: Instant beam - aim directly at target with bank shot consideration
+    if (ai.weapon === 'RAILGUN') {
+        const dx = target.x - ai.x;
+        const dy = target.y - ai.y;
+        const shootingRight = dx > 0;
+
+        // CORRECTED angle ranges (same as findOptimalShot):
+        // To shoot RIGHT: angleDeg 95-165
+        // To shoot LEFT: angleDeg 15-85
+        let bestRailAngle = shootingRight ? 130 : 50;  // Smart defaults toward target
+
+        // Grid search for best railgun angle
+        const angleMin = shootingRight ? 95 : 15;
+        const angleMax = shootingRight ? 165 : 85;
+
+        let bestRailDist = Infinity;
+        for (let testAngle = angleMin; testAngle <= angleMax; testAngle += 3) {
+            // Simulate beam path
+            const result = simulateTrajectory(ai.x, ai.y, testAngle, 0.5, target.x, target.y, TANK_RADIUS, weapon);
+            if (result && result.distance < bestRailDist) {
+                bestRailDist = result.distance;
+                bestRailAngle = testAngle;
+            }
+        }
+
+        // Also try bank shots off walls (opposite direction)
+        const bankAngleMin = shootingRight ? 15 : 95;
+        const bankAngleMax = shootingRight ? 85 : 165;
+        for (let testAngle = bankAngleMin; testAngle <= bankAngleMax; testAngle += 5) {
+            const result = simulateTrajectory(ai.x, ai.y, testAngle, 0.5, target.x, target.y, TANK_RADIUS, weapon);
+            if (result && result.bounces > 0 && result.distance < bestRailDist) {
+                bestRailDist = result.distance;
+                bestRailAngle = testAngle;
+            }
+        }
+
+        // 80% accuracy for railgun (it's a skill weapon)
+        const willHitRail = Math.random() < 0.80;
+        if (willHitRail) {
+            state.aiTargetAngle = bestRailAngle;
+        } else {
+            state.aiTargetAngle = bestRailAngle + (Math.random() - 0.5) * 6;
+        }
+        state.aiTargetPower = 0.5;  // Railgun power doesn't matter much (beam)
+        state.aiThinkTime = 800 + Math.random() * 400;  // Slightly longer think for precision
+        applyEventAdjustments();
+        return;
+    }
 
     // Find the optimal shot using trajectory simulation
     const optimalShot = findOptimalShot(ai, target, weapon);
@@ -3623,6 +3869,9 @@ function prepareAITurn() {
 
     // Think time before acting (0.6-1.2 seconds - faster)
     state.aiThinkTime = 600 + Math.random() * 600;
+
+    // Debug: Log AI decision
+    console.log(`[AI] P${state.currentPlayer + 1} targeting at angle=${state.aiTargetAngle.toFixed(1)}° power=${(state.aiTargetPower * 100).toFixed(0)}% (perfect=${optimalShot.perfect}, dist=${optimalShot.distance.toFixed(0)})`);
 }
 
 /**
@@ -3891,6 +4140,14 @@ function update(dt) {
             const player = getCurrentPlayer();
             player.weapon = 'NUKE';
             console.log(`[DEBUG] P${state.currentPlayer + 1} got NUKE`);
+            audio.playPurchase();
+        }
+
+        // Q = Give current player QUAKE
+        if (input.wasPressed('KeyQ')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'QUAKE';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got QUAKE`);
             audio.playPurchase();
         }
 
@@ -4410,29 +4667,30 @@ function updateStrafingRuns(dt) {
                     const fireRate = bulletsPerFighter / (run.coverageWidth / fighterSpeed);
                     if (Math.random() < fireRate * dt) {
                         fighter.shotsFired++;
-                        // Create strafe bullet projectile
+                        // Create strafe bullet projectile - BUFFED: 3x blast radius, 2x damage
                         const bulletX = fighter.x + (Math.random() - 0.5) * 40;
                         const bulletY = fighter.y;
+                        const bulletBlastRadius = weapon.bulletBlastRadius || 75; // 3x bigger (was 25)
                         state.projectiles.push({
                             x: bulletX,
                             y: bulletY,
                             vx: (Math.random() - 0.5) * 3,
                             vy: 12,  // Fast downward (frame-based physics)
-                            radius: 4,
-                            color: '#ffff00',
+                            radius: 6,  // Bigger bullets
+                            color: '#ffaa00',  // Orange-yellow
                             damage: damagePerBullet,
-                            blastRadius: 25,
+                            blastRadius: bulletBlastRadius,
                             maxBounces: 99,  // High so bounce limit doesn't trigger - explodes on terrain/void
                             bounces: 0,
                             trail: [],
                             firedByPlayer: run.firedByPlayer,
                             isStrafeBullet: true,
                             isCluster: true,  // Process like cluster bombs for proper explosion
-                            weaponKey: null,
+                            weaponKey: 'STRAFING_RUN',
                             createdAt: performance.now(),  // For lifetime tracking
                             maxLifetime: 5000  // 5 second max lifetime
                         });
-                        particles.sparks(bulletX, bulletY, 5, '#ffff00');
+                        particles.sparks(bulletX, bulletY, 8, '#ffaa00');  // More sparks
                         audio.playFire();  // Gunfire sound
                     }
                 }
@@ -4857,14 +5115,8 @@ function updateClusterBomblet(proj, dt) {
         audio.playBounce();
     }
 
-    // Ceiling bounce
-    if (proj.y < WORLD_TOP) {
-        proj.vy = -proj.vy * 0.9;
-        proj.y = WORLD_TOP;
-        proj.bounces++;
-        particles.sparks(proj.x, proj.y, 8, proj.color);
-        audio.playBounce();
-    }
+    // NO ceiling bounce - projectiles can arc high and fall back down
+    // (Removed ceiling bounce to allow skillful high-arc shots)
 
     // Check for UFO collision (grants buffs)
     checkUFOCollision(proj.x, proj.y, proj.radius);
@@ -4934,12 +5186,7 @@ function updateAnomalyProjectile(dt) {
         didBounce = true;
     }
 
-    // Ceiling bounce
-    if (proj.y < WORLD_TOP) {
-        proj.vy = -proj.vy * 0.9;
-        proj.y = WORLD_TOP;
-        didBounce = true;
-    }
+    // NO ceiling bounce - projectiles can arc high and fall back down
 
     if (didBounce) {
         onAnomalyBounce(proj);
@@ -5104,11 +5351,8 @@ function render() {
     ctx.moveTo(WORLD_RIGHT, WORLD_TOP);
     ctx.lineTo(WORLD_RIGHT, WORLD_BOTTOM);
     ctx.stroke();
-    // Ceiling
-    ctx.beginPath();
-    ctx.moveTo(WORLD_LEFT, WORLD_TOP);
-    ctx.lineTo(WORLD_RIGHT, WORLD_TOP);
-    ctx.stroke();
+    // NO ceiling line - projectiles can arc above the screen
+    // (Removed ceiling boundary for skillful high-arc shots)
     // Clear glow
     ctx.shadowBlur = 0;
 
@@ -5433,6 +5677,10 @@ function drawPlayerBuffs(playerIndex, x, y) {
  */
 function drawTracerPreview() {
     const player = getCurrentPlayer();
+
+    // Don't show tracer for AI players
+    if (player.isAI) return;
+
     // Use weapon data for speed, fallback to tank type
     const weapon = WEAPONS[player.weapon];
     if (!weapon) return;
@@ -5440,7 +5688,7 @@ function drawTracerPreview() {
     // Calculate launch velocity (same as fireProjectile)
     const angleRad = degToRad(180 - player.angle);
     const effectivePower = chargeToPower(player.power);
-    const speed = effectivePower * MAX_POWER * weapon.projectileSpeed * state.velocityMultiplier;
+    const speed = effectivePower * MAX_POWER * (weapon.projectileSpeed || 1.0) * state.velocityMultiplier;
 
     // Initial position and velocity
     let x = player.x;
@@ -5448,10 +5696,10 @@ function drawTracerPreview() {
     let vx = Math.cos(angleRad) * speed;
     let vy = -Math.sin(angleRad) * speed;
 
-    // Simulation parameters
-    const maxSteps = 300;  // Maximum simulation steps
+    // Simulation parameters (use virtual world coordinates)
+    const maxSteps = 400;  // Maximum simulation steps
     const stepSize = 1;    // Physics step (lower = smoother but slower)
-    const dotSpacing = 8;  // Pixels between dots
+    const dotSpacing = 12; // Pixels between dots (in virtual space)
     let distanceTraveled = 0;
 
     // Collect points along the arc
@@ -5482,32 +5730,34 @@ function drawTracerPreview() {
             distanceTraveled = 0;
         }
 
-        // Stop conditions:
+        // Stop conditions (use VIRTUAL/WORLD coordinates):
         // 1. Hit terrain
         if (terrain.isPointBelowTerrain(x, y)) {
+            points.push({ x, y });  // Add final point at impact
             break;
         }
 
-        // 2. Hit left/right walls (could bounce, but we show ballistic only)
-        if (x < 0 || x > CANVAS_WIDTH) {
+        // 2. Hit left/right walls (use world boundaries)
+        if (x < WORLD_LEFT || x > WORLD_RIGHT) {
             break;
         }
 
-        // 3. Hit ceiling
-        if (y < 0) {
-            break;
-        }
+        // 3. NO ceiling - projectiles can arc above screen and fall back
+        // (Just skip points that are off-screen for drawing)
 
         // 4. Hit void
         if (y > state.voidY) {
             break;
         }
 
-        // 5. Gone way off screen
-        if (y > CANVAS_HEIGHT + 100) {
+        // 5. Gone way off screen (use virtual dimensions)
+        if (y > VIRTUAL_HEIGHT + 100) {
             break;
         }
     }
+
+    // Need at least 2 points to draw
+    if (points.length < 2) return;
 
     // Draw the arc as faint dots
     const ctx = renderer.ctx;
@@ -5516,20 +5766,29 @@ function drawTracerPreview() {
 
     // Use player color for the tracer
     const tracerColor = player.color;
-    renderer.setGlow(tracerColor, 6);
+    renderer.setGlow(tracerColor, 8);
 
     for (let i = 1; i < points.length; i++) {
         const point = points[i];
         // Fade dots further along the arc
         const fadeT = i / points.length;
-        ctx.globalAlpha = 0.4 * (1 - fadeT * 0.5);
+        ctx.globalAlpha = 0.5 * (1 - fadeT * 0.6);
 
-        // Draw small dot
+        // Draw small dot (slightly larger for visibility)
         ctx.beginPath();
-        ctx.arc(point.x, point.y, 2, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
         ctx.fillStyle = tracerColor;
         ctx.fill();
     }
+
+    // Draw impact marker at end point
+    const endPoint = points[points.length - 1];
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.arc(endPoint.x, endPoint.y, 8, 0, Math.PI * 2);
+    ctx.strokeStyle = tracerColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
 
     renderer.clearGlow();
     ctx.restore();
@@ -5538,13 +5797,24 @@ function drawTracerPreview() {
 function drawProjectile(proj) {
     const isRailgun = proj.tankType === 'PHANTOM';
     const isDyingLight = proj.weaponKey === 'DYING_LIGHT';
+    const isQuake = proj.weaponKey === 'QUAKE';
 
     // Trail
     for (let i = 0; i < proj.trail.length; i++) {
         const point = proj.trail[i];
         const t = i / proj.trail.length;
 
-        if (isDyingLight) {
+        if (isQuake) {
+            // QUAKE: Heavy earthen trail with dust particles
+            const alpha = t * 0.6;
+            const radius = proj.radius * t * 0.9;
+            renderer.ctx.globalAlpha = alpha;
+            // Rocky outer layer
+            renderer.drawCircle(point.x, point.y, radius * 1.4, '#886644', true);
+            // Earthy inner
+            renderer.ctx.globalAlpha = alpha * 0.7;
+            renderer.drawCircle(point.x, point.y, radius * 0.8, '#aa7755', true);
+        } else if (isDyingLight) {
             // DYING LIGHT: Spectacular golden comet trail
             const alpha = t * 0.9;
             const radius = proj.radius * t * 1.2;
@@ -5597,6 +5867,38 @@ function drawProjectile(proj) {
         // Emit sparks while flying
         if (Math.random() < 0.3) {
             particles.sparks(proj.x, proj.y, 3, '#ffcc00');
+        }
+    } else if (isQuake) {
+        // QUAKE: Heavy seismic boulder with cracks
+        const rumble = Math.sin(state.time * 20) * 2; // Slight vibration
+
+        // Earthy outer glow
+        renderer.setGlow('#cc8844', 15);
+        renderer.drawCircle(proj.x + rumble, proj.y, proj.radius * 1.5, '#886644', true);
+
+        // Rocky surface with cracks
+        renderer.setGlow('#ffaa66', 8);
+        renderer.drawCircle(proj.x + rumble, proj.y, proj.radius * 1.1, '#aa7755', true);
+
+        // Inner molten core showing through cracks
+        renderer.setGlow('#ffcc88', 12);
+        renderer.drawCircle(proj.x + rumble, proj.y, proj.radius * 0.5, '#ffaa44', true);
+        renderer.clearGlow();
+
+        // Emit dust while flying
+        if (Math.random() < 0.25) {
+            particles.spawn(
+                proj.x + (Math.random() - 0.5) * proj.radius,
+                proj.y + (Math.random() - 0.5) * proj.radius,
+                {
+                    angle: Math.random() * Math.PI * 2,
+                    speed: 1 + Math.random(),
+                    life: 0.3 + Math.random() * 0.2,
+                    color: '#998877',
+                    radius: 2 + Math.random() * 2,
+                    gravity: 0.1
+                }
+            );
         }
     } else if (isRailgun) {
         // Railgun: Bright white core with colored outer ring
