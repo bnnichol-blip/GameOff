@@ -3332,8 +3332,8 @@ function endTurn() {
     // Prevent multiple calls in same resolution window (race condition guard)
     if (state.turnEndLocked) return;
 
-    // Phase guard: Don't end turn during lottery or if already resolving/gameover
-    if (state.phase === 'lottery' || state.phase === 'gameover' || state.phase === 'resolving') {
+    // Phase guard: Don't end turn during lottery, awaiting, or if already resolving/gameover
+    if (state.phase === 'lottery' || state.phase === 'gameover' || state.phase === 'resolving' || state.phase === 'awaiting_next_turn') {
         return;
     }
 
@@ -3447,10 +3447,19 @@ function endTurn() {
             rollNewGlitchEvent();
         }
 
-        // Cosmic Lottery: Every turn starts with weapon selection
+        // Wait for player to press space before starting next turn
         state.turnEndLocked = false;  // Unlock turn guard
-        startLottery();  // This will set phase to 'lottery' or 'aiming' (for AI)
+        state.phase = 'awaiting_next_turn';
     }, TURN_DELAY_MS);
+}
+
+/**
+ * Called when player presses space to start the next turn
+ */
+function confirmNextTurn() {
+    if (state.phase !== 'awaiting_next_turn') return;
+    audio.playConfirm();
+    startLottery();  // This will set phase to 'lottery' or 'aiming' (for AI)
 }
 
 /**
@@ -4649,6 +4658,15 @@ function update(dt) {
 
         input.endFrame();
         return;
+    }
+
+    // Awaiting next turn - press space to continue
+    if (state.phase === 'awaiting_next_turn') {
+        if (input.space || input.enter) {
+            confirmNextTurn();
+        }
+        input.endFrame();
+        // Don't return - let effects continue updating
     }
 
     // Lottery phase
@@ -6434,6 +6452,38 @@ function render() {
         renderer.drawText(hintText, 20, CANVAS_HEIGHT - 30, '#666666', 12, 'left', false);
     } else if (state.phase === 'gameover') {
         renderer.drawText('ENTER: Rematch | ESC: Title', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50, COLORS.white, 16, 'center', true);
+    } else if (state.phase === 'awaiting_next_turn') {
+        // Draw "Start Next Turn?" prompt
+        const nextPlayer = state.players[state.currentPlayer];
+        const playerColor = nextPlayer.color || COLORS.cyan;
+
+        // Semi-transparent backdrop
+        renderer.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        renderer.ctx.fillRect(CANVAS_WIDTH / 2 - 200, CANVAS_HEIGHT / 2 - 60, 400, 120);
+
+        // Glowing border
+        renderer.setGlow(playerColor, 20);
+        renderer.ctx.strokeStyle = playerColor;
+        renderer.ctx.lineWidth = 2;
+        renderer.ctx.strokeRect(CANVAS_WIDTH / 2 - 200, CANVAS_HEIGHT / 2 - 60, 400, 120);
+        renderer.clearGlow();
+
+        // Player indicator
+        const playerLabel = nextPlayer.isAI ? `Player ${state.currentPlayer + 1} (AI)` : `Player ${state.currentPlayer + 1}`;
+        renderer.setGlow(playerColor, 15);
+        renderer.drawText(playerLabel, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 30, playerColor, 20, 'center', true);
+        renderer.clearGlow();
+
+        // Main prompt
+        renderer.setGlow('#ffffff', 10);
+        renderer.drawText('Start Next Turn?', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 5, '#ffffff', 28, 'center', true);
+        renderer.clearGlow();
+
+        // Instruction
+        const pulseAlpha = 0.5 + Math.sin(state.time * 5) * 0.3;
+        renderer.ctx.globalAlpha = pulseAlpha;
+        renderer.drawText('Press SPACE to continue', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 40, '#aaaaaa', 14, 'center', false);
+        renderer.ctx.globalAlpha = 1;
     }
 
     renderer.endFrame();
