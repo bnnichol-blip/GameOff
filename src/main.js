@@ -3471,17 +3471,49 @@ function rollNewGlitchEvent() {
 // ============================================================================
 
 /**
- * Roll a rarity based on configured rates
+ * Get available rarities based on current round
+ * Round 1: Common only
+ * Round 2: Common + Rare
+ * Round 3: Common + Rare + Epic
+ * Round 4+: All rarities
+ */
+function getAvailableRarities() {
+    const round = state.round || 1;
+    if (round <= 1) return ['common'];
+    if (round === 2) return ['common', 'rare'];
+    if (round === 3) return ['common', 'rare', 'epic'];
+    return ['common', 'rare', 'epic', 'legendary'];
+}
+
+/**
+ * Roll a rarity based on configured rates, limited by current round
  * Returns: 'common' | 'rare' | 'epic' | 'legendary'
  */
 function rollRarity() {
-    const roll = Math.random() * 100;
-    const { common, rare, epic } = LOTTERY_RARITY_RATES;
+    const availableRarities = getAvailableRarities();
 
-    // Cumulative thresholds: legendary (0-10), epic (10-25), rare (25-50), common (50-100)
-    if (roll < LOTTERY_RARITY_RATES.legendary) return 'legendary';
-    if (roll < LOTTERY_RARITY_RATES.legendary + epic) return 'epic';
-    if (roll < LOTTERY_RARITY_RATES.legendary + epic + rare) return 'rare';
+    // If only common available, return common
+    if (availableRarities.length === 1) return 'common';
+
+    // Calculate total weight for available rarities
+    let totalWeight = 0;
+    for (const rarity of availableRarities) {
+        totalWeight += LOTTERY_RARITY_RATES[rarity];
+    }
+
+    // Roll within the available weight range
+    const roll = Math.random() * totalWeight;
+
+    // Check rarities from rarest to most common (order matters for cumulative check)
+    let cumulative = 0;
+    const rarityOrder = ['legendary', 'epic', 'rare', 'common'];
+
+    for (const rarity of rarityOrder) {
+        if (!availableRarities.includes(rarity)) continue;
+        cumulative += LOTTERY_RARITY_RATES[rarity];
+        if (roll < cumulative) return rarity;
+    }
+
     return 'common';
 }
 
@@ -3570,8 +3602,9 @@ function generateLotteryCards() {
         usedWeapons.push(card.weaponKey);
     }
 
-    // Pity system: guarantee rare+ if 5 turns without one
-    if (state.lottery.pityCounter >= 5) {
+    // Pity system: guarantee rare+ if 5 turns without one (only if rare is available)
+    const availableRarities = getAvailableRarities();
+    if (state.lottery.pityCounter >= 5 && availableRarities.includes('rare')) {
         const hasRarePlus = cards.some(c =>
             c.rarity === 'rare' || c.rarity === 'epic' || c.rarity === 'legendary'
         );
