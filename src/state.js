@@ -4,11 +4,11 @@
 
 import { TANK_ARCHETYPES } from './weaponData.js';
 
-// Constants needed for state initialization
-const VIRTUAL_WIDTH = 1920;
-const VIRTUAL_HEIGHT = 1080;
-const NUM_PLAYERS = 4;
-const DEFAULT_GRAVITY = 0.3;
+// Constants needed for state initialization (exported for other modules)
+export const VIRTUAL_WIDTH = 2560;
+export const VIRTUAL_HEIGHT = 1440;
+export const NUM_PLAYERS = 4;
+export const DEFAULT_GRAVITY = 0.3;
 
 // Player creation function
 function createPlayers(count) {
@@ -35,7 +35,7 @@ function createPlayers(count) {
             color: colors[i],
             type: 'SIEGE',
             archetype: null,
-            isHuman: i < 2,
+            isAI: i >= 2,  // Players beyond first 2 are AI by default
             coins: 0,
             kills: 0,
             damageDealt: 0,
@@ -120,13 +120,42 @@ export const state = {
     strafingRuns: [],        // Active strafing runs { targetX, phase, timer, direction, fighters, firedByPlayer }
     desperationBeacons: [],  // Falling/landed beacons { x, y, vy, landed, timer, maxTime, claimed, claimedBy }
 
-    // Dying Light tracking (per player)
-    dyingLightTurns: Array.from({ length: NUM_PLAYERS }, () => 0),  // Turns remaining for dying light
-    storedWeapons: Array.from({ length: NUM_PLAYERS }, () => null),  // Previous weapon before dying light
+    // Dying Star tracking (per player)
+    dyingStarTurns: Array.from({ length: NUM_PLAYERS }, () => 0),  // Turns remaining for dying star
+    storedWeapons: Array.from({ length: NUM_PLAYERS }, () => null),  // Previous weapon before dying star
 
     // Turn flow safety (prevents race conditions)
     turnEndLocked: false,   // Prevents multiple endTurn() calls
-    firingStartTime: 0      // For safety timeout
+    firingStartTime: 0,     // For safety timeout
+
+    // === NEW WEAPON SYSTEMS (35 Weapons Update) ===
+
+    // Barrier System - blocks projectiles
+    barriers: [],  // { x, y, width, height, hitsRemaining, turnsRemaining, ownerId, color }
+
+    // Gravity Field System - pulls projectiles/tanks toward center
+    gravityFields: [],  // { x, y, radius, strength, turnsRemaining, pullsTanks, ownerId, color }
+
+    // Vision Obstruction System - hides trajectory, applies DoT
+    visionClouds: [],  // { x, y, radius, duration, timer, damagePerSec, ownerId, color }
+
+    // Trajectory Preview System - saves paths from tracer rounds
+    tracerPaths: [[], [], [], []],  // Per player saved paths
+
+    // Orbiting Projectile System - projectiles orbit tank before launch
+    orbitingProjectiles: [],  // { x, y, vx, vy, tankIndex, orbitRadius, orbitAngle, orbitSpeed, launchTimer, weaponKey, color }
+
+    // Black Hole System - intense gravity pull then collapse
+    blackHoles: [],  // { x, y, pullRadius, pullStrength, timer, duration, ownerId, color }
+
+    // Meteor Shower System - delayed meteor impacts
+    pendingMeteors: [],  // { x, delay, timer, ownerId }
+
+    // Void Cannon Beam System - vertical orbital beams
+    voidCannonBeams: [],  // { x, delay, timer, ownerId, color }
+
+    // Lightning Arc visual effect
+    lightningArc: null  // { x1, y1, x2, y2, timer, color }
 };
 
 // ============================================================================
