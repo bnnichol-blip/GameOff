@@ -16,8 +16,8 @@ export const WEAPONS = {
     BOUNCER: {
         name: 'Bouncer',
         description: 'Pinball chaos - explodes on every bounce',
-        cost: 20,
-        tier: 'CHEAP',
+        cost: 100,
+        tier: 'PREMIUM',
         damage: 80,        // Mortar-level damage on each bounce
         blastRadius: 80,   // Mortar-level blast radius
         bounces: 4,        // Base bounces (randomized 4-7 at fire time)
