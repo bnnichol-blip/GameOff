@@ -128,22 +128,7 @@ export const state = {
     turnEndLocked: false,   // Prevents multiple endTurn() calls
     firingStartTime: 0,     // For safety timeout
 
-    // === NEW WEAPON SYSTEMS (35 Weapons Update) ===
-
-    // Barrier System - blocks projectiles
-    barriers: [],  // { x, y, width, height, hitsRemaining, turnsRemaining, ownerId, color }
-
-    // Gravity Field System - pulls projectiles/tanks toward center
-    gravityFields: [],  // { x, y, radius, strength, turnsRemaining, pullsTanks, ownerId, color }
-
-    // Vision Obstruction System - hides trajectory, applies DoT
-    visionClouds: [],  // { x, y, radius, duration, timer, damagePerSec, ownerId, color }
-
-    // Trajectory Preview System - saves paths from tracer rounds
-    tracerPaths: [[], [], [], []],  // Per player saved paths
-
-    // Orbiting Projectile System - projectiles orbit tank before launch
-    orbitingProjectiles: [],  // { x, y, vx, vy, tankIndex, orbitRadius, orbitAngle, orbitSpeed, launchTimer, weaponKey, color }
+    // === NEW WEAPON SYSTEMS ===
 
     // Black Hole System - intense gravity pull then collapse
     blackHoles: [],  // { x, y, pullRadius, pullStrength, timer, duration, ownerId, color }
