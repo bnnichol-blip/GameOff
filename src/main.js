@@ -14,7 +14,8 @@ import { degToRad, clamp, distance } from './utils.js';
 import * as events from './events.js';
 import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 // Import weapon data and tank types from extracted module
-import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES } from './weaponData.js';
+import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES,
+         LOTTERY_RARITY_RATES, LOTTERY_RARITY_COLORS, WEAPONS_BY_RARITY, WEAPON_RARITY_MAP } from './weaponData.js';
 
 // ============================================================================
 // Game Constants
@@ -60,7 +61,6 @@ const COINS_PER_DAMAGE = 0.2;      // 1 coin per 5 damage
 const KILL_BONUS = 50;
 const SURVIVAL_BONUS = 25;  // Per turn, all players
 const UFO_DESTROY_BONUS = 30;
-const SHOP_OFFERING_COUNT = 6;
 
 // Player colors for up to 6 players
 const PLAYER_COLORS = [
@@ -147,7 +147,8 @@ function createPlayers(numPlayers, humanCount = numPlayers) {
             shield: 0,
             coins: STARTING_COINS,
             weapon: 'MORTAR',
-            voidGraceTimer: 0     // Legacy field
+            voidGraceTimer: 0,    // Legacy field
+            rerollsRemaining: 1   // Cosmic Lottery rerolls (1 per player per game)
         });
     }
     return players;
@@ -168,18 +169,24 @@ const state = {
     currentPlayer: 0,
     turnCount: 0,
     round: 1,        // Stable round counter (incremented after all NUM_PLAYERS have taken a turn)
-    phase: 'title',  // 'title' | 'mode_select' | 'archetype_select' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
+    phase: 'title',  // 'title' | 'mode_select' | 'archetype_select' | 'lottery' | 'aiming' | 'firing' | 'resolving' | 'gameover'
     selectIndex: 0,  // Current selection in menus
     gameMode: null,  // '1p' | 'mp' (multiplayer)
     humanPlayerCount: 2,      // Number of human players (1-4)
     selectingPlayerIndex: 0,  // Which player is currently selecting archetype (0-3)
-    shoppingPlayerIndex: 0,   // Which human player is currently shopping
     projectile: null,
     projectiles: [],  // For cluster bombs (multiple projectiles)
-    // Shop state
-    shopOfferings: [],     // Array of weapon keys available this round
-    shopSelections: new Array(NUM_PLAYERS).fill(0), // Selected index for each player in shop
-    shopReady: new Array(NUM_PLAYERS).fill(false), // Whether each player is ready
+    // Cosmic Lottery state
+    lottery: {
+        active: false,
+        cards: [],              // Array of 3 card objects { weaponKey, rarity, name, damage, blastRadius, description }
+        selectedIndex: 0,       // Currently highlighted card (0-2)
+        animationPhase: 'none', // 'descending' | 'revealing' | 'selecting' | 'dismissing'
+        animationTimer: 0,
+        pityCounter: 0          // Turns since rare+ shown (for pity system)
+    },
+    // AI pick notifications for lottery
+    lotteryNotifications: [],  // { text, color, x, y, timer, rarity }
     // Persistent fields (napalm, etc.)
     fields: [],  // { x, y, radius, duration, damagePerSec, color, type, timer }
     // Active nukes with fuse timers
@@ -217,6 +224,8 @@ const state = {
     voidSurgePending: false,  // For VOID SURGE
     // UFO buff state (per player, stackable, one-turn duration)
     ufoBuffs: Array.from({ length: NUM_PLAYERS }, () => ({ damage: 0, blast: 0, bounces: 0 })),
+    // Radiation status effect (per player) - from PLASMA_BOLT
+    radiation: Array.from({ length: NUM_PLAYERS }, () => ({ turnsRemaining: 0, damagePerTurn: 0, sourcePlayer: -1 })),
     // UFO buff notification
     buffNotification: null,  // { playerIndex, buffType, timer }
 
@@ -240,20 +249,6 @@ const state = {
     firingStartTime: 0,     // For safety timeout
 
     // === NEW WEAPON SYSTEMS STATE ===
-    // Barrier System (VOID_WALL)
-    barriers: [],  // { x, y, width, height, hitsRemaining, turnsRemaining, ownerId, color }
-
-    // Gravity Field System (GRAVITY_WELL, BLACK_HOLE_GRENADE)
-    gravityFields: [],  // { x, y, radius, strength, turnsRemaining, pullsTanks, ownerId, color }
-
-    // Vision Obstruction System (NEBULA_CLOUD)
-    visionClouds: [],  // { x, y, radius, duration, timer, damagePerSec, ownerId, color }
-
-    // Tracer Trajectory Preview System
-    tracerPaths: [[], [], [], []],  // Per player saved paths from tracer rounds
-
-    // Orbiting Projectile System (ASTEROID_BELT)
-    orbitingProjectiles: [],  // { x, y, angle, orbitRadius, ownerId, timer, duration, launched, color }
 
     // Active black holes (BLACK_HOLE_GRENADE)
     blackHoles: [],  // { x, y, pullRadius, pullStrength, timer, duration, ownerId, color }
@@ -274,7 +269,7 @@ const TANK_TYPE_KEYS = Object.keys(TANK_TYPES);
 /**
  * Get current round number.
  * Uses stable round counter based on NUM_PLAYERS, not living players.
- * This fixes the bug where killing a player triggered premature shop phases.
+ * This fixes the bug where killing a player triggered premature phase transitions.
  */
 function getCurrentRound() {
     return state.round;
@@ -306,6 +301,43 @@ function applyTurnStartAbilities(player) {
     // MERCHANT: Bonus coins each turn
     if (arch.abilityRules.bonusCoins) {
         player.coins += arch.abilityRules.bonusCoins;
+    }
+}
+
+/**
+ * Apply radiation damage at turn start (from PLASMA_BOLT)
+ */
+function applyRadiationDamage(playerIndex) {
+    const rad = state.radiation[playerIndex];
+    if (rad.turnsRemaining <= 0) return;
+
+    const player = state.players[playerIndex];
+    if (player.health <= 0) return;
+
+    // Apply radiation damage
+    const damage = rad.damagePerTurn;
+    player.health = Math.max(0, player.health - damage);
+
+    // Award coins to source player
+    if (rad.sourcePlayer >= 0 && rad.sourcePlayer !== playerIndex) {
+        state.players[rad.sourcePlayer].coins += Math.floor(damage * COINS_PER_DAMAGE);
+    }
+
+    // Visual feedback - green sparks for radiation
+    particles.sparks(player.x, player.y - 10, 20, '#00ff88');
+    particles.sparks(player.x, player.y - 10, 10, '#00ffaa');
+
+    // Decrement turns
+    rad.turnsRemaining--;
+
+    // Check for kill
+    if (player.health <= 0) {
+        if (rad.sourcePlayer >= 0 && rad.sourcePlayer !== playerIndex) {
+            state.players[rad.sourcePlayer].coins += KILL_BONUS;
+            state.players[rad.sourcePlayer].kills++;
+        }
+        triggerDeathExplosion(player, false);
+        audio.playKill();
     }
 }
 
@@ -500,9 +532,14 @@ function resetGame() {
         p.y = terrain.getHeightAt(p.x) - TANK_RADIUS;
     });
 
-    // Reset shop arrays for N players
-    state.shopSelections = new Array(NUM_PLAYERS).fill(0);
-    state.shopReady = new Array(NUM_PLAYERS).fill(false);
+    // Reset lottery state
+    state.lottery.active = false;
+    state.lottery.cards = [];
+    state.lottery.selectedIndex = 0;
+    state.lottery.animationPhase = 'none';
+    state.lottery.animationTimer = 0;
+    state.lottery.pityCounter = 0;
+    state.lotteryNotifications = [];
 
     state.currentPlayer = 0;
     state.turnCount = 0;
@@ -510,7 +547,6 @@ function resetGame() {
     state.phase = 'archetype_select';
     state.selectIndex = 0;
     state.selectingPlayerIndex = 0;  // Reset archetype selection index
-    state.shoppingPlayerIndex = 0;   // Reset shop player index
     state.projectile = null;
     state.projectiles = [];
     state.voidY = VIRTUAL_HEIGHT + 100;
@@ -533,10 +569,10 @@ function resetGame() {
     // Reset UFO buffs
     state.ufoBuffs = Array.from({ length: NUM_PLAYERS }, () => ({ damage: 0, blast: 0, bounces: 0 }));
     state.buffNotification = null;
-    // Reset shop state
-    state.shopOfferings = [];
-    state.shopSelections = Array(NUM_PLAYERS).fill(0);
-    state.shopReady = Array(NUM_PLAYERS).fill(false);
+    // Reset radiation status
+    state.radiation = Array.from({ length: NUM_PLAYERS }, () => ({ turnsRemaining: 0, damagePerTurn: 0, sourcePlayer: -1 }));
+    // Reset player rerolls for lottery
+    state.players.forEach(p => p.rerollsRemaining = 1);
     // Reset persistent fields
     state.fields = [];
     // Reset active nukes
@@ -561,11 +597,6 @@ function resetGame() {
     state.firingStartTime = 0;
 
     // Reset new weapon systems
-    state.barriers = [];
-    state.gravityFields = [];
-    state.visionClouds = [];
-    state.tracerPaths = [[], [], [], []];
-    state.orbitingProjectiles = [];
     state.blackHoles = [];
     state.pendingMeteors = [];
     state.voidCannonBeams = [];
@@ -587,19 +618,16 @@ function advanceArchetypeSelection() {
 }
 
 function startGame() {
-    // Called after both players select tanks
-    state.phase = 'aiming';
+    // Called after all players select archetypes
 
     // Apply initial archetype abilities (if any)
     state.players.forEach(p => applyGameStartAbilities(p));
 
-    // Roll initial glitch event for round 1 (both players will share it)
+    // Roll initial glitch event for round 1
     rollNewGlitchEvent();
 
-    // If AI's turn first (shouldn't happen normally), prepare AI
-    if (getCurrentPlayer().isAI) {
-        prepareAITurn();
-    }
+    // Start with Cosmic Lottery for first turn
+    startLottery();
 }
 
 // ============================================================================
@@ -624,9 +652,27 @@ function fireProjectile() {
 
     const angleRad = degToRad(180 - player.angle);
 
-    // RAILGUN BEAM - special handling
-    if (weapon.behavior === 'railgunBeam') {
+    // RAILGUN BEAM - special handling (instant fire, no charging)
+    if (weapon.behavior === 'railgunBeam' || weapon.behavior === 'railgunInstant') {
         fireRailgunBeam(player, weapon, angleRad);
+        return;
+    }
+
+    // PLASMA BEAM - hitscan with radiation effect
+    if (weapon.behavior === 'plasmaBeam') {
+        firePlasmaBeam(player, weapon, angleRad);
+        return;
+    }
+
+    // METEOR SHOWER UP - fires straight up regardless of aim
+    if (weapon.behavior === 'meteorShowerUp') {
+        fireMeteorShowerUp(player, weapon);
+        return;
+    }
+
+    // SCATTER SHELL - shotgun: fire 5 fragments in cone immediately
+    if (weapon.behavior === 'scatterCone') {
+        fireScatterShell(player, weapon, angleRad);
         return;
     }
 
@@ -798,9 +844,253 @@ function fireRailgunBeam(player, weapon, angleRad) {
     // Schedule turn end (let beam display)
     setTimeout(() => {
         if (state.phase === 'firing') {
-            endTurn();
+            tryEndTurn();  // Check for other pending effects
         }
     }, 400);
+}
+
+/**
+ * Fire PLASMA BEAM - hitscan that stops at terrain/walls and irradiates targets
+ */
+function firePlasmaBeam(player, weapon, angleRad) {
+    const buffs = state.ufoBuffs[state.currentPlayer];
+    const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
+    const archetypeDmgMult = getArchetypeDamageMultiplier(player);
+    const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
+
+    // Trace beam path - no bounces, stops at terrain
+    const maxLength = 2500;
+    const beamPath = tracePlasmaBeamPath(player.x, player.y - 20, angleRad, maxLength);
+
+    // Store beam for rendering (green plasma visual)
+    state.railgunBeam = {
+        path: beamPath.points,
+        timer: 0.4,
+        maxTimer: 0.4,
+        damage: effectiveDamage,
+        color: weapon.color,
+        width: weapon.beamWidth || 6
+    };
+
+    // Apply damage and radiation to hit players
+    let totalEnemyDamage = 0;
+    for (let pi = 0; pi < state.players.length; pi++) {
+        if (pi === state.currentPlayer) continue;
+        const target = state.players[pi];
+        if (target.health <= 0) continue;
+
+        // Check if player is along beam path
+        for (let i = 0; i < beamPath.points.length - 1; i++) {
+            const p1 = beamPath.points[i];
+            const p2 = beamPath.points[i + 1];
+            const dist = pointToSegmentDistance(target.x, target.y, p1.x, p1.y, p2.x, p2.y);
+
+            if (dist < TANK_RADIUS + (weapon.beamWidth || 6)) {
+                // Deal direct damage
+                target.health = Math.max(0, target.health - effectiveDamage);
+                totalEnemyDamage += effectiveDamage;
+
+                // Apply radiation status effect
+                state.radiation[pi] = {
+                    turnsRemaining: weapon.radiationTurns || 2,
+                    damagePerTurn: weapon.radiationDamage || 20,
+                    sourcePlayer: state.currentPlayer
+                };
+
+                // Visual hit effect - green radiation
+                particles.explosion(target.x, target.y, 40, '#00ff88', 25);
+                particles.sparks(target.x, target.y, 30, weapon.color);
+                particles.sparks(target.x, target.y, 20, '#00ffaa');
+
+                // Check for kill
+                if (target.health <= 0) {
+                    player.coins += KILL_BONUS;
+                    player.kills++;
+                    triggerDeathExplosion(target, false);
+                    audio.playKill();
+                }
+                break; // Only hit each player once
+            }
+        }
+    }
+
+    // Award coins for damage
+    if (totalEnemyDamage > 0) {
+        player.coins += Math.floor(totalEnemyDamage * COINS_PER_DAMAGE);
+    }
+
+    // Small terrain damage at terminus
+    const terminus = beamPath.points[beamPath.points.length - 1];
+    terrain.destroy(terminus.x, terminus.y, weapon.blastRadius || 25);
+
+    // Visual effects
+    renderer.addScreenShake(12);
+    renderer.flash(weapon.color, 0.3);
+    audio.playExplosion(0.8);
+
+    // Particles along beam
+    for (const point of beamPath.points) {
+        if (Math.random() < 0.3) {
+            particles.sparks(point.x, point.y, 10, weapon.color);
+        }
+    }
+
+    // Clear buffs and end turn
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
+
+    setTimeout(() => {
+        if (state.phase === 'firing') {
+            tryEndTurn();  // Check for other pending effects
+        }
+    }, 350);
+}
+
+/**
+ * Trace plasma beam path - stops at terrain or walls (no bounces)
+ */
+function tracePlasmaBeamPath(startX, startY, angle, maxLength) {
+    const points = [{ x: startX, y: startY }];
+    let x = startX;
+    let y = startY;
+    const dx = Math.cos(angle);
+    const dy = -Math.sin(angle);
+    const stepSize = 5;
+    let traveled = 0;
+
+    while (traveled < maxLength) {
+        x += dx * stepSize;
+        y += dy * stepSize;
+        traveled += stepSize;
+
+        // Check wall boundaries
+        if (x < 0 || x > VIRTUAL_WIDTH) {
+            points.push({ x: Math.max(0, Math.min(VIRTUAL_WIDTH, x)), y });
+            break;
+        }
+
+        // Check ceiling
+        if (y < 0) {
+            points.push({ x, y: 0 });
+            break;
+        }
+
+        // Check terrain collision
+        const terrainHeight = terrain.getHeightAt(x);
+        if (y >= terrainHeight) {
+            points.push({ x, y: terrainHeight });
+            break;
+        }
+
+        // Check void
+        if (y >= state.voidY) {
+            points.push({ x, y: state.voidY });
+            break;
+        }
+    }
+
+    // Add final point if we ran out of range
+    if (traveled >= maxLength) {
+        points.push({ x, y });
+    }
+
+    return { points };
+}
+
+/**
+ * Fire METEOR SHOWER UP - fires straight up, then meteors rain across map
+ */
+function fireMeteorShowerUp(player, weapon) {
+    const buffs = state.ufoBuffs[state.currentPlayer];
+
+    // Create signal flare going straight up
+    state.projectile = {
+        x: player.x,
+        y: player.y - 20,
+        vx: 0,
+        vy: -weapon.projectileSpeed * MAX_POWER,  // Straight up
+        radius: weapon.projectileRadius,
+        color: weapon.color,
+        bounces: 0,
+        maxBounces: 0,
+        trail: [],
+        weaponKey: player.weapon,
+        isCluster: false,
+        isSignalFlare: true,  // Mark as signal flare
+        buffedDamageMultiplier: 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1)),
+        buffedBlastBonus: buffs.blast * UFO_BUFF_TYPES.BLAST.bonus,
+        firedByPlayer: state.currentPlayer
+    };
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
+}
+
+/**
+ * Fire SCATTER SHELL - shotgun style, fires multiple fragments in cone immediately
+ */
+function fireScatterShell(player, weapon, angleRad) {
+    const buffs = state.ufoBuffs[state.currentPlayer];
+    const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
+    const blastBonus = buffs.blast * UFO_BUFF_TYPES.BLAST.bonus;
+
+    // Apply nonlinear charge curve for better range at high charge
+    const effectivePower = chargeToPower(player.power);
+    const baseSpeed = effectivePower * MAX_POWER * weapon.projectileSpeed * state.velocityMultiplier;
+
+    const fragmentCount = weapon.fragmentCount || 5;
+    const coneAngle = (weapon.coneAngle || 60) * Math.PI / 180;
+
+    // Fire all fragments immediately in a cone
+    for (let i = 0; i < fragmentCount; i++) {
+        // Spread evenly across the cone
+        const spreadOffset = (i / (fragmentCount - 1) - 0.5) * coneAngle;
+        const fragmentAngle = angleRad + spreadOffset;
+
+        // Slight speed variation for natural spread
+        const speedVariation = 0.85 + Math.random() * 0.3;
+        const speed = baseSpeed * speedVariation;
+
+        state.projectiles.push({
+            x: player.x,
+            y: player.y - 20,
+            vx: Math.cos(fragmentAngle) * speed,
+            vy: -Math.sin(fragmentAngle) * speed,
+            radius: 5,
+            color: weapon.color,
+            bounces: 0,
+            maxBounces: weapon.bounces + state.extraBounces,
+            trail: [],
+            weaponKey: null,  // Prevent special behaviors on impact
+            isCluster: true,
+            isFragment: true,
+            firedByPlayer: state.currentPlayer,
+            buffedDamageMultiplier: damageMultiplier,
+            buffedBlastBonus: blastBonus,
+            fragmentDamage: weapon.damage,
+            fragmentBlastRadius: weapon.blastRadius
+        });
+    }
+
+    // Visual/audio feedback
+    particles.sparks(player.x, player.y - 20, 20, weapon.color);
+    audio.playExplosion(0.5);
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
 }
 
 /**
@@ -931,18 +1221,6 @@ function updateProjectile(dt) {
     // Apply wind (WIND BLAST event)
     if (state.wind !== 0) {
         proj.vx += state.wind;
-    }
-
-    // Apply gravity field pull
-    for (const field of state.gravityFields) {
-        const dx = field.x - proj.x;
-        const dy = field.y - proj.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < field.radius && dist > 10) {
-            const force = field.strength * (1 - dist / field.radius);
-            proj.vx += (dx / dist) * force;
-            proj.vy += (dy / dist) * force;
-        }
     }
 
     // Apply black hole pull (during active black holes)
@@ -1109,49 +1387,6 @@ function updateProjectile(dt) {
         }
     }
 
-    // MAGNETIC BOUNCE behavior - homing after bounces
-    if (weapon && weapon.behavior === 'magneticBounce' && proj.bounces > 0 && !proj.isRolling) {
-        const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-        const homingStr = weapon.homingStrength || 0.04;
-
-        // Find nearest enemy
-        let targetPlayer = null;
-        let minDist = Infinity;
-        for (let i = 0; i < state.players.length; i++) {
-            if (i === firingPlayer) continue;
-            const p = state.players[i];
-            if (p.health <= 0) continue;
-            const d = distance(proj.x, proj.y, p.x, p.y);
-            if (d < minDist) {
-                minDist = d;
-                targetPlayer = p;
-            }
-        }
-
-        if (targetPlayer) {
-            const dx = targetPlayer.x - proj.x;
-            const dy = targetPlayer.y - proj.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 0) {
-                proj.vx += (dx / dist) * homingStr;
-                proj.vy += (dy / dist) * homingStr;
-                // Trail effect
-                if (Math.random() < 0.4) {
-                    particles.trail(proj.x, proj.y, '#ff66ff');
-                }
-            }
-        }
-    }
-
-    // PHASER behavior - pass through terrain N times
-    if (weapon && weapon.behavior === 'phaser' && proj.isPhasing) {
-        // Continue through terrain, carve small tunnel
-        terrain.destroy(proj.x, proj.y, 20);
-        if (Math.random() < 0.5) {
-            particles.trail(proj.x, proj.y, '#aaaaff');
-        }
-    }
-
     // UNDERGROUND SEEKER behavior - burrow then seek
     if (weapon && weapon.behavior === 'undergroundSeeker') {
         if (proj.isBurrowing) {
@@ -1192,92 +1427,111 @@ function updateProjectile(dt) {
                 const player = state.players[i];
                 if (player.health <= 0) continue;
                 if (Math.abs(player.x - proj.x) < 40) {
-                    // Erupt!
-                    proj.isBurrowing = false;
-                    proj.vy = -15;  // Launch upward
-                    particles.explosion(proj.x, terrain.getHeightAt(proj.x), 50, '#8800ff', 60);
-                    renderer.addScreenShake(20);
+                    // ERUPT beneath enemy - deal damage and explode!
+                    const eruptX = proj.x;
+                    const eruptY = terrain.getHeightAt(proj.x) - 20;  // Just below surface
+
+                    // Massive upward explosion visual
+                    particles.explosion(eruptX, eruptY, 80, '#8800ff', 80);
+                    particles.explosion(eruptX, eruptY - 50, 60, '#ffffff', 60);
+                    particles.explosion(eruptX, eruptY - 100, 40, '#ff00ff', 40);
+                    renderer.addScreenShake(35);
+                    audio.playExplosion(1.0);
+
+                    // Deal damage to all players in blast radius
+                    const blastRadius = weapon.blastRadius || 70;
+                    const damage = weapon.damage || 90;
+                    for (let j = 0; j < state.players.length; j++) {
+                        if (j === firingPlayer) continue;
+                        const target = state.players[j];
+                        if (target.health <= 0) continue;
+                        const dist = distance(eruptX, eruptY, target.x, target.y);
+                        if (dist < blastRadius) {
+                            const falloff = 1 - (dist / blastRadius) * 0.5;
+                            const dmg = damage * falloff;
+                            target.health = Math.max(0, target.health - dmg);
+                            particles.sparks(target.x, target.y, 30, '#ffffff');
+                            if (target.health <= 0) {
+                                state.players[firingPlayer].coins += KILL_BONUS;
+                                triggerDeathExplosion(target, false);
+                            }
+                        }
+                    }
+
+                    // Destroy terrain - carve upward crater
+                    terrain.destroy(eruptX, eruptY, blastRadius * 0.8);
+
+                    // End projectile and turn
+                    state.projectile = null;
+                    endTurn();
+                    return;
                 }
             }
 
-            // Timeout - erupt after 3 seconds
+            // Timeout - erupt in place after 3 seconds
             proj.burrowTimer = (proj.burrowTimer || 0) + dt;
             if (proj.burrowTimer > 3) {
-                proj.isBurrowing = false;
-                proj.vy = -12;
-            }
-        }
-    }
-
-    // SOLAR FLARE behavior - rise phase then rain (only for original projectile, not sub-flares)
-    if (weapon && weapon.behavior === 'solarFlare' && !proj.isCluster) {
-        if (!proj.flarePhase) {
-            proj.flarePhase = 'rising';
-            proj.flareTimer = 0;
-        }
-        proj.flareTimer += dt;
-
-        if (proj.flarePhase === 'rising') {
-            // Force upward
-            proj.vy = Math.min(proj.vy, -8);
-            if (proj.flareTimer > 1.5 || proj.y < WORLD_TOP + 100) {
-                // Reached apex - spawn rain
-                proj.flarePhase = 'raining';
-                const flareCount = weapon.flareCount || 12;
-                for (let i = 0; i < flareCount; i++) {
-                    const delay = i * 0.1;
-                    const spreadX = (Math.random() - 0.5) * 400;
-                    setTimeout(() => {
-                        if (state.phase !== 'firing') return;
-                        state.projectiles.push({
-                            x: proj.x + spreadX,
-                            y: WORLD_TOP + 50,
-                            vx: (Math.random() - 0.5) * 3,
-                            vy: 8 + Math.random() * 4,
-                            radius: 5,
-                            color: '#ffaa00',
-                            bounces: 0,
-                            maxBounces: 0,
-                            trail: [],
-                            weaponKey: null,  // CRITICAL: Prevent recursion
-                            isCluster: true,
-                            isFragment: true,
-                            fragmentDamage: weapon.damage / 2,  // Split damage among flares
-                            fragmentBlastRadius: weapon.blastRadius * 0.6,
-                            firedByPlayer: proj.firedByPlayer,
-                            buffedDamageMultiplier: 1,
-                            buffedBlastBonus: 0
-                        });
-                        particles.sparks(proj.x + spreadX, WORLD_TOP + 50, 10, '#ff6600');
-                    }, delay * 1000);
-                }
-                // Remove parent
+                // Timeout eruption - smaller explosion at current position
+                const eruptX = proj.x;
+                const eruptY = terrain.getHeightAt(proj.x);
+                particles.explosion(eruptX, eruptY, 50, '#8800ff', 50);
+                renderer.addScreenShake(15);
+                audio.playExplosion(0.6);
+                terrain.destroy(eruptX, eruptY, 40);
                 state.projectile = null;
+                endTurn();
                 return;
             }
         }
     }
 
-    // ORBIT LAUNCH behavior - store orbiting projectiles
-    if (weapon && weapon.behavior === 'orbitLaunch' && !proj.hasSpawnedOrbiters) {
-        proj.hasSpawnedOrbiters = true;
-        const orbitCount = weapon.orbitCount || 3;
-        const ownerId = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    // SOLAR FLARE RAIN behavior - rains fire projectiles along trajectory
+    if (weapon && (weapon.behavior === 'solarFlare' || weapon.behavior === 'solarFlareRain') && !proj.isCluster) {
+        // Initialize fire rain timer
+        if (proj.fireRainTimer === undefined) {
+            proj.fireRainTimer = 0;
+            proj.fireRainCount = 0;
+        }
+        proj.fireRainTimer += dt;
 
-        for (let i = 0; i < orbitCount; i++) {
-            state.orbitingProjectiles.push({
+        const firstDelay = weapon.fireRainDelay || 0.2;
+        const interval = weapon.fireRainInterval || 0.1;
+
+        // Calculate next fire time
+        const nextFireTime = proj.fireRainCount === 0 ? firstDelay : firstDelay + (proj.fireRainCount - 1) * interval + interval;
+
+        // Drop fire projectile when timer reaches next fire time
+        if (proj.fireRainTimer >= nextFireTime && proj.y > 0 && proj.y < state.voidY) {
+            proj.fireRainCount++;
+
+            // Spawn fire projectile dropping straight down
+            state.projectiles.push({
                 x: proj.x,
                 y: proj.y,
-                angle: (i / orbitCount) * Math.PI * 2,
-                orbitRadius: 50 + i * 15,
-                ownerId: ownerId,
-                timer: 0,
-                duration: weapon.orbitDuration || 2.0,
-                launched: false,
-                color: weapon.color
+                vx: (Math.random() - 0.5) * 2,
+                vy: 8 + Math.random() * 3,  // Falls down
+                radius: 5,
+                color: '#ff6600',
+                bounces: 0,
+                maxBounces: 0,
+                trail: [],
+                weaponKey: null,  // CRITICAL: Prevent recursion
+                isCluster: true,
+                isFragment: true,
+                isFireRain: true,  // Mark for napalm effect
+                fragmentDamage: weapon.fireRainDamage || 15,
+                fragmentBlastRadius: weapon.fireRainRadius || 30,
+                firedByPlayer: proj.firedByPlayer,
+                buffedDamageMultiplier: 1,
+                buffedBlastBonus: 0,
+                leavesNapalm: weapon.leavesNapalm,
+                napalmDuration: weapon.napalmDuration || 4,
+                napalmDamage: weapon.napalmDamage || 8
             });
+
+            // Visual feedback
+            particles.sparks(proj.x, proj.y, 8, '#ffaa00');
         }
-        // Continue with normal projectile flight
     }
 
     // ROLLER behavior - roll along terrain surface
@@ -1378,6 +1632,13 @@ function updateProjectile(dt) {
     // NO ceiling bounce - projectiles can arc high and fall back down
     // (Removed ceiling bounce to allow skillful high-arc shots)
 
+    // METEOR SHOWER SIGNAL FLARE - trigger meteors when going off-screen
+    if (proj.isSignalFlare && proj.y < -100) {
+        triggerMeteorShower(proj);
+        state.projectile = null;
+        return;
+    }
+
     // Spawn trail particles occasionally
     if (Math.random() < 0.3) {
         particles.trail(proj.x, proj.y, proj.color);
@@ -1386,39 +1647,22 @@ function updateProjectile(dt) {
     // Check for UFO collision (grants buffs)
     checkUFOCollision(proj.x, proj.y, proj.radius);
 
-    // Check for barrier collision
-    for (let i = state.barriers.length - 1; i >= 0; i--) {
-        const barrier = state.barriers[i];
-        // Skip barriers owned by the firing player
-        if (barrier.ownerId === proj.firedByPlayer) continue;
+    // BOUNCING BETTY - explode on enemy contact
+    const bettyWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    if (bettyWeapon && bettyWeapon.behavior === 'bouncingBetty' && bettyWeapon.explodesOnEnemyContact) {
+        const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+        for (let i = 0; i < state.players.length; i++) {
+            if (i === firingPlayer) continue;  // Don't hit self
+            const player = state.players[i];
+            if (player.health <= 0) continue;
 
-        // AABB collision check
-        const barrierLeft = barrier.x - barrier.width / 2;
-        const barrierRight = barrier.x + barrier.width / 2;
-        const barrierTop = barrier.y - barrier.height;
-        const barrierBottom = barrier.y;
-
-        if (proj.x + proj.radius > barrierLeft &&
-            proj.x - proj.radius < barrierRight &&
-            proj.y + proj.radius > barrierTop &&
-            proj.y - proj.radius < barrierBottom) {
-            // Hit barrier - bounce back
-            proj.vx = -proj.vx * 0.8;
-            proj.x += proj.vx * 2;  // Push out of barrier
-
-            // Decrement hits
-            barrier.hitsRemaining--;
-
-            // Visual feedback
-            particles.sparks(proj.x, proj.y, 25, barrier.color);
-            particles.sparks(proj.x, proj.y, 15, '#ffffff');
-            renderer.addScreenShake(8);
-            audio.playBounce();
-
-            // Remove if no hits remaining
-            if (barrier.hitsRemaining <= 0) {
-                particles.explosion(barrier.x, barrier.y - barrier.height / 2, 60, barrier.color, 100);
-                state.barriers.splice(i, 1);
+            const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
+            if (dist < proj.radius + TANK_RADIUS) {
+                // Direct enemy contact - explode!
+                particles.sparks(proj.x, proj.y, 25, '#ff8888');
+                onExplode(proj);
+                state.projectile = null;
+                return;
             }
         }
     }
@@ -1525,44 +1769,6 @@ function updateProjectile(dt) {
             return; // Don't explode, keep drilling
         }
 
-        // SHALLOW DRILL behavior (PIERCING_ROUND) - drill limited depth then explode
-        if (projWeapon && projWeapon.behavior === 'shallowDrill') {
-            if (!proj.drillStartY) {
-                proj.drillStartY = proj.y;
-            }
-            const drillDepth = projWeapon.drillDepth || 60;
-
-            // Check if drilled deep enough
-            if (proj.y - proj.drillStartY >= drillDepth) {
-                onExplode(proj);
-                state.projectile = null;
-                return;
-            }
-
-            // Continue drilling
-            terrain.destroy(proj.x, proj.y, 15);
-            proj.vx *= 0.99;
-            proj.vy *= 0.99;
-            if (Math.random() < 0.5) {
-                particles.sparks(proj.x, proj.y, 4, '#886644');
-            }
-            return;
-        }
-
-        // PHASER behavior - phase through terrain
-        if (projWeapon && projWeapon.behavior === 'phaser') {
-            const phasesRemaining = proj.phasesRemaining !== undefined ? proj.phasesRemaining : (projWeapon.phasesRemaining || 3);
-            if (phasesRemaining > 0) {
-                proj.isPhasing = true;
-                proj.phasesRemaining = phasesRemaining - 1;
-                // Ghost trail effect
-                particles.trail(proj.x, proj.y, '#8888ff');
-                // Don't explode, continue through
-                return;
-            }
-            // Out of phases, explode normally
-        }
-
         // UNDERGROUND SEEKER behavior - start burrowing
         if (projWeapon && projWeapon.behavior === 'undergroundSeeker' && !proj.isBurrowing) {
             proj.isBurrowing = true;
@@ -1572,21 +1778,8 @@ function updateProjectile(dt) {
             return;
         }
 
-        // TRACER behavior - save path and fizzle (no damage)
-        if (projWeapon && projWeapon.behavior === 'tracer') {
-            const ownerId = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-            // Save trajectory for this player
-            state.tracerPaths[ownerId] = proj.trail.map(p => ({ x: p.x, y: p.y }));
-            state.tracerPaths[ownerId].push({ x: proj.x, y: proj.y });
-            // Fizzle effect
-            particles.sparks(proj.x, proj.y, 20, '#aaffaa');
-            state.projectile = null;
-            endTurn();
-            return;
-        }
-
-        // BOUNCE DAMAGE UP/DOWN behaviors - use standard terrain bounce with damage tracking
-        if (projWeapon && (projWeapon.behavior === 'bounceDamageUp' || projWeapon.behavior === 'bounceDamageDown' || projWeapon.behavior === 'leapfrogBounce')) {
+        // BOUNCING BETTY / BOUNCE DAMAGE UP behavior - bounces across map with increasing damage
+        if (projWeapon && (projWeapon.behavior === 'bounceDamageUp' || projWeapon.behavior === 'bouncingBetty')) {
             // Reflect off terrain like bouncer
             const sampleDist = 10;
             const heightLeft = terrain.getHeightAt(proj.x - sampleDist);
@@ -1597,30 +1790,13 @@ function updateProjectile(dt) {
             const nx = -slope / normalLen;
             const ny = -1 / normalLen;
             const dot = proj.vx * nx + proj.vy * ny;
-            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;
-            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
-            if (proj.vy > -3) proj.vy = -3;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.9;  // Less energy loss for more bounces
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.9;
+            if (proj.vy > -4) proj.vy = -4;  // Ensure good bounce height
             proj.y = heightCenter - proj.radius - 2;
 
             // Track damage modifier
             proj.accumulatedDamageBonus = (proj.accumulatedDamageBonus || 0) + (projWeapon.bounceDamageModifier || 0);
-
-            // Leapfrog deals damage on each bounce
-            if (projWeapon.behavior === 'leapfrogBounce') {
-                const bounceDamage = proj.bounces >= proj.maxBounces - 1 ? (projWeapon.finalDamage || 25) : (projWeapon.damage || 10);
-                // Apply damage
-                for (const player of state.players) {
-                    if (player.health <= 0) continue;
-                    const dist = distance(proj.x, proj.y, player.x, player.y);
-                    if (dist < projWeapon.blastRadius) {
-                        const falloff = 1 - (dist / projWeapon.blastRadius);
-                        player.health = Math.max(0, player.health - bounceDamage * falloff);
-                        particles.sparks(player.x, player.y, 10, '#00ff88');
-                    }
-                }
-                terrain.destroy(proj.x, proj.y, projWeapon.blastRadius * 0.5);
-                particles.explosion(proj.x, proj.y, 30, '#00ff88', 40);
-            }
 
             onBounce(proj);
             particles.sparks(proj.x, proj.y, 15, proj.color);
@@ -1628,70 +1804,6 @@ function updateProjectile(dt) {
 
             if (proj.bounces >= proj.maxBounces) {
                 proj.isFinalBounce = true;
-                onExplode(proj);
-                state.projectile = null;
-            }
-            return;
-        }
-
-        // SPLIT ON BOUNCE behavior - split into multiple on first terrain hit
-        if (projWeapon && projWeapon.behavior === 'splitOnBounce' && !proj.hasSplitOnBounce) {
-            proj.hasSplitOnBounce = true;
-            const splitCount = projWeapon.splitCount || 2;
-
-            // Spawn split projectiles
-            for (let i = 0; i < splitCount; i++) {
-                const spreadAngle = ((i / (splitCount - 1)) - 0.5) * Math.PI * 0.5;
-                const baseAngle = Math.atan2(-proj.vy, proj.vx);
-                const newAngle = baseAngle + spreadAngle;
-                const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.8;
-
-                state.projectiles.push({
-                    x: proj.x,
-                    y: terrain.getHeightAt(proj.x) - proj.radius - 5,
-                    vx: Math.cos(newAngle) * speed,
-                    vy: -Math.abs(Math.sin(newAngle) * speed) - 3,
-                    radius: proj.radius * 0.8,
-                    color: proj.color,
-                    bounces: 1,
-                    maxBounces: proj.maxBounces,
-                    trail: [],
-                    weaponKey: proj.weaponKey,
-                    isCluster: true,
-                    hasSplitOnBounce: true,
-                    firedByPlayer: proj.firedByPlayer,
-                    buffedDamageMultiplier: proj.buffedDamageMultiplier,
-                    buffedBlastBonus: proj.buffedBlastBonus
-                });
-            }
-
-            particles.explosion(proj.x, proj.y, 40, proj.color, 50);
-            audio.playBounce();
-            state.projectile = null;
-            return;
-        }
-
-        // MAGNETIC BOUNCE - reflect with standard physics
-        if (projWeapon && projWeapon.behavior === 'magneticBounce') {
-            const sampleDist = 10;
-            const heightLeft = terrain.getHeightAt(proj.x - sampleDist);
-            const heightRight = terrain.getHeightAt(proj.x + sampleDist);
-            const heightCenter = terrain.getHeightAt(proj.x);
-            const slope = (heightRight - heightLeft) / (sampleDist * 2);
-            const normalLen = Math.sqrt(slope * slope + 1);
-            const nx = -slope / normalLen;
-            const ny = -1 / normalLen;
-            const dot = proj.vx * nx + proj.vy * ny;
-            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;
-            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
-            if (proj.vy > -3) proj.vy = -3;
-            proj.y = heightCenter - proj.radius - 2;
-
-            onBounce(proj);
-            particles.sparks(proj.x, proj.y, 15, '#ff66ff');
-            audio.playBounce();
-
-            if (proj.bounces >= proj.maxBounces) {
                 onExplode(proj);
                 state.projectile = null;
             }
@@ -1756,7 +1868,9 @@ function updateProjectile(dt) {
             renderer.addScreenShake(10);
             audio.playBounce();
             state.projectile = null;
-            endTurn();
+            // Note: Don't end turn yet - beacon sequence needs to complete first
+            // tryEndTurn() will wait for orbitalBeacons to resolve
+            tryEndTurn();
             return;
         }
 
@@ -2035,6 +2149,21 @@ function onExplode(proj) {
         renderer.addScreenShake(8);
         audio.playExplosion(0.4);
 
+        // Fire rain leaves napalm fields
+        if (proj.isFireRain && proj.leavesNapalm) {
+            state.fields.push({
+                x: proj.x,
+                y: terrain.getHeightAt(proj.x),
+                radius: blastRadius * 0.8,
+                duration: proj.napalmDuration || 4,
+                timer: proj.napalmDuration || 4,
+                damagePerSec: proj.napalmDamage || 8,
+                color: '#ff4400',
+                type: 'fire',
+                firedByPlayer: firingPlayerIdx
+            });
+        }
+
         // Remove from projectiles array
         const idx = state.projectiles.indexOf(proj);
         if (idx > -1) state.projectiles.splice(idx, 1);
@@ -2065,7 +2194,7 @@ function onExplode(proj) {
             spawnMIRVStage2(proj);
             // Check if any projectiles left
             if (state.projectiles.length === 0) {
-                endTurn();
+                tryEndTurn();  // Check for other pending effects
             }
             return;
         }
@@ -2079,7 +2208,9 @@ function onExplode(proj) {
     const archetypeDamageMultiplier = getArchetypeDamageMultiplier(firingPlayerForDamage);
     const blastBonus = proj.buffedBlastBonus || 0;
     const effectiveBlastRadius = weapon.blastRadius + blastBonus;
-    const effectiveDamage = weapon.damage * buffDamageMultiplier * archetypeDamageMultiplier;
+    // Add accumulated damage bonus for bouncing betty (20 base + bounces * 20)
+    const bounceDamageBonus = proj.accumulatedDamageBonus || 0;
+    const effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier * archetypeDamageMultiplier;
 
     // ENHANCED Visual effects - scale with blast radius
     // RAILGUN gets special high-impact visuals
@@ -2255,36 +2386,53 @@ function onExplode(proj) {
         }
     }
 
-    // HEAVY_SHELL behavior - aftershock damages grounded tanks
-    if (weapon.behavior === 'heavyShell') {
-        const aftershockDamage = weapon.aftershockDamage || 20;
-        const aftershockRadius = weapon.aftershockRadius || 200;
+    // MINI NUKE behavior - tight multi-stage fireball explosion
+    if (weapon.behavior === 'miniNuke') {
+        const stageCount = weapon.explosionStages || 3;
+        const stageDelay = (weapon.stageDelay || 0.15) * 1000;
+        const screenShake = weapon.screenShake || 25;
 
-        // Schedule aftershock (delayed ground shake)
-        setTimeout(() => {
-            // Aftershock visual
-            particles.sparks(proj.x, proj.y, 40, '#886644');
-            renderer.addScreenShake(12);
+        // Massive initial shake
+        renderer.addScreenShake(screenShake);
+        renderer.flash('#ff4400', 0.4);
+        renderer.flash('#ffaa00', 0.3);
 
-            // Damage grounded tanks in aftershock radius
-            for (let i = 0; i < state.players.length; i++) {
-                const player = state.players[i];
-                if (player.health <= 0) continue;
+        // Multi-stage tight explosions
+        for (let stage = 1; stage < stageCount; stage++) {
+            setTimeout(() => {
+                // Each stage creates concentric explosion rings
+                const stageRadius = effectiveBlastRadius * (0.5 + stage * 0.2);
+                particles.explosion(proj.x, proj.y, 50 + stage * 20, '#ff6600', stageRadius * 0.8);
+                particles.explosion(proj.x, proj.y, 30 + stage * 15, '#ffaa00', stageRadius * 0.5);
+                particles.sparks(proj.x, proj.y, 30 + stage * 10, '#ff4444');
 
-                const terrainY = terrain.getHeightAt(player.x);
-                const isGrounded = Math.abs(player.y - terrainY + TANK_RADIUS) < 15;
+                renderer.addScreenShake(screenShake * (1 - stage * 0.2));
+                audio.playExplosion(0.8 - stage * 0.15);
 
-                if (isGrounded) {
+                // Additional damage in stages (diminishing)
+                const stageDamage = effectiveDamage * 0.15 * (1 - stage * 0.3);
+                for (let i = 0; i < state.players.length; i++) {
+                    const player = state.players[i];
+                    if (player.health <= 0) continue;
+
                     const dist = distance(proj.x, proj.y, player.x, player.y);
-                    if (dist < aftershockRadius) {
-                        const falloff = 1 - (dist / aftershockRadius);
-                        const dmg = aftershockDamage * falloff;
+                    if (dist < stageRadius) {
+                        const falloff = 1 - (dist / stageRadius);
+                        const dmg = stageDamage * falloff;
                         player.health = Math.max(0, player.health - dmg);
-                        particles.sparks(player.x, player.y, 15, '#aa6644');
+                        particles.sparks(player.x, player.y, 10, '#ff6600');
+
+                        // Check for kill
+                        if (player.health <= 0 && i !== firingPlayerIndex) {
+                            state.players[firingPlayerIndex].coins += KILL_BONUS;
+                            state.players[firingPlayerIndex].kills++;
+                            triggerDeathExplosion(player, false);
+                            audio.playKill();
+                        }
                     }
                 }
-            }
-        }, 300);  // 300ms delay for aftershock
+            }, stage * stageDelay);
+        }
     }
 
     // QUAKE behavior - DEVASTATING earthquake with terrain fissures
@@ -2452,20 +2600,6 @@ function onExplode(proj) {
             renderer.flash(weapon.color, 0.3);
             renderer.addScreenShake(15);
         }
-    }
-
-    // VOID RIFT behavior - raise the void
-    if (weapon.behavior === 'voidRift') {
-        const voidRiseAmount = weapon.voidRise || 60;
-        state.voidY -= voidRiseAmount;
-
-        // Visual feedback - ominous void pulse
-        particles.explosion(proj.x, state.voidY, 60, '#8800ff', 80);
-        renderer.flash('#8800ff', 0.4);
-        renderer.addScreenShake(18);
-
-        // Consume terrain below the new void level
-        // (This happens naturally when void renders over terrain)
     }
 
     // NAPALM behavior - spawn persistent fire field
@@ -2700,110 +2834,7 @@ function onExplode(proj) {
 
     // ========== NEW WEAPON EXPLOSION BEHAVIORS ==========
 
-    // SCATTER SHELL - cone of fragments on impact
-    if (weapon.behavior === 'scatterCone' && !proj.isCluster) {
-        const fragmentCount = weapon.fragmentCount || 5;
-        const coneAngle = (weapon.coneAngle || 60) * Math.PI / 180;
-        const baseAngle = Math.atan2(proj.vy, proj.vx) + Math.PI;  // Opposite direction
-
-        for (let i = 0; i < fragmentCount; i++) {
-            const spreadAngle = baseAngle + (i / (fragmentCount - 1) - 0.5) * coneAngle;
-            const speed = 6 + Math.random() * 3;
-            state.projectiles.push({
-                x: proj.x,
-                y: proj.y,
-                vx: Math.cos(spreadAngle) * speed,
-                vy: Math.sin(spreadAngle) * speed - 2,
-                radius: 4,
-                color: weapon.color,
-                bounces: 0,
-                maxBounces: 1,
-                trail: [],
-                weaponKey: null,  // CRITICAL: Prevent recursion
-                isCluster: true,
-                isFragment: true,
-                firedByPlayer: proj.firedByPlayer,
-                buffedDamageMultiplier: proj.buffedDamageMultiplier,
-                buffedBlastBonus: proj.buffedBlastBonus,
-                fragmentDamage: weapon.damage,
-                fragmentBlastRadius: weapon.blastRadius
-            });
-        }
-    }
-
-    // NEUTRON BLAST - self damage if within range
-    if (weapon.behavior === 'neutron') {
-        const selfDamageRadius = weapon.selfDamageRadius || 150;
-        const dist = distance(proj.x, proj.y, firingPlayer.x, firingPlayer.y);
-        if (dist < selfDamageRadius) {
-            const falloff = 1 - (dist / selfDamageRadius);
-            const selfDmg = effectiveDamage * falloff * 0.5;  // 50% self damage
-            firingPlayer.health = Math.max(0, firingPlayer.health - selfDmg);
-            particles.sparks(firingPlayer.x, firingPlayer.y, 25, '#88ffff');
-            if (firingPlayer.health <= 0) {
-                triggerDeathExplosion(firingPlayer, false);
-            }
-        }
-    }
-
-    // ENTROPY BURST - random secondary explosions
-    if (weapon.behavior === 'entropyBurst') {
-        const min = weapon.secondaryMin || 3;
-        const max = weapon.secondaryMax || 5;
-        const secondaryCount = min + Math.floor(Math.random() * (max - min + 1));
-
-        for (let i = 0; i < secondaryCount; i++) {
-            const delay = (i + 1) * 200;
-            const offsetX = (Math.random() - 0.5) * 200;
-            const offsetY = (Math.random() - 0.5) * 100;
-            setTimeout(() => {
-                if (state.phase !== 'firing') return;
-                const sx = proj.x + offsetX;
-                const sy = proj.y + offsetY;
-                particles.explosion(sx, sy, 40, '#ff44aa', 50);
-                particles.sparks(sx, sy, 20, '#ffffff');
-                terrain.destroy(sx, sy, 40);
-                renderer.addScreenShake(8);
-                // Apply damage
-                for (const player of state.players) {
-                    if (player.health <= 0) continue;
-                    const d = distance(sx, sy, player.x, player.y);
-                    if (d < 50) {
-                        player.health = Math.max(0, player.health - 20 * (1 - d / 50));
-                    }
-                }
-            }, delay);
-        }
-    }
-
-    // RAIN CLUSTER - cluster with wind effect
-    if (weapon.behavior === 'rainCluster' && !proj.isCluster) {
-        const clusterCount = weapon.clusterCount || 8;
-        const windFactor = weapon.windFactor || 0.5;
-        for (let i = 0; i < clusterCount; i++) {
-            const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.8;  // Mostly upward
-            const speed = 4 + Math.random() * 3;
-            state.projectiles.push({
-                x: proj.x,
-                y: proj.y,
-                vx: Math.cos(angle) * speed + state.wind * windFactor,
-                vy: Math.sin(angle) * speed - 3,
-                radius: 5,
-                color: weapon.color,
-                bounces: 0,
-                maxBounces: 1,
-                trail: [],
-                weaponKey: null,  // CRITICAL: Prevent recursion - sub-projectiles don't inherit behavior
-                isCluster: true,
-                isFragment: true,  // Mark as fragment for standard explosion
-                firedByPlayer: proj.firedByPlayer,
-                buffedDamageMultiplier: proj.buffedDamageMultiplier * 0.5,
-                buffedBlastBonus: 0,
-                fragmentDamage: weapon.damage,  // Store damage for fragment explosion
-                fragmentBlastRadius: weapon.blastRadius
-            });
-        }
-    }
+    // SCATTER SHELL - now fires on launch (shotgun style), no impact behavior needed
 
     // FISSURE - carve terrain crack
     if (weapon.behavior === 'fissure') {
@@ -2814,174 +2845,7 @@ function onExplode(proj) {
         renderer.addScreenShake(25);
     }
 
-    // SPAWN BARRIER
-    if (weapon.behavior === 'spawnBarrier') {
-        state.barriers.push({
-            x: proj.x,
-            y: terrain.getHeightAt(proj.x),
-            width: weapon.barrierWidth || 20,
-            height: weapon.barrierHeight || 200,
-            hitsRemaining: weapon.barrierHits || 3,
-            turnsRemaining: weapon.barrierTurns || 2,
-            ownerId: firingPlayerIndex,
-            color: weapon.color
-        });
-        particles.explosion(proj.x, proj.y, 50, weapon.color, 60);
-    }
-
-    // SPAWN GRAVITY FIELD
-    if (weapon.behavior === 'spawnGravityField') {
-        state.gravityFields.push({
-            x: proj.x,
-            y: proj.y,
-            radius: weapon.fieldRadius || 180,
-            strength: weapon.fieldStrength || 0.15,
-            turnsRemaining: weapon.fieldDuration || 3,
-            pullsTanks: weapon.pullsTanks || false,
-            ownerId: firingPlayerIndex,
-            color: weapon.color
-        });
-        particles.explosion(proj.x, proj.y, 60, weapon.color, 80);
-    }
-
-    // SPAWN NEBULA CLOUD
-    if (weapon.behavior === 'spawnNebulaCloud') {
-        state.visionClouds.push({
-            x: proj.x,
-            y: proj.y,
-            radius: weapon.cloudRadius || 150,
-            duration: weapon.cloudDuration || 4,
-            timer: weapon.cloudDuration || 4,
-            damagePerSec: weapon.cloudDamagePerSec || 5,
-            ownerId: firingPlayerIndex,
-            color: weapon.color
-        });
-        particles.explosion(proj.x, proj.y, 80, weapon.color, weapon.cloudRadius || 150);
-    }
-
-    // INSTANT BEAM (COSMIC RAY) - instant line of damage blocked by terrain
-    if (weapon.behavior === 'instantBeam') {
-        const angleRad = Math.atan2(proj.vy, proj.vx);
-        const maxLength = weapon.maxBeamLength || 2500;
-        const beamWidth = weapon.beamWidth || 6;
-        let beamX = proj.x;
-        let beamY = proj.y;
-
-        // Trace beam until terrain or max length
-        for (let i = 0; i < maxLength; i += 5) {
-            beamX += Math.cos(angleRad) * 5;
-            beamY += Math.sin(angleRad) * 5;
-
-            // Check terrain hit
-            if (terrain.isPointBelowTerrain(beamX, beamY)) {
-                break;
-            }
-
-            // Check player hit
-            for (let p = 0; p < state.players.length; p++) {
-                if (p === firingPlayerIndex) continue;
-                const player = state.players[p];
-                if (player.health <= 0) continue;
-                const dist = distance(beamX, beamY, player.x, player.y);
-                if (dist < beamWidth * 2 + TANK_RADIUS) {
-                    player.health = Math.max(0, player.health - effectiveDamage);
-                    particles.sparks(player.x, player.y, 30, '#ffffff');
-                    if (player.health <= 0) {
-                        triggerDeathExplosion(player, false);
-                        if (p !== firingPlayerIndex) {
-                            firingPlayer.coins += KILL_BONUS;
-                        }
-                    }
-                }
-            }
-
-            // Visual
-            if (Math.random() < 0.2) {
-                particles.trail(beamX, beamY, weapon.color);
-            }
-        }
-
-        renderer.flash('#ffffff', 0.4);
-        renderer.addScreenShake(15);
-    }
-
-    // PULSAR WAVES - 3 waves through terrain
-    if (weapon.behavior === 'pulsarWaves') {
-        const waveCount = weapon.waveCount || 3;
-        const waveDelay = (weapon.waveDelay || 0.4) * 1000;
-        const waveRadius = weapon.waveRadius || 250;
-
-        for (let w = 0; w < waveCount; w++) {
-            setTimeout(() => {
-                if (state.phase !== 'firing') return;
-                // Damage all players in range (ignores terrain)
-                for (let p = 0; p < state.players.length; p++) {
-                    const player = state.players[p];
-                    if (player.health <= 0) continue;
-                    const dist = distance(proj.x, proj.y, player.x, player.y);
-                    if (dist < waveRadius) {
-                        const falloff = 1 - (dist / waveRadius);
-                        const dmg = weapon.damage * falloff;
-                        player.health = Math.max(0, player.health - dmg);
-                        particles.sparks(player.x, player.y, 15, weapon.color);
-                    }
-                }
-                // Visual wave
-                particles.explosion(proj.x, proj.y, 100, weapon.color, waveRadius * (0.5 + w * 0.2));
-                renderer.addScreenShake(10);
-            }, w * waveDelay);
-        }
-    }
-
-    // CASCADE EXPLOSION - chain toward target
-    if (weapon.behavior === 'cascadeExplosion') {
-        const cascadeCount = weapon.cascadeCount || 5;
-        const spacing = weapon.cascadeSpacing || 80;
-        const firingPlayer2 = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-
-        // Find nearest enemy for cascade direction
-        let targetPlayer = null;
-        let minDist = Infinity;
-        for (let i = 0; i < state.players.length; i++) {
-            if (i === firingPlayer2) continue;
-            const p = state.players[i];
-            if (p.health <= 0) continue;
-            const d = distance(proj.x, proj.y, p.x, p.y);
-            if (d < minDist) {
-                minDist = d;
-                targetPlayer = p;
-            }
-        }
-
-        const angle = targetPlayer
-            ? Math.atan2(targetPlayer.y - proj.y, targetPlayer.x - proj.x)
-            : Math.random() * Math.PI * 2;
-
-        for (let c = 0; c < cascadeCount; c++) {
-            setTimeout(() => {
-                if (state.phase !== 'firing') return;
-                // Clamp cascade explosions to world boundaries
-                const cx = Math.max(WORLD_LEFT + 50, Math.min(WORLD_RIGHT - 50,
-                    proj.x + Math.cos(angle) * spacing * (c + 1)));
-                const cy = Math.max(WORLD_TOP + 50, Math.min(VIRTUAL_HEIGHT - 50,
-                    proj.y + Math.sin(angle) * spacing * (c + 1)));
-                particles.explosion(cx, cy, 50, weapon.color, 60);
-                terrain.destroy(cx, cy, 50);
-                renderer.addScreenShake(8);
-                // Damage
-                for (let p = 0; p < state.players.length; p++) {
-                    const player = state.players[p];
-                    if (player.health <= 0) continue;
-                    const dist = distance(cx, cy, player.x, player.y);
-                    if (dist < 60) {
-                        player.health = Math.max(0, player.health - weapon.damage * (1 - dist / 60));
-                    }
-                }
-            }, c * 100);
-        }
-    }
-
-    // BLACK HOLE GRENADE - spawn black hole
+    // BLACK HOLE GRENADE - spawn black hole with powerful tank pull
     if (weapon.behavior === 'blackHole') {
         state.blackHoles.push({
             x: proj.x,
@@ -2991,29 +2855,14 @@ function onExplode(proj) {
             timer: 0,
             duration: weapon.pullDuration || 1.5,
             pullsTanks: weapon.pullsTanks || true,
+            tankPullMultiplier: weapon.tankPullMultiplier || 1,
             ownerId: firingPlayerIndex,
             color: weapon.color
         });
         particles.explosion(proj.x, proj.y, 40, '#220044', 60);
-    }
-
-    // SUPERNOVA - screen-wide damage to ALL
-    if (weapon.behavior === 'supernova') {
-        const screenDamage = weapon.damage;
-        for (let p = 0; p < state.players.length; p++) {
-            const player = state.players[p];
-            if (player.health <= 0) continue;
-            player.health = Math.max(0, player.health - screenDamage);
-            particles.sparks(player.x, player.y, 40, '#ffffff');
-            if (player.health <= 0) {
-                triggerDeathExplosion(player, false);
-            }
-        }
-        // MASSIVE visual
-        particles.explosion(proj.x, proj.y, 300, '#ffffff', VIRTUAL_WIDTH);
-        renderer.flash('#ffffff', 0.8);
-        renderer.addScreenShake(60);
-        audio.playExplosion(2.0);
+        // Initial visual impact
+        renderer.addScreenShake(15);
+        audio.playExplosion(0.7);
     }
 
     // VOID CANNON BEAM - spawn delayed vertical beam
@@ -3057,41 +2906,13 @@ function onExplode(proj) {
         }
     }
 
-    // ARMAGEDDON PROTOCOL - spawn random projectiles (only from original projectile, not sub-projectiles)
-    if (weapon.behavior === 'armageddon' && !proj.isCluster) {
-        const count = weapon.projectileCount || 10;
-        for (let i = 0; i < count; i++) {
-            const delay = i * 150;
-            setTimeout(() => {
-                if (state.phase !== 'firing') return;
-                const sx = WORLD_LEFT + Math.random() * (WORLD_RIGHT - WORLD_LEFT);
-                state.projectiles.push({
-                    x: sx,
-                    y: WORLD_TOP + 50,
-                    vx: (Math.random() - 0.5) * 5,
-                    vy: 6 + Math.random() * 4,
-                    radius: weapon.projectileRadius,
-                    color: weapon.color,
-                    bounces: 0,
-                    maxBounces: weapon.bounces,
-                    trail: [],
-                    weaponKey: null,  // CRITICAL: Prevent recursion - sub-projectiles don't trigger behaviors
-                    isCluster: true,
-                    isFragment: true,
-                    fragmentDamage: weapon.damage,
-                    fragmentBlastRadius: weapon.blastRadius,
-                    firedByPlayer: firingPlayerIndex,
-                    buffedDamageMultiplier: 1,
-                    buffedBlastBonus: 0
-                });
-                particles.sparks(sx, WORLD_TOP + 50, 20, weapon.color);
-            }, delay);
+    // BOUNCING BETTY / BOUNCE DAMAGE modifiers - accumulated bonus already applied to effectiveDamage
+    if ((weapon.behavior === 'bounceDamageUp' || weapon.behavior === 'bouncingBetty') && proj.accumulatedDamageBonus) {
+        // Extra visual feedback for high-bounce explosions
+        if (proj.accumulatedDamageBonus >= 100) {
+            particles.explosion(proj.x, proj.y, 80, '#ff8888', effectiveBlastRadius);
+            renderer.addScreenShake(20);
         }
-    }
-
-    // BOUNCE DAMAGE modifiers - apply accumulated bonus
-    if ((weapon.behavior === 'bounceDamageUp' || weapon.behavior === 'bounceDamageDown') && proj.accumulatedDamageBonus) {
-        // Damage was already applied in terrain collision, just ensure coins are awarded
     }
 
     // Award coins for damage dealt to enemies
@@ -3143,13 +2964,13 @@ function onExplode(proj) {
 
         // Only end turn when all bomblets are done
         if (state.projectiles.length === 0) {
-            endTurn();
+            tryEndTurn();  // Check for other pending effects
         }
         return;
     }
 
-    // Start resolving phase
-    endTurn();
+    // Start resolving phase - use tryEndTurn to check for pending effects
+    tryEndTurn();
 }
 
 function spawnClusterBombs(proj) {
@@ -3465,12 +3286,61 @@ function spawnMIRVStage2(proj) {
 // Turn System
 // ============================================================================
 
+/**
+ * Check if there are any pending weapon effects that need to resolve
+ * before the turn can end. This includes orbital weapons, nukes, etc.
+ */
+function hasPendingEffects() {
+    // Check for active projectiles (including bomblets, strafe bullets, etc.)
+    if (state.projectile) return true;
+    if (state.projectiles && state.projectiles.length > 0) return true;
+
+    // Check for pending orbital/delayed weapons
+    if (state.nukes && state.nukes.length > 0) return true;
+    if (state.voidCannonBeams && state.voidCannonBeams.length > 0) return true;
+    if (state.strafingRuns && state.strafingRuns.length > 0) return true;
+    if (state.pendingMeteors && state.pendingMeteors.length > 0) return true;
+    if (state.blackHoles && state.blackHoles.length > 0) return true;
+
+    // Check for railgun beam (has timer)
+    if (state.railgunBeam) return true;
+
+    // Check for active orbital beacons (targeting → firing sequence)
+    if (state.orbitalBeacons && state.orbitalBeacons.length > 0) return true;
+
+    // Check for active orbital strikes (beacon called but not yet fired)
+    if (state.orbitalStrikes && state.orbitalStrikes.length > 0) return true;
+
+    return false;
+}
+
+/**
+ * Attempt to end the turn - only proceeds if no pending effects
+ * Call this instead of endTurn() when a weapon effect completes
+ */
+function tryEndTurn() {
+    // If there are still pending effects, don't end yet
+    if (hasPendingEffects()) {
+        return;
+    }
+
+    // All effects resolved, actually end the turn
+    endTurn();
+}
+
 function endTurn() {
     // Prevent multiple calls in same resolution window (race condition guard)
     if (state.turnEndLocked) return;
 
-    // Phase guard: Don't end turn during shop or if already resolving/gameover
-    if (state.phase === 'shop' || state.phase === 'gameover' || state.phase === 'resolving') {
+    // Phase guard: Don't end turn during lottery or if already resolving/gameover
+    if (state.phase === 'lottery' || state.phase === 'gameover' || state.phase === 'resolving') {
+        return;
+    }
+
+    // NEW: Check for pending effects - if any exist, wait for them
+    if (hasPendingEffects()) {
+        // Mark that we're waiting for effects to resolve
+        state.phase = 'firing';  // Stay in firing phase
         return;
     }
 
@@ -3525,6 +3395,9 @@ function endTurn() {
             applyTurnStartAbilities(currentPlayer);
         }
 
+        // Apply radiation damage to current player (PLASMA_BOLT)
+        applyRadiationDamage(state.currentPlayer);
+
         // Handle Dying Light expiration for current player
         if (state.dyingStarTurns[state.currentPlayer] > 0) {
             state.dyingStarTurns[state.currentPlayer]--;
@@ -3537,15 +3410,12 @@ function endTurn() {
         }
 
         // Full round = every NUM_PLAYERS turns (stable, regardless of deaths)
-        // FIX: Use NUM_PLAYERS instead of playersAlive to prevent premature shop triggering
+        // FIX: Use NUM_PLAYERS instead of playersAlive for stable round progression
         const isNewRound = state.turnCount > 0 && state.turnCount % NUM_PLAYERS === 0;
 
         if (isNewRound) {
             // Increment stable round counter
             state.round++;
-
-            // Decrement turns for barriers and gravity fields
-            decrementFieldTurns();
 
             state.voidY -= VOID_RISE_PER_ROUND;
 
@@ -3573,24 +3443,13 @@ function endTurn() {
                 state.activeEvent = null;
             }
 
-            // Transition to shop phase (skip shop on round 1)
-            if (state.round > 1) {
-                state.turnEndLocked = false;  // Unlock turn guard
-                enterShopPhase();
-                return;  // Don't continue to aiming yet
-            }
-
             // Roll new glitch event for this round
             rollNewGlitchEvent();
         }
 
-        state.phase = 'aiming';
+        // Cosmic Lottery: Every turn starts with weapon selection
         state.turnEndLocked = false;  // Unlock turn guard
-
-        // Prepare AI if next player is AI
-        if (getCurrentPlayer().isAI) {
-            prepareAITurn();
-        }
+        startLottery();  // This will set phase to 'lottery' or 'aiming' (for AI)
     }, TURN_DELAY_MS);
 }
 
@@ -3608,404 +3467,282 @@ function rollNewGlitchEvent() {
 }
 
 // ============================================================================
-// Shop System
+// Cosmic Lottery System
 // ============================================================================
 
 /**
- * Generate random weapon offerings for the shop
- * Ensures mix of tiers: 1 cheap, 2 mid, 2 premium, 1 spectacle
+ * Roll a rarity based on configured rates
+ * Returns: 'common' | 'rare' | 'epic' | 'legendary'
  */
-function generateShopOfferings() {
-    const offerings = [];
-    const byTier = {
-        CHEAP: [],
-        MID: [],
-        PREMIUM: [],
-        SPECTACLE: []
+function rollRarity() {
+    const roll = Math.random() * 100;
+    const { common, rare, epic } = LOTTERY_RARITY_RATES;
+
+    // Cumulative thresholds: legendary (0-10), epic (10-25), rare (25-50), common (50-100)
+    if (roll < LOTTERY_RARITY_RATES.legendary) return 'legendary';
+    if (roll < LOTTERY_RARITY_RATES.legendary + epic) return 'epic';
+    if (roll < LOTTERY_RARITY_RATES.legendary + epic + rare) return 'rare';
+    return 'common';
+}
+
+/**
+ * Generate a single lottery card of a specific rarity
+ */
+function rollCardOfRarity(rarity) {
+    const pool = WEAPONS_BY_RARITY[rarity];
+    if (!pool || pool.length === 0) {
+        // Fallback to common if rarity pool is empty
+        const fallbackPool = WEAPONS_BY_RARITY.common;
+        const weaponKey = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+        return createCard(weaponKey, 'common');
+    }
+    const weaponKey = pool[Math.floor(Math.random() * pool.length)];
+    return createCard(weaponKey, rarity);
+}
+
+/**
+ * Create a card object from weapon key and rarity
+ */
+function createCard(weaponKey, rarity) {
+    const weapon = WEAPONS[weaponKey];
+    return {
+        weaponKey,
+        rarity,
+        name: weapon.name,
+        damage: weapon.damage,
+        blastRadius: weapon.blastRadius,
+        description: weapon.description || ''
     };
-
-    // Sort weapons by tier
-    for (const key of WEAPON_KEYS) {
-        const weapon = WEAPONS[key];
-        byTier[weapon.tier].push(key);
-    }
-
-    // Shuffle each tier
-    for (const tier in byTier) {
-        byTier[tier].sort(() => Math.random() - 0.5);
-    }
-
-    // Pick: 1 cheap, 2 mid, 2 premium, 1 spectacle
-    if (byTier.CHEAP.length > 0) offerings.push(byTier.CHEAP[0]);
-    if (byTier.MID.length > 0) offerings.push(byTier.MID[0]);
-    if (byTier.MID.length > 1) offerings.push(byTier.MID[1]);
-    if (byTier.PREMIUM.length > 0) offerings.push(byTier.PREMIUM[0]);
-    if (byTier.PREMIUM.length > 1) offerings.push(byTier.PREMIUM[1]);
-    if (byTier.SPECTACLE.length > 0) offerings.push(byTier.SPECTACLE[0]);
-
-    // Sort by cost for display
-    offerings.sort((a, b) => WEAPONS[a].cost - WEAPONS[b].cost);
-
-    // Add orbital weapons if stock remaining (always at end, sorted by cost)
-    const orbitalOfferings = [];
-    for (const key of ORBITAL_WEAPON_KEYS) {
-        const stock = state.orbitalStock[key];
-        if (stock && stock.remaining > 0) {
-            orbitalOfferings.push(key);
-        }
-    }
-    orbitalOfferings.sort((a, b) => WEAPONS[a].cost - WEAPONS[b].cost);
-    offerings.push(...orbitalOfferings);
-
-    return offerings;
 }
 
 /**
- * Find next human player who needs to shop
+ * Roll a single random card
  */
-function findNextShoppingPlayer(currentIdx) {
-    for (let i = currentIdx + 1; i < state.players.length; i++) {
-        const p = state.players[i];
-        if (!p.isAI && p.health > 0 && !state.shopReady[i]) {
-            return i;
-        }
-    }
-    return -1;  // No more human players to shop
+function rollCard() {
+    const rarity = rollRarity();
+    return rollCardOfRarity(rarity);
 }
 
 /**
- * Enter the shop phase between rounds
+ * Generate 3 lottery cards with pity system
  */
-function enterShopPhase() {
-    state.phase = 'shop';
-    state.shopOfferings = generateShopOfferings();
-    state.shopSelections = new Array(state.players.length).fill(0);
-    state.shopReady = new Array(state.players.length).fill(false);
+function generateLotteryCards() {
+    let cards = [rollCard(), rollCard(), rollCard()];
 
-    // Mark dead players as ready
-    for (let i = 0; i < state.players.length; i++) {
-        if (state.players[i].health <= 0) {
-            state.shopReady[i] = true;
+    // Pity system: guarantee rare+ if 5 turns without one
+    if (state.lottery.pityCounter >= 5) {
+        const hasRarePlus = cards.some(c =>
+            c.rarity === 'rare' || c.rarity === 'epic' || c.rarity === 'legendary'
+        );
+        if (!hasRarePlus) {
+            // Upgrade the first card to rare
+            cards[0] = rollCardOfRarity('rare');
         }
     }
 
-    // Find first human player who needs to shop
-    state.shoppingPlayerIndex = findNextShoppingPlayer(-1);
-
-    // If no human players need to shop, let AI finish
-    if (state.shoppingPlayerIndex < 0) {
-        for (let i = 0; i < state.players.length; i++) {
-            if (state.players[i].isAI && state.players[i].health > 0) {
-                aiShopSelectFor(i);
-            }
-        }
-    }
-
-    checkShopComplete();
-}
-
-/**
- * AI weapon selection with strategic ROI-based logic
- */
-function aiShopSelectFor(playerIndex) {
-    const ai = state.players[playerIndex];
-    if (ai.health <= 0) {
-        state.shopReady[playerIndex] = true;
-        return;
-    }
-
-    // Analyze game state for strategic decisions
-    const enemies = state.players.filter((p, i) => i !== playerIndex && p.health > 0);
-    const avgEnemyHealth = enemies.length > 0 ? enemies.reduce((sum, p) => sum + p.health, 0) / enemies.length : 50;
-    const lowestEnemyHealth = enemies.length > 0 ? Math.min(...enemies.map(p => p.health)) : 50;
-    const round = getCurrentRound();
-
-    // Check if enemies are clustered (for AoE weapons)
-    let enemiesClustered = false;
-    if (enemies.length >= 2) {
-        const xs = enemies.map(p => p.x);
-        const spread = Math.max(...xs) - Math.min(...xs);
-        enemiesClustered = spread < 400;  // Within 400 units = clustered
-    }
-
-    // Check orbital weapon availability and affordability
-    const orbitalBeaconAvailable = state.orbitalStock.ORBITAL_BEACON.remaining > 0;
-    const strafingRunAvailable = state.orbitalStock.STRAFING_RUN.remaining > 0;
-    const railgunAvailable = state.orbitalStock.RAILGUN.remaining > 0;
-    const nukeAvailable = state.orbitalStock.NUKE.remaining > 0;
-    const orbitalBeaconCost = WEAPONS.ORBITAL_BEACON?.cost || 150;
-    const strafingRunCost = WEAPONS.STRAFING_RUN?.cost || 200;
-    const railgunCost = WEAPONS.RAILGUN?.cost || 120;
-    const nukeCost = WEAPONS.NUKE?.cost || 250;
-
-    // Strategic saving: If close to affording orbital weapons, save coins
-    const turnsToOrbital = 2;
-    const expectedCoinsPerTurn = SURVIVAL_BONUS + 15;  // Survival + damage coins estimate
-    const coinsInTurns = ai.coins + expectedCoinsPerTurn * turnsToOrbital;
-
-    // Find lowest health enemy for finishing blow consideration
-    const canFinishWithNuke = lowestEnemyHealth <= 180;
-
-    // Prioritize NUKE for finishing blow or late game devastation
-    if (nukeAvailable && ai.coins >= nukeCost && (round >= 4 || canFinishWithNuke)) {
-        const idx = state.shopOfferings.indexOf('NUKE');
-        if (idx >= 0) {
-            state.shopSelections[playerIndex] = idx;
-            ai.coins -= nukeCost;
-            state.storedWeapons[playerIndex] = ai.weapon;
-            ai.weapon = 'NUKE';
-            state.orbitalStock.NUKE.remaining--;
-            audio.playPurchase();
-            state.shopReady[playerIndex] = true;
-            return;
-        }
-    }
-
-    // Prioritize RAILGUN for precision shots
-    if (railgunAvailable && ai.coins >= railgunCost && round >= 2) {
-        const idx = state.shopOfferings.indexOf('RAILGUN');
-        if (idx >= 0) {
-            state.shopSelections[playerIndex] = idx;
-            ai.coins -= railgunCost;
-            state.storedWeapons[playerIndex] = ai.weapon;
-            ai.weapon = 'RAILGUN';
-            state.orbitalStock.RAILGUN.remaining--;
-            audio.playPurchase();
-            state.shopReady[playerIndex] = true;
-            return;
-        }
-    }
-
-    // Prioritize orbital weapons if available and affordable
-    if (orbitalBeaconAvailable && ai.coins >= orbitalBeaconCost && round >= 3) {
-        const idx = state.shopOfferings.indexOf('ORBITAL_BEACON');
-        if (idx >= 0) {
-            state.shopSelections[playerIndex] = idx;
-            ai.coins -= orbitalBeaconCost;
-            state.storedWeapons[playerIndex] = ai.weapon;
-            ai.weapon = 'ORBITAL_BEACON';
-            state.orbitalStock.ORBITAL_BEACON.remaining--;
-            audio.playPurchase();
-            state.shopReady[playerIndex] = true;
-            return;
-        }
-    }
-
-    if (strafingRunAvailable && ai.coins >= strafingRunCost && enemies.length >= 2) {
-        const idx = state.shopOfferings.indexOf('STRAFING_RUN');
-        if (idx >= 0) {
-            state.shopSelections[playerIndex] = idx;
-            ai.coins -= strafingRunCost;
-            state.storedWeapons[playerIndex] = ai.weapon;
-            ai.weapon = 'STRAFING_RUN';
-            state.orbitalStock.STRAFING_RUN.remaining--;
-            audio.playPurchase();
-            state.shopReady[playerIndex] = true;
-            return;
-        }
-    }
-
-    // Save for orbital if close to affording (prioritize by power)
-    const bestOrbitalCost = Math.min(
-        nukeAvailable ? nukeCost : Infinity,
-        railgunAvailable ? railgunCost : Infinity,
-        orbitalBeaconAvailable ? orbitalBeaconCost : Infinity,
-        strafingRunAvailable ? strafingRunCost : Infinity
+    // Update pity counter
+    const hasRarePlus = cards.some(c =>
+        c.rarity === 'rare' || c.rarity === 'epic' || c.rarity === 'legendary'
     );
-    if (bestOrbitalCost < Infinity && coinsInTurns >= bestOrbitalCost && ai.coins < bestOrbitalCost) {
-        // Skip buying, save for orbital
-        state.shopReady[playerIndex] = true;
+    state.lottery.pityCounter = hasRarePlus ? 0 : state.lottery.pityCounter + 1;
+
+    return cards;
+}
+
+/**
+ * AI selects the best card from lottery options
+ * Strategy: prefer higher rarity, then higher damage
+ */
+function aiSelectBestCard(cards) {
+    const rarityOrder = { legendary: 4, epic: 3, rare: 2, common: 1 };
+
+    return cards.reduce((best, card) => {
+        const bestRank = rarityOrder[best.rarity] || 0;
+        const cardRank = rarityOrder[card.rarity] || 0;
+
+        if (cardRank > bestRank) return card;
+        if (cardRank === bestRank && card.damage > best.damage) return card;
+        return best;
+    }, cards[0]);
+}
+
+/**
+ * Show floating notification when AI picks a card
+ */
+function showAIPickNotification(player, card, playerIndex) {
+    state.lotteryNotifications.push({
+        text: `P${playerIndex + 1} picked ${card.name}`,
+        color: player.color,
+        x: player.x,
+        y: player.y - 80,
+        timer: 2.0,
+        rarity: card.rarity
+    });
+}
+
+/**
+ * Start the lottery for the current player
+ */
+function startLottery() {
+    const player = getCurrentPlayer();
+    const playerIndex = state.currentPlayer;
+
+    // Skip dead players
+    if (player.health <= 0) {
+        // Move directly to aiming (will skip in update)
+        state.phase = 'aiming';
+        if (player.isAI) {
+            prepareAITurn();
+        }
         return;
     }
 
-    // Score each weapon based on situation
-    let bestIndex = -1;
-    let bestScore = -Infinity;
+    // AI picks instantly - no animation
+    if (player.isAI) {
+        const cards = generateLotteryCards();
+        const bestCard = aiSelectBestCard(cards);
+        player.weapon = bestCard.weaponKey;
 
-    for (let i = 0; i < state.shopOfferings.length; i++) {
-        const weaponKey = state.shopOfferings[i];
-        const weapon = WEAPONS[weaponKey];
+        // Show floating notification
+        showAIPickNotification(player, bestCard, playerIndex);
 
-        if (weapon.cost > ai.coins) continue;
-        if (weapon.tier === 'ORBITAL') continue;  // Already handled above
-
-        // Base score: damage per coin (ROI)
-        let score = (weapon.damage * (weapon.blastRadius / 50)) / Math.max(weapon.cost, 1);
-
-        // Bonus for high damage when enemy is low health
-        if (lowestEnemyHealth <= 40 && weapon.damage >= 80) {
-            score += 50;  // Finishing blow potential
-        }
-
-        // Bonus for AoE when enemies clustered
-        if (enemiesClustered && weapon.blastRadius >= 100) {
-            score += 30;
-        }
-
-        // Bonus for cluster/spread weapons vs multiple enemies
-        if (enemies.length >= 2 && (weapon.behavior === 'cluster' || weapon.behavior === 'splitterAirburst')) {
-            score += 25;
-        }
-
-        // Bonus for terrain weapons (digger, dirt ball) for strategic play
-        if (weapon.terrainEffect && round >= 4) {
-            score += 15;
-        }
-
-        // Bonus for nuke in late game
-        if (weapon.behavior === 'nuke' && round >= 5) {
-            score += 40;
-        }
-
-        // Penalty for very expensive weapons early game
-        if (round <= 2 && weapon.cost > 80) {
-            score -= 20;
-        }
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestIndex = i;
-        }
-    }
-
-    // If found good weapon, buy it
-    if (bestIndex >= 0) {
-        state.shopSelections[playerIndex] = bestIndex;
-        const weaponKey = state.shopOfferings[bestIndex];
-        ai.coins -= WEAPONS[weaponKey].cost;
-        ai.weapon = weaponKey;
-        audio.playPurchase();
-    }
-
-    state.shopReady[playerIndex] = true;
-}
-
-/**
- * Handle player shop input (cycles through human players)
- */
-function handleShopInput() {
-    const playerIndex = state.shoppingPlayerIndex;
-
-    // If no human player is shopping, let AI finish and check
-    if (playerIndex < 0) {
-        for (let i = 0; i < state.players.length; i++) {
-            if (state.players[i].isAI && state.players[i].health > 0 && !state.shopReady[i]) {
-                aiShopSelectFor(i);
-            }
-        }
-        checkShopComplete();
-        return;
-    }
-
-    const player = state.players[playerIndex];
-
-    if (state.shopReady[playerIndex]) return;
-
-    // Navigate selection
-    if (input.wasPressed('ArrowUp')) {
-        state.shopSelections[playerIndex]--;
-        if (state.shopSelections[playerIndex] < 0) {
-            state.shopSelections[playerIndex] = state.shopOfferings.length;  // +1 for "Keep Current"
-        }
-        audio.playSelect();
-    }
-    if (input.wasPressed('ArrowDown')) {
-        state.shopSelections[playerIndex]++;
-        if (state.shopSelections[playerIndex] > state.shopOfferings.length) {
-            state.shopSelections[playerIndex] = 0;
-        }
-        audio.playSelect();
-    }
-
-    // Confirm selection with Space or Enter
-    if (input.spaceReleased || input.enter) {
-        const selection = state.shopSelections[playerIndex];
-
-        if (selection < state.shopOfferings.length) {
-            // Buying a weapon
-            const weaponKey = state.shopOfferings[selection];
-            const weapon = WEAPONS[weaponKey];
-
-            // Check orbital stock if applicable
-            const orbitalStock = state.orbitalStock[weaponKey];
-            if (orbitalStock && orbitalStock.remaining <= 0) {
-                // Out of stock - play error
-                audio.playError();
-            } else if (player.coins >= weapon.cost) {
-                player.coins -= weapon.cost;
-
-                // Store previous weapon before equipping orbital weapon
-                if (weapon.tier === 'ORBITAL') {
-                    state.storedWeapons[playerIndex] = player.weapon;
-                }
-
-                player.weapon = weaponKey;
-                state.shopReady[playerIndex] = true;
-                audio.playPurchase();
-
-                // Decrement orbital stock if applicable
-                if (orbitalStock) {
-                    orbitalStock.remaining--;
-                }
-
-                // Advance to next human player
-                advanceShopToNextPlayer();
-            } else {
-                // Can't afford - play error sound
-                audio.playError();
-            }
-        } else {
-            // Keep current weapon
-            state.shopReady[playerIndex] = true;
-            audio.playConfirm();
-            advanceShopToNextPlayer();
-        }
-
-        checkShopComplete();
-    }
-}
-
-/**
- * Advance shop to next human player, or let AI finish
- */
-function advanceShopToNextPlayer() {
-    state.shoppingPlayerIndex = findNextShoppingPlayer(state.shoppingPlayerIndex);
-
-    // If no more humans, let AI finish
-    if (state.shoppingPlayerIndex < 0) {
-        for (let i = 0; i < state.players.length; i++) {
-            if (state.players[i].isAI && state.players[i].health > 0 && !state.shopReady[i]) {
-                aiShopSelectFor(i);
-            }
-        }
-    }
-}
-
-/**
- * Check if all players are ready to exit shop
- */
-function checkShopComplete() {
-    // Check if all living players are ready (dead players are auto-marked ready)
-    const allLivingReady = state.players.every((p, i) =>
-        p.health <= 0 || state.shopReady[i]
-    );
-    if (allLivingReady) {
-        exitShopPhase();
-    }
-}
-
-/**
- * Exit shop and continue to next round
- */
-function exitShopPhase() {
-    // Roll new glitch event for this round
-    rollNewGlitchEvent();
-
-    state.phase = 'aiming';
-
-    // Prepare AI if next player is AI
-    if (getCurrentPlayer().isAI) {
+        // Skip to aiming
+        state.phase = 'aiming';
         prepareAITurn();
+        return;
+    }
+
+    // Human player gets full lottery UI
+    state.phase = 'lottery';
+    state.lottery.active = true;
+    state.lottery.cards = generateLotteryCards();
+    state.lottery.selectedIndex = 0;
+    state.lottery.animationPhase = 'descending';
+    state.lottery.animationTimer = 0;
+}
+
+/**
+ * Select a card from the lottery
+ */
+function selectLotteryCard(index) {
+    const card = state.lottery.cards[index];
+    const player = getCurrentPlayer();
+
+    // Assign weapon for this turn
+    player.weapon = card.weaponKey;
+
+    // Play sound based on rarity
+    if (card.rarity === 'legendary') {
+        audio.playExplosion();  // Big fanfare
+        renderer.addScreenShake(10);
+    } else if (card.rarity === 'epic') {
+        audio.playConfirm();
+    } else {
+        audio.playSelect();
+    }
+
+    // Begin dismiss animation
+    state.lottery.animationPhase = 'dismissing';
+    state.lottery.animationTimer = 0;
+}
+
+/**
+ * Handle lottery input
+ */
+function handleLotteryInput() {
+    // Only process input during selection phase
+    if (state.lottery.animationPhase !== 'selecting') return;
+
+    const player = getCurrentPlayer();
+
+    // Number keys for direct selection
+    if (input.wasPressed('Digit1') || input.wasPressed('Numpad1')) {
+        selectLotteryCard(0);
+        return;
+    }
+    if (input.wasPressed('Digit2') || input.wasPressed('Numpad2')) {
+        selectLotteryCard(1);
+        return;
+    }
+    if (input.wasPressed('Digit3') || input.wasPressed('Numpad3')) {
+        selectLotteryCard(2);
+        return;
+    }
+
+    // Reroll with R
+    if (input.wasPressed('KeyR') && player.rerollsRemaining > 0) {
+        player.rerollsRemaining--;
+        state.lottery.cards = generateLotteryCards();
+        state.lottery.animationPhase = 'descending';
+        state.lottery.animationTimer = 0;
+        audio.playSelect();
+        return;
+    }
+
+    // Arrow key navigation
+    if (input.wasPressed('ArrowLeft')) {
+        state.lottery.selectedIndex = Math.max(0, state.lottery.selectedIndex - 1);
+        audio.playSelect();
+    }
+    if (input.wasPressed('ArrowRight')) {
+        state.lottery.selectedIndex = Math.min(2, state.lottery.selectedIndex + 1);
+        audio.playSelect();
+    }
+
+    // Confirm with Enter/Space
+    if (input.wasPressed('Enter') || input.spaceReleased) {
+        selectLotteryCard(state.lottery.selectedIndex);
+    }
+}
+
+/**
+ * Update lottery animation state
+ */
+function updateLottery(dt) {
+    if (!state.lottery.active) return;
+
+    state.lottery.animationTimer += dt * 1000;  // Convert to ms
+
+    switch (state.lottery.animationPhase) {
+        case 'descending':
+            if (state.lottery.animationTimer >= 400) {
+                state.lottery.animationPhase = 'revealing';
+                state.lottery.animationTimer = 0;
+            }
+            break;
+
+        case 'revealing':
+            if (state.lottery.animationTimer >= 300) {
+                state.lottery.animationPhase = 'selecting';
+                state.lottery.animationTimer = 0;
+            }
+            break;
+
+        case 'selecting':
+            // Wait for player input (handled in handleLotteryInput)
+            break;
+
+        case 'dismissing':
+            if (state.lottery.animationTimer >= 300) {
+                state.lottery.active = false;
+                state.lottery.animationPhase = 'none';
+                state.phase = 'aiming';
+            }
+            break;
+    }
+}
+
+/**
+ * Update lottery notifications (floating text)
+ */
+function updateLotteryNotifications(dt) {
+    for (let i = state.lotteryNotifications.length - 1; i >= 0; i--) {
+        const notif = state.lotteryNotifications[i];
+        notif.timer -= dt;
+        notif.y -= dt * 30;  // Float upward
+        if (notif.timer <= 0) {
+            state.lotteryNotifications.splice(i, 1);
+        }
     }
 }
 
@@ -4644,10 +4381,13 @@ function update(dt) {
     // Update terrain circuit pulse animations
     terrain.updateCircuitPulses(dt);
 
+    // Update lottery notifications (floating text from AI picks)
+    updateLotteryNotifications(dt);
+
     // ========================================================================
     // DEBUG COMMANDS (active during gameplay phases)
     // ========================================================================
-    if (state.phase === 'aiming' || state.phase === 'firing' || state.phase === 'shop') {
+    if (state.phase === 'aiming' || state.phase === 'firing' || state.phase === 'lottery') {
         // D = Give current player DYING LIGHT
         if (input.wasPressed('KeyD')) {
             const player = getCurrentPlayer();
@@ -4741,11 +4481,11 @@ function update(dt) {
             audio.playPurchase();
         }
 
-        // A = Give current player ARMAGEDDON_PROTOCOL
-        if (input.wasPressed('KeyA')) {
+        // G = Give current player VOID_CANNON
+        if (input.wasPressed('KeyG')) {
             const player = getCurrentPlayer();
-            player.weapon = 'ARMAGEDDON_PROTOCOL';
-            console.log(`[DEBUG] P${state.currentPlayer + 1} got ARMAGEDDON PROTOCOL`);
+            player.weapon = 'VOID_CANNON';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got VOID CANNON`);
             audio.playPurchase();
         }
 
@@ -4832,10 +4572,11 @@ function update(dt) {
         return;
     }
 
-    // Shop phase
-    if (state.phase === 'shop') {
-        handleShopInput();
-        // DON'T return early - let nukes update during shop!
+    // Lottery phase
+    if (state.phase === 'lottery') {
+        handleLotteryInput();
+        updateLottery(dt);
+        // DON'T return early - let nukes update during lottery!
     }
 
     const player = getCurrentPlayer();
@@ -4977,14 +4718,16 @@ function update(dt) {
     updateDesperationBeacons(dt);
 
     // Update new weapon systems
-    updateBarriers(dt);
-    updateGravityFields(dt);
-    updateVisionClouds(dt);
-    updateOrbitingProjectiles(dt);
     updateBlackHoles(dt);
     updatePendingMeteors(dt);
     updateVoidCannonBeams(dt);
     updateLightningArc(dt);
+
+    // Check if all weapon effects have resolved and we can end the turn
+    // This catches cases where endTurn() was called but effects were still pending
+    if (state.phase === 'firing' && !hasPendingEffects()) {
+        tryEndTurn();
+    }
 
     // Update nuke shockwave effect
     if (state.nukeShockwave) {
@@ -5138,197 +4881,6 @@ function updateNukes(dt) {
 // ============================================================================
 
 /**
- * Update barriers - decrement turns at turn end, visual effects
- */
-function updateBarriers(dt) {
-    for (let i = state.barriers.length - 1; i >= 0; i--) {
-        const barrier = state.barriers[i];
-
-        // Remove if no hits remaining or no turns remaining
-        if (barrier.hitsRemaining <= 0 || barrier.turnsRemaining <= 0) {
-            // Shatter effect
-            particles.explosion(barrier.x, barrier.y - barrier.height / 2, 50, barrier.color, 80);
-            particles.sparks(barrier.x, barrier.y - barrier.height / 2, 30, '#ffffff');
-            state.barriers.splice(i, 1);
-            continue;
-        }
-
-        // Pulsing visual effect
-        if (Math.random() < 0.15) {
-            const py = barrier.y - Math.random() * barrier.height;
-            particles.trail(barrier.x + (Math.random() - 0.5) * barrier.width, py, barrier.color);
-        }
-    }
-}
-
-/**
- * Update gravity fields - apply force to projectiles
- */
-function updateGravityFields(dt) {
-    for (let i = state.gravityFields.length - 1; i >= 0; i--) {
-        const field = state.gravityFields[i];
-
-        // Remove if no turns remaining
-        if (field.turnsRemaining <= 0) {
-            particles.explosion(field.x, field.y, 40, field.color, 60);
-            state.gravityFields.splice(i, 1);
-            continue;
-        }
-
-        // Visual swirl effect
-        if (Math.random() < 0.3) {
-            const angle = Math.random() * Math.PI * 2;
-            const dist = Math.random() * field.radius;
-            const px = field.x + Math.cos(angle) * dist;
-            const py = field.y + Math.sin(angle) * dist;
-            particles.trail(px, py, field.color);
-        }
-
-        // Apply pull to projectiles (done in updateProjectile)
-        // Optionally pull tanks if enabled
-        if (field.pullsTanks) {
-            for (const player of state.players) {
-                if (player.health <= 0) continue;
-                const dx = field.x - player.x;
-                const dy = field.y - player.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < field.radius && dist > 10) {
-                    const force = field.strength * (1 - dist / field.radius) * dt * 60;
-                    player.vx += (dx / dist) * force;
-                    player.vy += (dy / dist) * force * 0.5;
-                }
-            }
-        }
-    }
-}
-
-/**
- * Update vision clouds - deal DoT, visual effects
- */
-function updateVisionClouds(dt) {
-    for (let i = state.visionClouds.length - 1; i >= 0; i--) {
-        const cloud = state.visionClouds[i];
-
-        // Decrement timer
-        cloud.timer -= dt;
-        if (cloud.timer <= 0) {
-            state.visionClouds.splice(i, 1);
-            continue;
-        }
-
-        // Nebula particle effects
-        if (Math.random() < 0.4) {
-            const angle = Math.random() * Math.PI * 2;
-            const dist = Math.random() * cloud.radius;
-            const px = cloud.x + Math.cos(angle) * dist;
-            const py = cloud.y + Math.sin(angle) * dist;
-            particles.trail(px, py, Math.random() < 0.5 ? cloud.color : '#ffaaff');
-        }
-
-        // Deal damage to players in the cloud
-        for (let p = 0; p < state.players.length; p++) {
-            const player = state.players[p];
-            if (player.health <= 0) continue;
-
-            const dist = distance(cloud.x, cloud.y, player.x, player.y);
-            if (dist < cloud.radius) {
-                const damage = cloud.damagePerSec * dt;
-                player.health = Math.max(0, player.health - damage);
-
-                // Award coins if damaging enemy
-                if (p !== cloud.ownerId && damage > 0) {
-                    state.players[cloud.ownerId].coins += Math.floor(damage * COINS_PER_DAMAGE);
-                }
-
-                // Visual feedback
-                if (Math.random() < 0.1) {
-                    particles.sparks(player.x, player.y, 5, cloud.color);
-                }
-
-                // Check for kill
-                if (player.health <= 0) {
-                    if (p !== cloud.ownerId) {
-                        state.players[cloud.ownerId].coins += KILL_BONUS;
-                    }
-                    triggerDeathExplosion(player, false);
-                    audio.playKill();
-                }
-            }
-        }
-    }
-}
-
-/**
- * Update orbiting projectiles - orbit around owner, launch after duration
- */
-function updateOrbitingProjectiles(dt) {
-    for (let i = state.orbitingProjectiles.length - 1; i >= 0; i--) {
-        const orb = state.orbitingProjectiles[i];
-
-        // Increment timer
-        orb.timer += dt;
-
-        // Update orbit position
-        orb.angle += 3 * dt;  // Orbit speed
-        const owner = state.players[orb.ownerId];
-        if (owner && owner.health > 0) {
-            orb.x = owner.x + Math.cos(orb.angle) * orb.orbitRadius;
-            orb.y = owner.y - 30 + Math.sin(orb.angle) * orb.orbitRadius * 0.5;
-        }
-
-        // Visual trail
-        if (Math.random() < 0.5) {
-            particles.trail(orb.x, orb.y, orb.color);
-        }
-
-        // Launch after duration
-        if (orb.timer >= orb.duration && !orb.launched) {
-            orb.launched = true;
-            // Find nearest enemy and launch toward them
-            let targetPlayer = null;
-            let minDist = Infinity;
-            for (let p = 0; p < state.players.length; p++) {
-                if (p === orb.ownerId) continue;
-                const player = state.players[p];
-                if (player.health <= 0) continue;
-                const dist = distance(orb.x, orb.y, player.x, player.y);
-                if (dist < minDist) {
-                    minDist = dist;
-                    targetPlayer = player;
-                }
-            }
-
-            // Spawn projectile aimed at target
-            const weapon = WEAPONS.ASTEROID_BELT;
-            const angleRad = targetPlayer
-                ? Math.atan2(targetPlayer.y - orb.y, targetPlayer.x - orb.x)
-                : Math.random() * Math.PI * 2;
-            const speed = (weapon.projectileSpeed || 0.9) * MAX_POWER * 0.5;
-
-            state.projectiles.push({
-                x: orb.x,
-                y: orb.y,
-                vx: Math.cos(angleRad) * speed,
-                vy: Math.sin(angleRad) * speed,
-                radius: weapon.projectileRadius,
-                color: orb.color,
-                bounces: 0,
-                maxBounces: weapon.bounces,
-                trail: [],
-                weaponKey: 'ASTEROID_BELT',
-                isCluster: true,
-                firedByPlayer: orb.ownerId,
-                buffedDamageMultiplier: 1,
-                buffedBlastBonus: 0
-            });
-
-            particles.sparks(orb.x, orb.y, 20, orb.color);
-            state.orbitingProjectiles.splice(i, 1);
-        }
-    }
-}
-
-/**
  * Update black holes - pull everything, then collapse and explode
  */
 function updateBlackHoles(dt) {
@@ -5360,17 +4912,25 @@ function updateBlackHoles(dt) {
             }
         }
 
-        // Pull tanks if enabled
+        // Pull tanks if enabled - POWERFUL PULL to drag tanks into explosion
         if (hole.pullsTanks) {
+            const tankMult = hole.tankPullMultiplier || 1;
             for (const player of state.players) {
                 if (player.health <= 0) continue;
                 const dx = hole.x - player.x;
                 const dy = hole.y - player.y;
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 if (dist < hole.pullRadius && dist > 20) {
-                    const force = hole.pullStrength * (1 - dist / hole.pullRadius) * 0.5;
+                    // Strong pull that increases as timer progresses
+                    const timeScale = 1 + (hole.timer / hole.duration);
+                    const force = hole.pullStrength * (1 - dist / hole.pullRadius) * tankMult * timeScale;
                     player.vx += (dx / dist) * force;
-                    player.vy += (dy / dist) * force * 0.3;
+                    player.vy += (dy / dist) * force * 0.5;  // Also pull vertically
+
+                    // Visual feedback - tank being pulled
+                    if (Math.random() < 0.2) {
+                        particles.sparks(player.x, player.y, 5, '#8800ff');
+                    }
                 }
             }
         }
@@ -5431,6 +4991,38 @@ function updateBlackHoles(dt) {
 }
 
 /**
+ * Trigger meteor shower - schedule meteors across the entire map
+ */
+function triggerMeteorShower(proj) {
+    const weapon = WEAPONS.METEOR_SHOWER;
+    const count = weapon.meteorCount || 6;
+    const baseDelay = weapon.meteorDelay || 0.3;
+
+    // Visual feedback - signal flare explodes
+    particles.explosion(proj.x, proj.y, 50, weapon.color, 30);
+    renderer.addScreenShake(10);
+    audio.playExplosion(0.5);
+
+    // Schedule meteors across entire map
+    for (let i = 0; i < count; i++) {
+        // Random X across the entire playable width
+        const meteorX = WORLD_LEFT + Math.random() * (WORLD_RIGHT - WORLD_LEFT);
+
+        state.pendingMeteors.push({
+            x: meteorX,
+            delay: 0.5 + i * baseDelay,  // Stagger the meteors
+            timer: 0,
+            ownerId: proj.firedByPlayer,
+            meteorDamage: weapon.meteorDamage || 80,
+            blastRadius: weapon.blastRadius || 120
+        });
+    }
+
+    // Note: Turn will end automatically when all meteors resolve
+    // (handled by tryEndTurn in update loop checking hasPendingEffects)
+}
+
+/**
  * Update pending meteors - spawn from sky after delay
  */
 function updatePendingMeteors(dt) {
@@ -5455,16 +5047,16 @@ function updatePendingMeteors(dt) {
                 y: WORLD_TOP + 20,
                 vx: (Math.random() - 0.5) * 3,
                 vy: 12 + Math.random() * 5,  // Fast falling
-                radius: 12,  // Larger visual for meteors
+                radius: 14,  // Larger visual for meteors
                 color: weapon.color,
                 bounces: 0,
-                maxBounces: 0,
+                maxBounces: 1,  // FIX: Set to 1 so meteors don't explode immediately
                 trail: [],
                 weaponKey: null,  // CRITICAL: Prevent recursion - meteors don't trigger behaviors
                 isCluster: true,
                 isFragment: true,
-                fragmentDamage: weapon.meteorDamage || 60,  // Use meteorDamage, not base damage
-                fragmentBlastRadius: weapon.blastRadius,
+                fragmentDamage: meteor.meteorDamage || weapon.meteorDamage || 80,
+                fragmentBlastRadius: meteor.blastRadius || weapon.blastRadius || 120,
                 firedByPlayer: meteor.ownerId,
                 buffedDamageMultiplier: 1,
                 buffedBlastBonus: 0,
@@ -5480,7 +5072,7 @@ function updatePendingMeteors(dt) {
 }
 
 /**
- * Update void cannon beams - fire after delay
+ * Update void cannon beams - fire after delay, pull tanks during warning, cut to void
  */
 function updateVoidCannonBeams(dt) {
     for (let i = state.voidCannonBeams.length - 1; i >= 0; i--) {
@@ -5489,7 +5081,12 @@ function updateVoidCannonBeams(dt) {
         // Increment timer
         beam.timer += dt;
 
-        // Warning indicator (targeting laser from sky)
+        const weapon = WEAPONS.VOID_CANNON;
+        const beamWidth = weapon.beamWidth || 60;
+        const pullRadius = weapon.pullRadius || 120;
+        const pullStrength = weapon.pullStrength || 0.5;
+
+        // Warning indicator (targeting laser from sky) + PULL EFFECT
         if (beam.timer < beam.delay) {
             // Pulsing target circle
             if (Math.random() < 0.5) {
@@ -5501,32 +5098,53 @@ function updateVoidCannonBeams(dt) {
                     particles.trail(beam.x, py, beam.color);
                 }
             }
+
+            // Pull tanks toward beam during warning (black hole effect)
+            if (weapon.hasPullEffect) {
+                const pullProgress = beam.timer / beam.delay;  // Gets stronger as beam charges
+                for (const player of state.players) {
+                    if (player.health <= 0) continue;
+                    const dx = beam.x - player.x;
+                    const dy = beam.y - player.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < pullRadius + beamWidth && dist > 10) {
+                        const force = pullStrength * (1 - dist / (pullRadius + beamWidth)) * (0.3 + pullProgress * 0.7);
+                        player.vx += (dx / dist) * force;
+                        player.vy += (dy / dist) * force * 0.3;
+
+                        // Visual feedback
+                        if (Math.random() < 0.15) {
+                            particles.sparks(player.x, player.y, 3, beam.color);
+                        }
+                    }
+                }
+            }
         }
 
         // Fire beam after delay
         if (beam.timer >= beam.delay) {
-            const weapon = WEAPONS.VOID_CANNON;
             const damage = weapon.damage;
             const blastRadius = weapon.blastRadius;
-            const beamWidth = weapon.beamWidth || 60;
 
-            // Massive vertical beam effect
+            // Massive vertical beam effect - full column to void
             particles.explosion(beam.x, beam.y, 100, '#ffffff', blastRadius);
             particles.explosion(beam.x, beam.y, 80, beam.color, blastRadius * 0.8);
-            for (let py = WORLD_TOP; py < beam.y + 50; py += 30) {
+            for (let py = WORLD_TOP; py < state.voidY; py += 40) {
                 particles.sparks(beam.x, py, 15, beam.color);
+                particles.sparks(beam.x, py, 10, '#ffffff');
             }
-            renderer.addScreenShake(35);
-            renderer.flash(beam.color, 0.4);
-            audio.playExplosion(1.0);
+            renderer.addScreenShake(45);
+            renderer.flash(beam.color, 0.5);
+            renderer.flash('#ffffff', 0.3);
+            audio.playExplosion(1.2);
 
             // Damage players in vertical column and blast radius
             for (let p = 0; p < state.players.length; p++) {
                 const player = state.players[p];
                 if (player.health <= 0) continue;
 
-                // Check if in beam column
-                const inColumn = Math.abs(player.x - beam.x) < beamWidth / 2 && player.y < beam.y + blastRadius;
+                // Check if in beam column - full height
+                const inColumn = Math.abs(player.x - beam.x) < beamWidth / 2;
                 const dist = distance(beam.x, beam.y, player.x, player.y);
                 const inBlast = dist < blastRadius;
 
@@ -5546,12 +5164,17 @@ function updateVoidCannonBeams(dt) {
                 }
             }
 
-            // Terrain destruction in column
-            terrain.destroy(beam.x, beam.y, blastRadius);
-            terrain.digJagged(beam.x, beam.y - 100, beamWidth, state.voidY);
+            // TERRAIN DESTRUCTION - cuts ALL the way to the void
+            if (weapon.cutsToVoid) {
+                // Carve a vertical column straight down to the void
+                terrain.carveToVoid(beam.x, beamWidth, state.voidY);
+            } else {
+                terrain.destroy(beam.x, beam.y, blastRadius);
+                terrain.digJagged(beam.x, beam.y - 100, beamWidth, state.voidY);
+            }
 
             state.voidCannonBeams.splice(i, 1);
-            endTurn();
+            tryEndTurn();  // Let tryEndTurn check for other pending effects
         }
     }
 }
@@ -5565,20 +5188,6 @@ function updateLightningArc(dt) {
         if (state.lightningArc.timer <= 0) {
             state.lightningArc = null;
         }
-    }
-}
-
-/**
- * Decrement barrier and gravity field turns at end of round
- */
-function decrementFieldTurns() {
-    // Barriers
-    for (const barrier of state.barriers) {
-        barrier.turnsRemaining--;
-    }
-    // Gravity fields
-    for (const field of state.gravityFields) {
-        field.turnsRemaining--;
     }
 }
 
@@ -5755,12 +5364,10 @@ function updateStrafingRuns(dt) {
             // Check if all strafing bullets have resolved
             const strafeBullets = state.projectiles.filter(p => p.isStrafeBullet);
             if (strafeBullets.length === 0) {
-                // End turn if this strafing run was controlling the turn
+                state.strafingRuns.splice(i, 1);
+                // Let tryEndTurn check for other pending effects
                 if (run.pendingTurnEnd) {
-                    state.strafingRuns.splice(i, 1);
-                    endTurn();
-                } else {
-                    state.strafingRuns.splice(i, 1);
+                    tryEndTurn();
                 }
             }
             // If bullets still flying, wait for them
@@ -6121,7 +5728,7 @@ function triggerCinematicNukeExplosion(nuke) {
     // End turn after all nuke effects complete
     setTimeout(() => {
         if (state.nukes.length === 0 && state.phase === 'firing') {
-            endTurn();
+            tryEndTurn();  // Let tryEndTurn check for other pending effects
         }
     }, 1200);
 }
@@ -6146,18 +5753,6 @@ function updateClusterBomblet(proj, dt) {
     // Apply wind (WIND BLAST event)
     if (state.wind !== 0) {
         proj.vx += state.wind;
-    }
-
-    // Apply gravity field pull
-    for (const field of state.gravityFields) {
-        const dx = field.x - proj.x;
-        const dy = field.y - proj.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < field.radius && dist > 10) {
-            const force = field.strength * (1 - dist / field.radius);
-            proj.vx += (dx / dist) * force;
-            proj.vy += (dy / dist) * force;
-        }
     }
 
     // Apply black hole pull
@@ -6237,7 +5832,7 @@ function updateClusterBomblet(proj, dt) {
 
                 // Check if all projectiles are done
                 if (state.projectiles.length === 0 && !state.projectile) {
-                    endTurn();
+                    tryEndTurn();  // Check for other pending effects
                 }
                 return;
             }
@@ -6245,10 +5840,12 @@ function updateClusterBomblet(proj, dt) {
     }
 
     // Check termination
+    // FIX: Only check bounce limit if maxBounces > 0 (prevents meteors with maxBounces=0 from instant exploding)
+    const hitBounceLimitCheck = proj.maxBounces > 0 && proj.bounces >= proj.maxBounces;
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100 ||
-        proj.bounces >= proj.maxBounces) {
+        hitBounceLimitCheck) {
         onExplode(proj);
     }
 }
@@ -6390,9 +5987,9 @@ function render() {
         return;
     }
 
-    // Shop phase
-    if (state.phase === 'shop') {
-        renderShop();
+    // Lottery phase
+    if (state.phase === 'lottery') {
+        renderLottery();
         renderer.endFrame();
         return;
     }
@@ -6478,13 +6075,8 @@ function render() {
     renderDesperationBeacons();
 
     // Draw new weapon systems
-    renderBarriers();
-    renderGravityFields();
-    renderVisionClouds();
-    renderOrbitingProjectiles();
     renderBlackHoles();
     renderLightningArc();
-    renderTracerPath();
     renderVoidCannonWarnings();
     renderMeteorWarnings();
 
@@ -6738,6 +6330,25 @@ function render() {
         renderer.ctx.globalAlpha = 1;
     }
 
+    // Lottery notifications (AI weapon picks)
+    for (const notif of state.lotteryNotifications) {
+        const alpha = Math.min(1, notif.timer);
+        renderer.ctx.globalAlpha = alpha;
+
+        // Get rarity color for glow
+        const rarityColors = LOTTERY_RARITY_COLORS[notif.rarity] || LOTTERY_RARITY_COLORS.common;
+
+        // Convert world coords to screen coords
+        const screenX = notif.x * WORLD_SCALE;
+        const screenY = notif.y * WORLD_SCALE;
+
+        renderer.setGlow(rarityColors.glow, 10);
+        renderer.drawText(notif.text, screenX, screenY, notif.color, 16, 'center', true);
+        renderer.clearGlow();
+
+        renderer.ctx.globalAlpha = 1;
+    }
+
     // Controls hint
     if (state.phase === 'aiming') {
         const hintText = getCurrentPlayer().isAI ? 'AI is thinking...' : '← → to aim, HOLD SPACE to charge, RELEASE to fire';
@@ -6904,18 +6515,7 @@ function drawTracerPreview() {
 }
 
 function drawProjectile(proj) {
-    // DARK MATTER SHELL visibility check - invisible to other players
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-    if (weapon && weapon.behavior === 'invisible') {
-        // In multiplayer, only show to owner (for now, always show since we don't have perspective system)
-        // Draw as faint outline for the owner
-        const ctx = renderer.ctx;
-        ctx.save();
-        ctx.globalAlpha = 0.3;
-        renderer.drawCircle(proj.x, proj.y, proj.radius, '#220044', true);
-        ctx.restore();
-        return;  // Skip normal rendering
-    }
 
     const isRailgun = proj.tankType === 'PHANTOM';
     const isDyingLight = proj.weaponKey === 'DYING_STAR';
@@ -7053,32 +6653,93 @@ function drawProjectile(proj) {
 function drawFireField(field) {
     const ctx = renderer.ctx;
     const progress = field.timer / field.duration;  // 1 = full, 0 = expired
-
-    // Flickering fire effect
-    const flicker = 0.7 + Math.random() * 0.3;
     const currentRadius = field.radius * (0.5 + progress * 0.5);
+    const time = Date.now() * 0.003;  // Animation time
 
-    // Draw gradient fire glow
-    const gradient = ctx.createRadialGradient(
+    // Number of flame columns based on radius
+    const numFlames = Math.floor(currentRadius / 20) + 5;
+
+    // Draw base glow on ground
+    const baseGradient = ctx.createRadialGradient(
         field.x, field.y, 0,
         field.x, field.y, currentRadius
     );
-    gradient.addColorStop(0, `rgba(255, 100, 0, ${0.6 * flicker * progress})`);
-    gradient.addColorStop(0.4, `rgba(255, 60, 0, ${0.4 * flicker * progress})`);
-    gradient.addColorStop(1, 'rgba(255, 30, 0, 0)');
-
-    ctx.fillStyle = gradient;
+    baseGradient.addColorStop(0, `rgba(255, 100, 0, ${0.4 * progress})`);
+    baseGradient.addColorStop(0.6, `rgba(255, 50, 0, ${0.2 * progress})`);
+    baseGradient.addColorStop(1, 'rgba(255, 20, 0, 0)');
+    ctx.fillStyle = baseGradient;
     ctx.beginPath();
-    ctx.ellipse(field.x, field.y - 10, currentRadius, currentRadius * 0.4, 0, 0, Math.PI * 2);
+    ctx.ellipse(field.x, field.y, currentRadius, currentRadius * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Glowing edge
-    renderer.setGlow('#ff4400', 20 * flicker);
-    ctx.strokeStyle = `rgba(255, 170, 0, ${0.5 * progress})`;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(field.x, field.y - 10, currentRadius * 0.8, currentRadius * 0.3, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    // Draw animated flame columns
+    for (let i = 0; i < numFlames; i++) {
+        const t = i / numFlames;
+        const offsetX = (t - 0.5) * currentRadius * 2;
+        const flameX = field.x + offsetX;
+        const groundY = terrain.getHeightAt(flameX);
+
+        // Flame height varies with animation and position
+        const baseHeight = 30 + Math.sin(time + i * 0.7) * 10;
+        const heightVariation = Math.sin(time * 2 + i * 1.3) * 8;
+        const flameHeight = (baseHeight + heightVariation) * progress;
+
+        // Flame width narrows toward top
+        const flameWidth = 12 + Math.sin(time * 1.5 + i) * 4;
+
+        // Draw flame as gradient from bottom to top
+        const flameGradient = ctx.createLinearGradient(
+            flameX, groundY, flameX, groundY - flameHeight
+        );
+        flameGradient.addColorStop(0, `rgba(255, 80, 0, ${0.8 * progress})`);
+        flameGradient.addColorStop(0.3, `rgba(255, 150, 0, ${0.7 * progress})`);
+        flameGradient.addColorStop(0.6, `rgba(255, 200, 50, ${0.5 * progress})`);
+        flameGradient.addColorStop(1, `rgba(255, 255, 100, 0)`);
+
+        // Draw wavy flame shape
+        ctx.beginPath();
+        ctx.moveTo(flameX - flameWidth / 2, groundY);
+
+        // Left edge of flame (wavy)
+        const wavePoints = 5;
+        for (let j = 0; j <= wavePoints; j++) {
+            const py = groundY - (flameHeight * j / wavePoints);
+            const waveOffset = Math.sin(time * 3 + j + i) * (flameWidth * 0.2);
+            const narrowing = 1 - (j / wavePoints) * 0.8;
+            ctx.lineTo(flameX - flameWidth / 2 * narrowing + waveOffset, py);
+        }
+
+        // Right edge of flame (wavy, going back down)
+        for (let j = wavePoints; j >= 0; j--) {
+            const py = groundY - (flameHeight * j / wavePoints);
+            const waveOffset = Math.sin(time * 3 + j + i + 2) * (flameWidth * 0.2);
+            const narrowing = 1 - (j / wavePoints) * 0.8;
+            ctx.lineTo(flameX + flameWidth / 2 * narrowing + waveOffset, py);
+        }
+
+        ctx.closePath();
+        ctx.fillStyle = flameGradient;
+
+        // Add glow to flames
+        renderer.setGlow('#ff6600', 15 * progress);
+        ctx.fill();
+        renderer.clearGlow();
+    }
+
+    // Draw hot core embers (bright spots at base)
+    renderer.setGlow('#ffaa00', 25 * progress);
+    const numEmbers = Math.floor(currentRadius / 15);
+    for (let i = 0; i < numEmbers; i++) {
+        const emberX = field.x + (Math.random() - 0.5) * currentRadius * 1.5;
+        const emberY = terrain.getHeightAt(emberX) - Math.random() * 15;
+        const emberSize = 3 + Math.random() * 4;
+        const emberAlpha = (0.5 + Math.random() * 0.5) * progress;
+
+        ctx.fillStyle = `rgba(255, 255, 150, ${emberAlpha})`;
+        ctx.beginPath();
+        ctx.arc(emberX, emberY, emberSize, 0, Math.PI * 2);
+        ctx.fill();
+    }
     renderer.clearGlow();
 }
 
@@ -7399,165 +7060,6 @@ function renderDesperationBeacons() {
 // ============================================================================
 
 /**
- * Render barriers (VOID_WALL)
- */
-function renderBarriers() {
-    const ctx = renderer.ctx;
-
-    for (const barrier of state.barriers) {
-        const pulse = Math.sin(state.time * 4) * 0.2 + 0.8;
-
-        // Draw barrier body
-        renderer.setGlow(barrier.color, 20 * pulse);
-        ctx.fillStyle = barrier.color;
-        ctx.globalAlpha = 0.6 * pulse;
-        ctx.fillRect(
-            barrier.x - barrier.width / 2,
-            barrier.y - barrier.height,
-            barrier.width,
-            barrier.height
-        );
-
-        // Bright edges
-        ctx.globalAlpha = 0.9;
-        ctx.strokeStyle = barrier.color;
-        ctx.lineWidth = 3;
-        ctx.strokeRect(
-            barrier.x - barrier.width / 2,
-            barrier.y - barrier.height,
-            barrier.width,
-            barrier.height
-        );
-
-        // Health indicators (small dots for hits remaining)
-        for (let i = 0; i < barrier.hitsRemaining; i++) {
-            ctx.fillStyle = '#ffffff';
-            ctx.beginPath();
-            ctx.arc(
-                barrier.x - barrier.width / 2 + 10 + i * 10,
-                barrier.y - barrier.height + 10,
-                3,
-                0, Math.PI * 2
-            );
-            ctx.fill();
-        }
-
-        renderer.clearGlow();
-        ctx.globalAlpha = 1;
-    }
-}
-
-/**
- * Render gravity fields (GRAVITY_WELL)
- */
-function renderGravityFields() {
-    const ctx = renderer.ctx;
-
-    for (const field of state.gravityFields) {
-        const pulse = Math.sin(state.time * 3) * 0.3 + 0.7;
-
-        // Outer swirl effect
-        renderer.setGlow(field.color, 15);
-        ctx.globalAlpha = 0.3 * pulse;
-
-        // Draw concentric circles with rotation
-        for (let r = 0; r < 4; r++) {
-            const radius = field.radius * (0.3 + r * 0.2);
-            const rotation = state.time * (2 - r * 0.3);
-
-            ctx.strokeStyle = field.color;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(field.x, field.y, radius, rotation, rotation + Math.PI * 1.5);
-            ctx.stroke();
-        }
-
-        // Center dot
-        ctx.globalAlpha = 0.8;
-        ctx.fillStyle = field.color;
-        ctx.beginPath();
-        ctx.arc(field.x, field.y, 8, 0, Math.PI * 2);
-        ctx.fill();
-
-        renderer.clearGlow();
-        ctx.globalAlpha = 1;
-    }
-}
-
-/**
- * Render vision clouds (NEBULA_CLOUD)
- */
-function renderVisionClouds() {
-    const ctx = renderer.ctx;
-
-    for (const cloud of state.visionClouds) {
-        const fade = cloud.timer / cloud.duration;
-
-        // Draw cloud as gradient circle
-        const gradient = ctx.createRadialGradient(
-            cloud.x, cloud.y, 0,
-            cloud.x, cloud.y, cloud.radius
-        );
-        gradient.addColorStop(0, `rgba(255, 136, 255, ${0.4 * fade})`);
-        gradient.addColorStop(0.5, `rgba(136, 0, 136, ${0.3 * fade})`);
-        gradient.addColorStop(1, `rgba(68, 0, 68, 0)`);
-
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.arc(cloud.x, cloud.y, cloud.radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Swirling particles inside
-        const particleAngle = state.time * 2;
-        for (let i = 0; i < 6; i++) {
-            const angle = particleAngle + (i / 6) * Math.PI * 2;
-            const dist = cloud.radius * 0.5 * (0.5 + Math.sin(state.time * 3 + i) * 0.3);
-            const px = cloud.x + Math.cos(angle) * dist;
-            const py = cloud.y + Math.sin(angle) * dist;
-
-            ctx.globalAlpha = 0.5 * fade;
-            ctx.fillStyle = '#ffaaff';
-            ctx.beginPath();
-            ctx.arc(px, py, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        ctx.globalAlpha = 1;
-    }
-}
-
-/**
- * Render orbiting projectiles (ASTEROID_BELT)
- */
-function renderOrbitingProjectiles() {
-    const ctx = renderer.ctx;
-
-    for (const orb of state.orbitingProjectiles) {
-        if (orb.launched) continue;
-
-        renderer.setGlow(orb.color, 15);
-        ctx.fillStyle = orb.color;
-        ctx.beginPath();
-        ctx.arc(orb.x, orb.y, 7, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Orbit trail
-        ctx.globalAlpha = 0.4;
-        ctx.strokeStyle = orb.color;
-        ctx.lineWidth = 2;
-        const owner = state.players[orb.ownerId];
-        if (owner) {
-            ctx.beginPath();
-            ctx.arc(owner.x, owner.y - 30, orb.orbitRadius, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-
-        renderer.clearGlow();
-        ctx.globalAlpha = 1;
-    }
-}
-
-/**
  * Render black holes (BLACK_HOLE_GRENADE)
  */
 function renderBlackHoles() {
@@ -7646,40 +7148,6 @@ function renderLightningArc() {
 
     renderer.clearGlow();
     ctx.globalAlpha = 1;
-}
-
-/**
- * Render tracer path preview (shows trajectory from last tracer shot)
- */
-function renderTracerPath() {
-    const ctx = renderer.ctx;
-    const currentPlayer = state.currentPlayer;
-    const path = state.tracerPaths[currentPlayer];
-
-    if (!path || path.length < 2 || state.phase !== 'aiming') return;
-
-    // Draw faint ghost trajectory
-    ctx.globalAlpha = 0.3;
-    ctx.strokeStyle = '#aaffaa';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let i = 1; i < path.length; i++) {
-        ctx.lineTo(path[i].x, path[i].y);
-    }
-    ctx.stroke();
-
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-
-    // Impact point marker
-    const lastPoint = path[path.length - 1];
-    ctx.fillStyle = '#aaffaa';
-    ctx.beginPath();
-    ctx.arc(lastPoint.x, lastPoint.y, 5, 0, Math.PI * 2);
-    ctx.fill();
 }
 
 /**
@@ -8155,10 +7623,10 @@ function renderTankSelect() {
     renderer.drawText('↑↓ SELECT   SPACE CONFIRM', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
 }
 
-function renderShop() {
+function renderLottery() {
     const ctx = renderer.ctx;
 
-    // World elements at scaled coordinates
+    // World elements at scaled coordinates (background)
     ctx.save();
     ctx.scale(WORLD_SCALE, WORLD_SCALE);
     renderer.drawGrid(100, '#0a0a15');
@@ -8171,130 +7639,177 @@ function renderShop() {
     }
     ctx.restore();
 
-    // UI at 1:1 scale
-    const round = getCurrentRound();
-    const shopperIdx = state.shoppingPlayerIndex;
-    const currentShopper = shopperIdx >= 0 ? state.players[shopperIdx] : state.players[0];
+    // Dim overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Header
-    renderer.setGlow(COLORS.yellow, 15);
-    renderer.drawText('SHOP', CANVAS_WIDTH / 2, 50, COLORS.yellow, 36, 'center', true);
+    // UI at 1:1 scale
+    const player = getCurrentPlayer();
+    const playerIndex = state.currentPlayer;
+
+    // Header with glow
+    renderer.setGlow(COLORS.cyan, 20);
+    renderer.drawText('INCOMING SALVAGE', CANVAS_WIDTH / 2, 60, COLORS.cyan, 32, 'center', true);
     renderer.clearGlow();
 
-    // Show which player is shopping
-    if (shopperIdx >= 0) {
-        const shopperColor = currentShopper.color;
-        renderer.drawText(`PLAYER ${shopperIdx + 1} SHOPPING`, CANVAS_WIDTH / 2, 85, shopperColor, 16, 'center', true);
-    } else {
-        renderer.drawText(`ROUND ${round}`, CANVAS_WIDTH / 2, 85, '#888888', 16, 'center', false);
+    // Show current player
+    renderer.drawText(`PLAYER ${playerIndex + 1}`, CANVAS_WIDTH / 2, 95, player.color, 18, 'center', true);
+
+    // Card dimensions and positioning
+    const cardWidth = 180;
+    const cardHeight = 240;
+    const cardSpacing = 40;
+    const totalWidth = cardWidth * 3 + cardSpacing * 2;
+    const startX = (CANVAS_WIDTH - totalWidth) / 2;
+    const cardY = CANVAS_HEIGHT / 2 - cardHeight / 2;
+
+    // Animation offset for descending cards
+    let yOffset = 0;
+    if (state.lottery.animationPhase === 'descending') {
+        const progress = state.lottery.animationTimer / 400;
+        yOffset = -400 * (1 - easeOutBounce(progress));
     }
 
-    // Player info strip across top - compact for multiple players
-    const playerSpacing = Math.min(150, (CANVAS_WIDTH - 100) / state.players.length);
-    for (let i = 0; i < state.players.length; i++) {
-        const p = state.players[i];
-        const x = 80 + i * playerSpacing;
-        const label = p.isAI ? `AI${i + 1}` : `P${i + 1}`;
-        const weaponName = WEAPONS[p.weapon]?.name || 'None';
-        const isDead = p.health <= 0;
-        const isCurrentShopper = i === shopperIdx;
+    // Render the 3 cards
+    const revealed = state.lottery.animationPhase !== 'descending';
+    for (let i = 0; i < 3; i++) {
+        const card = state.lottery.cards[i];
+        if (!card) continue;
 
-        // Highlight current shopper with box
-        if (isCurrentShopper) {
-            renderer.drawRectOutline(x - 35, 40, 70, 40, p.color, 2, true);
-        }
+        const x = startX + i * (cardWidth + cardSpacing);
+        const y = cardY + yOffset;
+        const isSelected = i === state.lottery.selectedIndex;
 
-        renderer.drawText(label, x, 50, isDead ? '#444' : p.color, isCurrentShopper ? 16 : 14, 'center', isCurrentShopper || !isDead);
-        renderer.drawText(`${p.coins}`, x, 68, isDead ? '#444' : COLORS.yellow, 11, 'center', false);
-        if (state.shopReady[i]) {
-            renderer.drawText('✓', x + 30, 58, COLORS.green, 14, 'left', false);
-        }
+        renderLotteryCard(card, x, y, cardWidth, cardHeight, isSelected, i + 1, revealed);
     }
 
-    // Weapon list
-    const startY = 130;
-    const spacing = 65;
-    const offerings = state.shopOfferings;
-    const selection = shopperIdx >= 0 ? state.shopSelections[shopperIdx] : 0;
-
-    for (let i = 0; i < offerings.length; i++) {
-        const weaponKey = offerings[i];
-        const weapon = WEAPONS[weaponKey];
-        const y = startY + i * spacing;
-        const isSelected = i === selection;
-        const canAfford = currentShopper.coins >= weapon.cost;
-
-        // Check orbital stock
-        const orbitalStock = state.orbitalStock[weaponKey];
-        const inStock = !orbitalStock || orbitalStock.remaining > 0;
-        const isOrbital = weapon.tier === 'ORBITAL';
-        const canPurchase = canAfford && inStock;
-
-        // Selection highlight
-        if (isSelected) {
-            const highlightColor = !inStock ? '#444444' : COLORS.cyan;
-            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, y - 25, 500, 55, highlightColor, 2, inStock);
-
-            // Animated projectile preview
-            if (inStock) {
-                const previewX = CANVAS_WIDTH / 2 - 230;
-                const bounce = Math.sin(state.time * 8) * 3;
-                const pulse = 0.8 + Math.sin(state.time * 6) * 0.2;
-                const previewRadius = (weapon.projectileRadius || 6) * pulse;
-
-                renderer.setGlow(weapon.color, 15);
-                renderer.drawCircle(previewX, y + bounce, previewRadius, weapon.color, true);
-                renderer.clearGlow();
-
-                // Trail effect
-                for (let t = 1; t <= 3; t++) {
-                    const trailX = previewX - t * 8;
-                    const alpha = 0.4 - t * 0.1;
-                    renderer.ctx.globalAlpha = alpha;
-                    renderer.drawCircle(trailX, y + bounce, previewRadius * (1 - t * 0.2), weapon.color, true);
-                }
-                renderer.ctx.globalAlpha = 1;
-            }
-        }
-
-        // Weapon name (with orbital indicator)
-        let nameColor = isSelected ? COLORS.white : '#888888';
-        if (!canPurchase) nameColor = '#444444';
-        let displayName = weapon.name;
-        if (isOrbital && inStock) {
-            displayName += ` [${orbitalStock.remaining}/${orbitalStock.total}]`;
-        }
-        renderer.drawText(displayName, CANVAS_WIDTH / 2 - 200, y - 5, nameColor, isSelected ? 20 : 16, 'left', isSelected && inStock);
-
-        // SOLD OUT indicator for orbital weapons
-        if (isOrbital && !inStock) {
-            renderer.drawText('SOLD OUT', CANVAS_WIDTH / 2 - 200, y + 15, '#ff4444', 14, 'left', true);
-        } else {
-            // Weapon description
-            const descColor = isSelected ? '#aaaaaa' : '#555555';
-            renderer.drawText(weapon.description, CANVAS_WIDTH / 2 - 200, y + 15, canPurchase ? descColor : '#333333', 11, 'left', false);
-        }
-
-        // Cost
-        const costColor = canPurchase ? COLORS.yellow : '#663333';
-        renderer.drawText(`${weapon.cost}`, CANVAS_WIDTH / 2 + 200, y, costColor, 18, 'right', canPurchase && isSelected);
-
-        // Stats
-        const statsColor = canPurchase ? '#666666' : '#333333';
-        renderer.drawText(`DMG:${weapon.damage} BLS:${weapon.blastRadius} BNC:${weapon.bounces}`, CANVAS_WIDTH / 2 + 200, y + 18, statsColor, 9, 'right', false);
-    }
-
-    // "Keep Current" option
-    const keepY = startY + offerings.length * spacing;
-    const isKeepSelected = selection === offerings.length;
-    if (isKeepSelected) {
-        renderer.drawRectOutline(CANVAS_WIDTH / 2 - 250, keepY - 25, 500, 55, COLORS.cyan, 2, true);
-    }
-    renderer.drawText('Keep Current Weapon', CANVAS_WIDTH / 2, keepY, isKeepSelected ? COLORS.white : '#888888', isKeepSelected ? 20 : 16, 'center', isKeepSelected);
-    renderer.drawText('(Save your coins)', CANVAS_WIDTH / 2, keepY + 20, '#555555', 11, 'center', false);
+    // Reroll indicator
+    const rerolls = player.rerollsRemaining;
+    const rerollText = rerolls > 0 ? `Reroll: ${rerolls} remaining [R]` : 'No rerolls left';
+    const rerollColor = rerolls > 0 ? '#888888' : '#444444';
+    renderer.drawText(rerollText, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 80, rerollColor, 16, 'center', false);
 
     // Controls hint
-    renderer.drawText('↑↓ SELECT   SPACE BUY   ENTER KEEP', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
+    renderer.drawText('Press 1, 2, or 3 to select  |  ← → to highlight  |  SPACE to confirm', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+}
+
+/**
+ * Render a single lottery card
+ */
+function renderLotteryCard(card, x, y, width, height, isSelected, number, revealed) {
+    const colors = revealed ? LOTTERY_RARITY_COLORS[card.rarity] : LOTTERY_RARITY_COLORS.common;
+
+    // Card background
+    renderer.ctx.fillStyle = colors.bg;
+    renderer.ctx.fillRect(x, y, width, height);
+
+    // Selection glow and border
+    if (isSelected && revealed) {
+        renderer.setGlow(colors.glow, 25);
+    }
+
+    // Border
+    const borderWidth = isSelected ? 4 : 2;
+    renderer.ctx.strokeStyle = revealed ? colors.border : '#444444';
+    renderer.ctx.lineWidth = borderWidth;
+    renderer.ctx.strokeRect(x, y, width, height);
+    renderer.clearGlow();
+
+    // Card back (unrevealed)
+    if (!revealed) {
+        renderer.drawText('?', x + width / 2, y + height / 2 + 15, '#444444', 64, 'center', false);
+        renderer.drawText(`[${number}]`, x + width / 2, y + height - 30, '#333333', 18, 'center', false);
+        return;
+    }
+
+    // === REVEALED CARD ===
+
+    // Rarity label at top
+    const rarityLabel = card.rarity.toUpperCase();
+    renderer.drawText(rarityLabel, x + width / 2, y + 25, colors.border, 12, 'center', false);
+
+    // Weapon name with glow
+    renderer.setGlow(colors.glow, 10);
+    renderer.drawText(card.name, x + width / 2, y + 60, '#ffffff', 18, 'center', true);
+    renderer.clearGlow();
+
+    // Animated projectile preview
+    const weapon = WEAPONS[card.weaponKey];
+    if (weapon) {
+        const previewY = y + 100;
+        const bounce = Math.sin(state.time * 6) * 4;
+        const pulse = 0.8 + Math.sin(state.time * 5) * 0.2;
+        const previewRadius = (weapon.projectileRadius || 6) * pulse * 1.5;
+
+        renderer.setGlow(weapon.color || colors.glow, 15);
+        renderer.drawCircle(x + width / 2, previewY + bounce, previewRadius, weapon.color || '#ffffff', true);
+        renderer.clearGlow();
+
+        // Trail effect
+        for (let t = 1; t <= 3; t++) {
+            const trailX = x + width / 2 - t * 10;
+            const alpha = 0.4 - t * 0.1;
+            renderer.ctx.globalAlpha = alpha;
+            renderer.drawCircle(trailX, previewY + bounce, previewRadius * (1 - t * 0.2), weapon.color || '#ffffff', true);
+        }
+        renderer.ctx.globalAlpha = 1;
+    }
+
+    // Stats
+    const statsY = y + 140;
+    renderer.drawText(`DMG: ${card.damage}`, x + width / 2, statsY, '#aaaaaa', 14, 'center', false);
+    renderer.drawText(`Radius: ${card.blastRadius}`, x + width / 2, statsY + 20, '#aaaaaa', 14, 'center', false);
+
+    // Description (truncated if too long)
+    const desc = card.description && card.description.length > 25
+        ? card.description.slice(0, 22) + '...'
+        : (card.description || '');
+    renderer.drawText(desc, x + width / 2, statsY + 50, '#666666', 10, 'center', false);
+
+    // Selection number at bottom
+    const numColor = isSelected ? '#ffffff' : '#555555';
+    renderer.drawText(`[${number}]`, x + width / 2, y + height - 25, numColor, 20, 'center', isSelected);
+
+    // Rarity-specific visual effects
+    if (card.rarity === 'legendary' && isSelected) {
+        // Golden particles around the card
+        const particleCount = 3;
+        for (let i = 0; i < particleCount; i++) {
+            const angle = state.time * 2 + (i * Math.PI * 2 / particleCount);
+            const px = x + width / 2 + Math.cos(angle) * (width / 2 + 10);
+            const py = y + height / 2 + Math.sin(angle) * (height / 2 + 10);
+            renderer.setGlow('#ffdd00', 10);
+            renderer.drawCircle(px, py, 3, '#ffaa00', true);
+            renderer.clearGlow();
+        }
+    } else if (card.rarity === 'epic' && isSelected) {
+        // Purple lightning effect at corners
+        renderer.ctx.strokeStyle = '#cc44ff';
+        renderer.ctx.lineWidth = 1;
+        renderer.ctx.globalAlpha = 0.5 + Math.sin(state.time * 10) * 0.3;
+        renderer.ctx.beginPath();
+        renderer.ctx.moveTo(x, y);
+        renderer.ctx.lineTo(x + 15 + Math.random() * 5, y + 15 + Math.random() * 5);
+        renderer.ctx.stroke();
+        renderer.ctx.globalAlpha = 1;
+    }
+}
+
+/**
+ * Easing function for card animation
+ */
+function easeOutBounce(t) {
+    const n1 = 7.5625;
+    const d1 = 2.75;
+    if (t < 1 / d1) {
+        return n1 * t * t;
+    } else if (t < 2 / d1) {
+        return n1 * (t -= 1.5 / d1) * t + 0.75;
+    } else if (t < 2.5 / d1) {
+        return n1 * (t -= 2.25 / d1) * t + 0.9375;
+    } else {
+        return n1 * (t -= 2.625 / d1) * t + 0.984375;
+    }
 }
 
 // ============================================================================

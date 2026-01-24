@@ -331,8 +331,8 @@ export function raiseJagged(cx, cy, radius, voidY = 9999) {
 
     // Minimum Y to prevent terrain going above safe zone
     const minTerrainY = 100;
-    // Peak height - go high!
-    const peakHeight = radius * 1.8;
+    // Peak height - go high! (doubled for more impact)
+    const peakHeight = radius * 3.6;
 
     // Generate jagged profile with multiple peaks
     const jaggedPoints = [];
@@ -407,9 +407,9 @@ export function digJagged(cx, cy, radius, voidY = 9999) {
         const t = i / numJags;
         const jx = startX + (endX - startX) * t;
 
-        // Base crater shape (deepest in center)
+        // Base crater shape (deepest in center) - doubled for more impact
         const distFromCenter = Math.abs(jx - cx) / radius;
-        let baseDepth = (1 - distFromCenter * distFromCenter) * radius * 1.5;
+        let baseDepth = (1 - distFromCenter * distFromCenter) * radius * 3.0;
 
         // Add jagged variation - random depths at each point
         const jitter = (Math.random() - 0.3) * radius * 0.6;
@@ -446,6 +446,49 @@ export function digJagged(cx, cy, radius, voidY = 9999) {
         // Only lower terrain, never raise it
         if (clampedBottom > heights[x]) {
             heights[x] = clampedBottom;
+        }
+    }
+}
+
+// ============================================================================
+// Void Cannon Carving - cuts straight down to void
+// ============================================================================
+
+/**
+ * Carve a vertical column straight down to the void
+ * Used by VOID_CANNON to cut through all terrain
+ * @param {number} cx - Center X of the beam
+ * @param {number} beamWidth - Width of the beam column
+ * @param {number} voidY - The void level to carve down to
+ */
+export function carveToVoid(cx, beamWidth, voidY) {
+    if (!heights) return;
+
+    const halfWidth = beamWidth / 2;
+    const startX = Math.max(0, Math.floor(cx - halfWidth));
+    const endX = Math.min(width - 1, Math.ceil(cx + halfWidth));
+
+    // Carve each column down to void with jagged edges
+    for (let x = startX; x <= endX; x++) {
+        // Distance from beam center (0-1)
+        const distFromCenter = Math.abs(x - cx) / halfWidth;
+
+        // Core of beam goes all the way to void
+        // Edges taper off with some randomness
+        let targetDepth;
+        if (distFromCenter < 0.6) {
+            // Core - full depth to void
+            targetDepth = voidY + 50;
+        } else {
+            // Edge - jagged taper
+            const edgeFalloff = (distFromCenter - 0.6) / 0.4;
+            const jitter = (Math.random() - 0.5) * 100;
+            targetDepth = voidY + 50 - (edgeFalloff * 400) + jitter;
+        }
+
+        // Only lower terrain, never raise it
+        if (targetDepth > heights[x]) {
+            heights[x] = Math.min(targetDepth, voidY + 50);
         }
     }
 }
@@ -1104,6 +1147,7 @@ export const terrain = {
     raise,
     raiseJagged,
     digJagged,
+    carveToVoid,
     carveFissure,
     draw,
     generateProps,
