@@ -1,0 +1,93 @@
+# "GAME OFF" - January 2026
+
+THEME: "One Button Away"
+
+**Prize Pool:** $300 (winner takes all)
+**Duration:** NOW → Wednesday 11:59pm CT
+**Format:** Solo developers, 20 hours maximum
+---
+## The Rules
+
+### Time
+- You have **20 hours total** to build your game
+- Spread them however you like across the week
+- **Dev Log Required**: Post daily updates in Discord with:
+  - Hours worked today
+  - Cumulative total
+  - What you accomplished
+- Honor system - we trust you
+
+### Tools & Assets
+- **Any engine**: Unity, Godot, Unreal, GameMaker, or web (React, plain JS, etc.)
+- **AI tools allowed**: Code generation, art generation, music - go wild
+- **External assets allowed**: Free asset packs are fine, just credit them
+- **Templates OK**: Your personal boilerplate is fine, but no pre-made games
+
+### What to Submit
+- Playable build (Windows or web)
+- Source code on GitHub
+- README with: controls, how to play, credits
+- Dev log summary: total hours, major milestones
+
+### Version Control
+- **Commit your work to GitHub** when finishing each session
+- If you need help with Git/GitHub, let me know - it's easy to learn before we start
+
+### Scope Advice
+- **Aim for 5-10 minutes** of core gameplay
+- A polished small game beats an ambitious broken one
+- Get your "minimum viable game" working first, then add features
+---
+## Theme
+THEME: "One Button Away"
+—
+
+
+## Scoring (100 points)
+
+### Connor's Judgment - 50 points
+| Category | Points | What I'm Looking For |
+|----------|--------|---------------------|
+| Fun | 25 | Is it enjoyable? Would I play again? |
+| Game Design | 15 | Systems, balance, feedback loops |
+| Presentation | 10 | Art direction, audio, polish |
+
+### Claude's Analysis - 40 points
+| Category | Points | What Claude Evaluates |
+|----------|--------|----------------------|
+| Game Design | 15 | Systems coherence, mechanics depth |
+| Code Quality | 10 | Readability, organization |
+| Architecture | 10 | Structure, separation of concerns |
+| Documentation | 5 | README quality, code comments |
+
+### Puzzle Bonus - 10 points
+| Finish | Points |
+|--------|--------|
+| 1st | 10 |
+| 2nd | 6 |
+| 3rd | 3 |
+| DNF | 0 |
+
+There's a hidden puzzle. First to beat it and send proof (screenshot) gets a max bonus. You can attempt it anytime - doesn't count against your 20 hours. The puzzle is located at my personal website that is currently under construction but the puzzle is implemented: https://www.connorleisz.com/ 
+
+---
+
+## Tiebreaker
+
+If scores are tied: highest Fun score wins. Still tied? Fewer hours used wins.
+
+---
+
+## Schedule
+
+| When | What |
+|------|------|
+| NOW |
+| Daily | Post dev log updates |
+| Wednesday 11:59pm CT | Submissions due |
+| Following week | Judging & results |
+
+---
+
+Good luck. Make something fun.
+
