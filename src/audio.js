@@ -13,9 +13,17 @@ class AudioSystem {
         this.chargeOsc = null;
         this.chargeGain = null;
 
-        // Background music
+        // Background music playlist
+        this.playlist = [
+            'Mesmerizing Galaxy Loop.mp3',
+            'calm-space-music-312291.mp3',
+            'space-440026.mp3',
+            'whispering-stars-lofi-319187.mp3'
+        ];
+        this.currentTrackIndex = 0;
         this.bgMusic = null;
         this.musicStarted = false;
+        this.musicVolume = 0.15;
     }
 
     // Initialize on first user interaction (required by browsers)
@@ -34,32 +42,57 @@ class AudioSystem {
     }
 
     // ========================================================================
-    // Background Music
+    // Background Music Playlist
     // ========================================================================
 
     startBackgroundMusic() {
         if (this.musicStarted) return;
+        this.playTrack(this.currentTrackIndex);
+    }
+
+    playTrack(index) {
+        // Stop current track if playing
+        if (this.bgMusic) {
+            this.bgMusic.pause();
+            this.bgMusic.removeEventListener('ended', this.onTrackEnded);
+            this.bgMusic = null;
+        }
+
+        // Wrap index to playlist bounds
+        this.currentTrackIndex = index % this.playlist.length;
+        const trackPath = this.playlist[this.currentTrackIndex];
 
         try {
-            this.bgMusic = new Audio('whispering-stars-lofi-319187.mp3');
-            this.bgMusic.loop = true;
-            this.bgMusic.volume = 0.15;  // Background music volume
+            this.bgMusic = new Audio(trackPath);
+            this.bgMusic.loop = false;  // Don't loop individual tracks
+            this.bgMusic.volume = this.musicVolume;
+
+            // Bind the ended event to play next track
+            this.onTrackEnded = () => this.playNextTrack();
+            this.bgMusic.addEventListener('ended', this.onTrackEnded);
 
             // Must be called from user interaction context
             const playPromise = this.bgMusic.play();
             if (playPromise !== undefined) {
                 playPromise.then(() => {
-                    console.log('Background music started');
+                    console.log('Now playing:', trackPath);
                     this.musicStarted = true;
                 }).catch(e => {
                     console.warn('Could not autoplay music:', e);
-                    // Try again on next user interaction
                     this.musicStarted = false;
                 });
             }
         } catch (e) {
-            console.warn('Could not load background music:', e);
+            console.warn('Could not load track:', trackPath, e);
+            // Try next track if this one fails
+            setTimeout(() => this.playNextTrack(), 1000);
         }
+    }
+
+    playNextTrack() {
+        const nextIndex = (this.currentTrackIndex + 1) % this.playlist.length;
+        console.log('Track ended, playing next:', this.playlist[nextIndex]);
+        this.playTrack(nextIndex);
     }
 
     // Call this from any user interaction to ensure music plays
@@ -70,9 +103,15 @@ class AudioSystem {
     }
 
     setMusicVolume(volume) {
+        this.musicVolume = Math.max(0, Math.min(1, volume));
         if (this.bgMusic) {
-            this.bgMusic.volume = Math.max(0, Math.min(1, volume));
+            this.bgMusic.volume = this.musicVolume;
         }
+    }
+
+    // Skip to next track manually
+    skipTrack() {
+        this.playNextTrack();
     }
 
     // Resume context if suspended (browser autoplay policy)

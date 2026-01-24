@@ -3516,18 +3516,59 @@ function createCard(weaponKey, rarity) {
 }
 
 /**
- * Roll a single random card
+ * Roll a card, excluding specific weapon keys to avoid duplicates
  */
-function rollCard() {
+function rollCardExcluding(excludeKeys) {
     const rarity = rollRarity();
-    return rollCardOfRarity(rarity);
+    const pool = WEAPONS_BY_RARITY[rarity];
+
+    if (!pool || pool.length === 0) {
+        // Fallback to common
+        const fallbackPool = WEAPONS_BY_RARITY.common.filter(k => !excludeKeys.includes(k));
+        if (fallbackPool.length === 0) {
+            // Extreme edge case: just pick any common
+            const weaponKey = WEAPONS_BY_RARITY.common[0];
+            return createCard(weaponKey, 'common');
+        }
+        const weaponKey = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+        return createCard(weaponKey, 'common');
+    }
+
+    // Filter out excluded weapons
+    const availablePool = pool.filter(k => !excludeKeys.includes(k));
+
+    if (availablePool.length === 0) {
+        // All weapons of this rarity already picked, try another rarity
+        const allRarities = ['common', 'rare', 'epic', 'legendary'];
+        for (const fallbackRarity of allRarities) {
+            const fallbackPool = WEAPONS_BY_RARITY[fallbackRarity]?.filter(k => !excludeKeys.includes(k)) || [];
+            if (fallbackPool.length > 0) {
+                const weaponKey = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+                return createCard(weaponKey, fallbackRarity);
+            }
+        }
+        // Absolute fallback (should never happen with 30+ weapons)
+        const weaponKey = pool[0];
+        return createCard(weaponKey, rarity);
+    }
+
+    const weaponKey = availablePool[Math.floor(Math.random() * availablePool.length)];
+    return createCard(weaponKey, rarity);
 }
 
 /**
- * Generate 3 lottery cards with pity system
+ * Generate 3 lottery cards with pity system - NO DUPLICATES
  */
 function generateLotteryCards() {
-    let cards = [rollCard(), rollCard(), rollCard()];
+    const cards = [];
+    const usedWeapons = [];
+
+    // Roll 3 unique cards
+    for (let i = 0; i < 3; i++) {
+        const card = rollCardExcluding(usedWeapons);
+        cards.push(card);
+        usedWeapons.push(card.weaponKey);
+    }
 
     // Pity system: guarantee rare+ if 5 turns without one
     if (state.lottery.pityCounter >= 5) {
@@ -3535,8 +3576,13 @@ function generateLotteryCards() {
             c.rarity === 'rare' || c.rarity === 'epic' || c.rarity === 'legendary'
         );
         if (!hasRarePlus) {
-            // Upgrade the first card to rare
-            cards[0] = rollCardOfRarity('rare');
+            // Upgrade the first card to rare (excluding other cards' weapons)
+            const otherWeapons = [cards[1].weaponKey, cards[2].weaponKey];
+            const rarePool = WEAPONS_BY_RARITY.rare?.filter(k => !otherWeapons.includes(k)) || [];
+            if (rarePool.length > 0) {
+                const weaponKey = rarePool[Math.floor(Math.random() * rarePool.length)];
+                cards[0] = createCard(weaponKey, 'rare');
+            }
         }
     }
 
