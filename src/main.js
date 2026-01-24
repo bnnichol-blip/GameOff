@@ -242,19 +242,21 @@ const WEAPONS = {
     },
     SPLITTER: {
         name: 'Splitter',
-        description: 'Double airburst split',
+        description: 'RIDICULOUS chain-split mayhem!',
         cost: 45,
         tier: 'MID',
-        damage: 35,        // Per fragment damage
-        blastRadius: 30,
+        damage: 70,        // 2x damage per fragment
+        blastRadius: 90,   // 3x explosion size
         bounces: 1,
         projectileRadius: 7,
         projectileSpeed: 0.9,
         color: '#ff8844',
         behavior: 'splitterAirburst',
-        splitCount: 4,         // First split count
-        secondSplitCount: 2,   // Each fragment splits again
-        airburstDelay: 0.8     // Seconds before first split
+        splitCount: 4,         // First split: 4 fragments
+        subsequentSplitCount: 2,  // Each subsequent split: 2 fragments
+        maxSplitLevel: 4,      // Total split depth (1->4->8->16->32)
+        airburstDelay: 0.8,    // Level 1 delay
+        subsequentDelay: 0.3   // Level 2-4 delay (faster chain reaction)
     },
     HEAVY_SHELL: {
         name: 'Heavy Shell',
@@ -1407,27 +1409,38 @@ function updateProjectile(dt) {
     // Get weapon for behavior checks
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
 
-    // SPLITTER AIRBURST behavior - split in midair after delay
-    if (weapon && weapon.behavior === 'splitterAirburst' && !proj.isSplit && !proj.isAirburstFragment) {
-        proj.airburstTimer = (proj.airburstTimer || 0) + dt;
-        if (proj.airburstTimer >= (weapon.airburstDelay || 0.8)) {
-            // First airburst split
-            spawnAirburstFragments(proj, weapon.splitCount || 4, false);
-            state.projectile = null;
-            return;
-        }
-    }
+    // SPLITTER AIRBURST behavior - chain-split up to maxSplitLevel
+    if (weapon && weapon.behavior === 'splitterAirburst') {
+        const splitLevel = proj.splitLevel || 0;
+        const maxLevel = weapon.maxSplitLevel || 4;
 
-    // SPLITTER second-stage airburst (fragments split again)
-    if (weapon && weapon.behavior === 'splitterAirburst' && proj.isAirburstFragment && !proj.hasSecondSplit) {
-        proj.secondAirburstTimer = (proj.secondAirburstTimer || 0) + dt;
-        if (proj.secondAirburstTimer >= 0.4) {  // Shorter delay for second split
-            proj.hasSecondSplit = true;
-            spawnAirburstFragments(proj, weapon.secondSplitCount || 2, true);
-            // Remove this fragment from projectiles array
-            const idx = state.projectiles.indexOf(proj);
-            if (idx >= 0) state.projectiles.splice(idx, 1);
-            return;
+        // Only split if we haven't reached max depth
+        if (splitLevel < maxLevel) {
+            proj.airburstTimer = (proj.airburstTimer || 0) + dt;
+
+            // First split uses longer delay, subsequent splits are faster
+            const delay = splitLevel === 0
+                ? (weapon.airburstDelay || 0.8)
+                : (weapon.subsequentDelay || 0.3);
+
+            if (proj.airburstTimer >= delay) {
+                // Determine fragment count: first split = 4, rest = 2
+                const fragmentCount = splitLevel === 0
+                    ? (weapon.splitCount || 4)
+                    : (weapon.subsequentSplitCount || 2);
+
+                const isFinalLevel = (splitLevel + 1) >= maxLevel;
+                spawnAirburstFragments(proj, fragmentCount, isFinalLevel, splitLevel + 1);
+
+                // Remove this projectile
+                if (splitLevel === 0) {
+                    state.projectile = null;
+                } else {
+                    const idx = state.projectiles.indexOf(proj);
+                    if (idx >= 0) state.projectiles.splice(idx, 1);
+                }
+                return;
+            }
         }
     }
 
@@ -1563,12 +1576,13 @@ function updateProjectile(dt) {
     proj.x += proj.vx;
     proj.y += proj.vy;
 
-    // Wall bounces - simple pattern that works
+    // Wall bounces - INFINITE ricochets (don't count toward weapon's maxBounces)
     if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
         proj.vx = -proj.vx * 0.9;
         proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
-        onBounce(proj);
+        // Wall bounces don't call onBounce() - only terrain impacts do
         particles.sparks(proj.x, proj.y, 10, proj.color);
+        renderer.addScreenShake(3);
         audio.playBounce();
     }
 
@@ -2064,6 +2078,17 @@ function onExplode(proj) {
             particles.sparks(proj.x, proj.y, 40, '#664422');
             renderer.addScreenShake(18);
             renderer.flash('#442211', 0.2);
+        }
+    } else if (proj.isSplitterFragment) {
+        // SPLITTER fragments: Reduced effects to prevent screen overload with 32+ explosions
+        const splitLevel = proj.splitLevel || 1;
+        const effectScale = Math.max(0.25, 1 - (splitLevel - 1) * 0.2);
+        const particleCount = Math.floor(effectiveBlastRadius * 0.8 * effectScale);
+        particles.explosion(proj.x, proj.y, particleCount, proj.color, effectiveBlastRadius * 0.7);
+        renderer.addScreenShake(Math.max(2, effectiveBlastRadius / 5 * effectScale));
+        // Only flash for early split levels to prevent whiteout
+        if (splitLevel <= 2) {
+            renderer.flash(proj.color, 0.08 * effectScale);
         }
     } else {
         // Normal explosion for other weapons
@@ -2777,12 +2802,13 @@ function spawnSplitProjectiles(proj, count) {
 }
 
 /**
- * Spawn airburst fragments for SPLITTER weapon (double airburst)
+ * Spawn airburst fragments for SPLITTER weapon (chain-split up to 4 levels)
  * @param {Object} proj - Parent projectile
  * @param {number} count - Number of fragments
- * @param {boolean} isFinalStage - Whether this is the second (final) split
+ * @param {boolean} isFinalStage - Whether this is the final split level
+ * @param {number} newSplitLevel - The split level of the new fragments
  */
-function spawnAirburstFragments(proj, count, isFinalStage) {
+function spawnAirburstFragments(proj, count, isFinalStage, newSplitLevel) {
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
 
     // Spawn fragments in a radial burst pattern
@@ -2793,33 +2819,41 @@ function spawnAirburstFragments(proj, count, isFinalStage) {
         // Inherit some of parent's velocity
         const inheritFactor = 0.5;
 
+        // Fragments get progressively smaller
+        const sizeScale = Math.max(0.4, 1 - newSplitLevel * 0.15);
+
         state.projectiles.push({
             x: proj.x + Math.cos(angle) * 5,
             y: proj.y + Math.sin(angle) * 5,
             vx: proj.vx * inheritFactor + Math.cos(angle) * speed,
             vy: proj.vy * inheritFactor + Math.sin(angle) * speed,
-            radius: isFinalStage ? proj.radius * 0.6 : proj.radius * 0.75,
+            radius: proj.radius * sizeScale,
             color: proj.color,
             bounces: 0,
             maxBounces: 1,
             trail: [],
             weaponKey: proj.weaponKey,
             isSplit: true,
-            isAirburstFragment: !isFinalStage,  // Can split again if not final
-            hasSecondSplit: isFinalStage,       // Final fragments don't split
+            splitLevel: newSplitLevel,  // Track split depth
+            airburstTimer: 0,           // Reset timer for next split
             isCluster: true,  // Use cluster system
             buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
             buffedBlastBonus: proj.buffedBlastBonus || 0,
-            firedByPlayer: proj.firedByPlayer
+            firedByPlayer: proj.firedByPlayer,
+            isSplitterFragment: true    // Mark for reduced explosion effects
         });
     }
 
-    // Visual feedback - bigger burst for first split
-    const sparkCount = isFinalStage ? 15 : 30;
+    // Visual feedback - scale down for later splits to prevent screen overload
+    // Level 1: full effects, Level 2-4: progressively reduced
+    const effectScale = Math.max(0.3, 1 - (newSplitLevel - 1) * 0.25);
+    const sparkCount = Math.floor(20 * effectScale);
     particles.sparks(proj.x, proj.y, sparkCount, proj.color);
-    particles.sparks(proj.x, proj.y, sparkCount * 0.5, COLORS.white);
-    renderer.addScreenShake(isFinalStage ? 6 : 12);
-    renderer.flash(proj.color, isFinalStage ? 0.08 : 0.15);
+    particles.sparks(proj.x, proj.y, Math.floor(sparkCount * 0.5), COLORS.white);
+    renderer.addScreenShake(Math.max(3, 10 * effectScale));
+    if (newSplitLevel <= 2) {
+        renderer.flash(proj.color, 0.12 * effectScale);  // Only flash for early splits
+    }
     audio.playBounce();
 }
 
@@ -3499,16 +3533,16 @@ function simulateTrajectory(startX, startY, angleDeg, power, targetX, targetY, t
         x += vx;
         y += vy;
 
-        // Check wall bounces
-        if (x < WORLD_LEFT && bounces < maxBounces) {
+        // Wall bounces - INFINITE ricochets (track for AI info, but no limit)
+        if (x < WORLD_LEFT) {
             x = WORLD_LEFT;
             vx = -vx * 0.9;
-            bounces++;
+            bounces++;  // Track for AI bank shot detection, but no limit
         }
-        if (x > WORLD_RIGHT && bounces < maxBounces) {
+        if (x > WORLD_RIGHT) {
             x = WORLD_RIGHT;
             vx = -vx * 0.9;
-            bounces++;
+            bounces++;  // Track for AI bank shot detection, but no limit
         }
         // NO ceiling bounce - projectiles can arc high and fall back down
 
@@ -4462,6 +4496,13 @@ function updateFields(dt) {
             particles.trail(px, py, Math.random() < 0.5 ? '#ff4400' : '#ffaa00');
         }
 
+        // TERRAIN BURNING: Fire slowly eats away at the terrain
+        const burnRate = field.radius * 0.4 * dt;  // Scale with field size and time
+        terrain.destroy(field.x, terrain.getHeightAt(field.x), burnRate);
+
+        // Update field Y position as terrain burns away
+        field.y = terrain.getHeightAt(field.x);
+
         // Deal damage to players standing in the field
         for (let p = 0; p < state.players.length; p++) {
             const player = state.players[p];
@@ -4483,11 +4524,7 @@ function updateFields(dt) {
                     particles.sparks(player.x, player.y, 5, '#ff6600');
                 }
 
-                // Gentle knockback from fire (push away from center)
-                if (!isKnockbackImmune(player) && Math.random() < 0.1) {
-                    const pushDir = player.x > field.x ? 1 : -1;
-                    player.vx += pushDir * 1.5;  // Small periodic push
-                }
+                // NO knockback - fire just burns, doesn't push
 
                 // Check for kill
                 if (player.health <= 0) {
@@ -5106,11 +5143,11 @@ function updateClusterBomblet(proj, dt) {
     proj.x += proj.vx;
     proj.y += proj.vy;
 
-    // Wall bounces - simple pattern
+    // Wall bounces - INFINITE ricochets (don't count toward maxBounces)
     if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
         proj.vx = -proj.vx * 0.9;
         proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
-        proj.bounces++;
+        // Don't increment proj.bounces - wall bounces are free
         particles.sparks(proj.x, proj.y, 8, proj.color);
         audio.playBounce();
     }
@@ -5126,21 +5163,34 @@ function updateClusterBomblet(proj, dt) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // SPLITTER second-stage airburst (fragments split again)
+    // SPLITTER chain-split behavior (for fragments in projectiles array)
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-    if (weapon && weapon.behavior === 'splitterAirburst' && proj.isAirburstFragment && !proj.hasSecondSplit) {
-        proj.secondAirburstTimer = (proj.secondAirburstTimer || 0) + dt;
-        if (proj.secondAirburstTimer >= 0.4) {  // Shorter delay for second split
-            proj.hasSecondSplit = true;
-            spawnAirburstFragments(proj, weapon.secondSplitCount || 2, true);
-            // Remove this fragment from projectiles array
-            const idx = state.projectiles.indexOf(proj);
-            if (idx >= 0) state.projectiles.splice(idx, 1);
-            // Check if all projectiles are done
-            if (state.projectiles.length === 0 && !state.projectile) {
-                endTurn();
+    if (weapon && weapon.behavior === 'splitterAirburst') {
+        const splitLevel = proj.splitLevel || 0;
+        const maxLevel = weapon.maxSplitLevel || 4;
+
+        // Only split if we haven't reached max depth
+        if (splitLevel < maxLevel) {
+            proj.airburstTimer = (proj.airburstTimer || 0) + dt;
+
+            // Subsequent splits use faster delay
+            const delay = weapon.subsequentDelay || 0.3;
+
+            if (proj.airburstTimer >= delay) {
+                const fragmentCount = weapon.subsequentSplitCount || 2;
+                const isFinalLevel = (splitLevel + 1) >= maxLevel;
+                spawnAirburstFragments(proj, fragmentCount, isFinalLevel, splitLevel + 1);
+
+                // Remove this fragment
+                const idx = state.projectiles.indexOf(proj);
+                if (idx >= 0) state.projectiles.splice(idx, 1);
+
+                // Check if all projectiles are done
+                if (state.projectiles.length === 0 && !state.projectile) {
+                    endTurn();
+                }
+                return;
             }
-            return;
         }
     }
 
@@ -5178,19 +5228,17 @@ function updateAnomalyProjectile(dt) {
     proj.x += proj.vx;
     proj.y += proj.vy;
 
-    // Wall bounces - simple pattern
-    let didBounce = false;
+    // Wall bounces - INFINITE ricochets (don't count toward maxBounces)
     if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
         proj.vx = -proj.vx * 0.9;
         proj.x = Math.max(WORLD_LEFT, Math.min(WORLD_RIGHT, proj.x));
-        didBounce = true;
+        // Wall bounces don't call onAnomalyBounce() - direct effects only
+        particles.sparks(proj.x, proj.y, 20, '#8800ff');
+        renderer.addScreenShake(5);
+        audio.playBounce();
     }
 
     // NO ceiling bounce - projectiles can arc high and fall back down
-
-    if (didBounce) {
-        onAnomalyBounce(proj);
-    }
 
     // Spawn trail particles (purple for anomaly)
     if (Math.random() < 0.4) {
