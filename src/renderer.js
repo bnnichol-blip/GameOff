@@ -58,7 +58,8 @@ export class Renderer {
         if (this.shake.intensity > 0) {
             this.shake.x = (Math.random() - 0.5) * this.shake.intensity;
             this.shake.y = (Math.random() - 0.5) * this.shake.intensity;
-            this.shake.intensity *= 0.9; // Decay
+            // Slower decay for more impactful feel (was 0.9)
+            this.shake.intensity *= 0.88;
             
             this.ctx.save();
             this.ctx.translate(this.shake.x, this.shake.y);
@@ -91,7 +92,33 @@ export class Renderer {
         this.ctx.fillRect(0, 0, this.width, this.height);
         this.ctx.globalAlpha = 1;
     }
-    
+
+    /**
+     * Draw a radial light burst (additive glow)
+     * Use at explosion locations for intense impact
+     */
+    lightBurst(x, y, radius, color) {
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'lighter';
+        const gradient = this.ctx.createRadialGradient(x, y, 0, x, y, radius);
+        gradient.addColorStop(0, color);
+        gradient.addColorStop(0.5, this.hexToRgba(color, 0.5));
+        gradient.addColorStop(1, 'transparent');
+        this.ctx.fillStyle = gradient;
+        this.ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+        this.ctx.restore();
+    }
+
+    /**
+     * Convert hex color to rgba with alpha
+     */
+    hexToRgba(hex, alpha) {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r},${g},${b},${alpha})`;
+    }
+
     // ========================================================================
     // Glow Helpers
     // ========================================================================

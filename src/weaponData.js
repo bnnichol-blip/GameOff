@@ -78,10 +78,10 @@ export const WEAPONS = {
     MORTAR: {
         name: 'Mortar',
         description: 'Reliable AoE baseline',
-        cost: 40,
-        tier: 'MID',
-        damage: 100,       // THE baseline damage (buffed)
-        blastRadius: 100,  // THE baseline blast radius (buffed)
+        cost: 25,          // Cheap tier pricing
+        tier: 'CHEAP',     // Always available in lottery as common
+        damage: 80,        // 2-shot TTK baseline (was 100)
+        blastRadius: 100,  // THE baseline blast radius (unchanged)
         bounces: 1,
         projectileRadius: 8,
         projectileSpeed: 0.95,
@@ -383,16 +383,16 @@ export const WEAPONS = {
         description: '3 homing fragments when near enemy',
         cost: 65,
         tier: 'MID',
-        damage: 30,
-        blastRadius: 40,
-        bounces: 1,
+        damage: 50,
+        blastRadius: 50,
+        bounces: 2,
         projectileRadius: 7,
         projectileSpeed: 0.9,
         color: '#aa00ff',
         behavior: 'proximitySplit',
         splitCount: 3,
-        proximityRadius: 200,
-        homingStrength: 0.08
+        proximityRadius: 400,
+        homingStrength: 0.12
     },
     BOUNCING_BETTY: {
         name: 'Bouncing Betty',

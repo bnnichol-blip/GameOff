@@ -10,6 +10,20 @@ export const VIRTUAL_HEIGHT = 1440;
 export const NUM_PLAYERS = 4;
 export const DEFAULT_GRAVITY = 0.3;
 
+// ============================================================================
+// Biome Color Themes
+// ============================================================================
+
+export const BIOMES = {
+    CYBER_VOID: { name: 'Cyber Void', hue: 0, sat: 1.0, terrain: '#050510', edge: '#00ffff', voidColor: '#ff00ff' },
+    ICE_FIELD: { name: 'Ice Field', hue: 180, sat: 0.8, terrain: '#0a1520', edge: '#00ffff', voidColor: '#00ddff' },
+    LAVA_CORE: { name: 'Lava Core', hue: -15, sat: 1.4, terrain: '#1a0a05', edge: '#ff4400', voidColor: '#ff2200' },
+    TOXIC_ZONE: { name: 'Toxic Zone', hue: 90, sat: 1.3, terrain: '#051a0a', edge: '#44ff00', voidColor: '#88ff00' },
+    VOID_RIFT: { name: 'Void Rift', hue: 270, sat: 1.2, terrain: '#100520', edge: '#8800ff', voidColor: '#aa00ff' }
+};
+
+export const BIOME_KEYS = Object.keys(BIOMES);
+
 // Player creation function
 function createPlayers(count) {
     const players = [];
@@ -140,7 +154,13 @@ export const state = {
     voidCannonBeams: [],  // { x, delay, timer, ownerId, color }
 
     // Lightning Arc visual effect
-    lightningArc: null  // { x1, y1, x2, y2, timer, color }
+    lightningArc: null,  // { x1, y1, x2, y2, timer, color }
+
+    // Biome system (visual theme)
+    currentBiome: null,  // Set at game start from BIOMES
+
+    // Death notifications for kill celebrations
+    deathNotifications: []  // { text, x, y, color, timer }
 };
 
 // ============================================================================

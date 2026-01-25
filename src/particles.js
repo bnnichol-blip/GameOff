@@ -337,6 +337,25 @@ export class ParticleSystem {
                 fadeInTime: 0.05
             });
         }
+
+        // === LAYER 8: Secondary debris ring (for big explosions) ===
+        if (blastRadius > 80) {
+            const debrisCount = 20;
+            for (let i = 0; i < debrisCount; i++) {
+                const angle = (i / debrisCount) * Math.PI * 2;
+                this.spawn(x, y, {
+                    type: 'streak',
+                    color: color,
+                    angle: angle,
+                    speed: 15 * scale,
+                    radius: randomRange(2, 4),
+                    life: randomRange(0.5, 0.8),
+                    gravity: 0.15,
+                    friction: 0.96,
+                    glowIntensity: 1.2
+                });
+            }
+        }
     }
 
     // ========================================================================

@@ -19,6 +19,16 @@ let circuitNodes = [];      // Junction nodes
 let contourLines = [];      // Depth contour layers
 let circuitPulses = [];     // Animated pulses traveling along lines
 
+// Biome colors (set from main.js)
+let currentBiomeColors = {
+    terrain: '#050510',
+    edge: '#00ffff',
+    voidColor: '#ff00ff'
+};
+
+// Crater tracking for hot glow effect
+let craters = [];  // { x, y, radius, heat: 1.0 }
+
 // ============================================================================
 // Generation
 // ============================================================================
@@ -268,6 +278,11 @@ export function destroy(cx, cy, radius) {
                 heights[x] = craterBottom;
             }
         }
+    }
+
+    // Track crater for hot glow effect (limit to prevent memory bloat)
+    if (craters.length < 50) {
+        craters.push({ x: cx, y: cy, radius: radius, heat: 1.0 });
     }
 }
 
@@ -686,10 +701,36 @@ function generateCircuitTrace(depthOffset, traceIndex) {
 // ============================================================================
 
 /**
+ * Set biome colors for terrain rendering
+ * @param {Object} biome - Biome object with terrain, edge, voidColor properties
+ */
+export function setBiomeColors(biome) {
+    if (biome) {
+        currentBiomeColors.terrain = biome.terrain || '#050510';
+        currentBiomeColors.edge = biome.edge || '#00ffff';
+        currentBiomeColors.voidColor = biome.voidColor || '#ff00ff';
+    }
+}
+
+/**
+ * Update crater heat decay (call each frame)
+ * @param {number} dt - Delta time in seconds
+ */
+export function updateCraters(dt) {
+    for (let i = craters.length - 1; i >= 0; i--) {
+        craters[i].heat *= 0.98;  // Decay heat
+        if (craters[i].heat < 0.05) {
+            craters.splice(i, 1);  // Remove cold craters
+        }
+    }
+}
+
+/**
  * Draw the terrain with Tron circuit board aesthetic
  * @param {Renderer} renderer - The renderer instance
+ * @param {number} voidY - Current void Y position for corruption effect
  */
-export function draw(renderer) {
+export function draw(renderer, voidY = 9999) {
     if (!heights) return;
 
     const ctx = renderer.ctx;
@@ -706,8 +747,8 @@ export function draw(renderer) {
     ctx.lineTo(0, canvasHeight + 50);
     ctx.closePath();
 
-    // Dark circuit board fill
-    ctx.fillStyle = '#050510';
+    // Biome-aware terrain fill
+    ctx.fillStyle = currentBiomeColors.terrain;
     ctx.fill();
 
     // Draw contour layers (depth effect)
@@ -722,29 +763,97 @@ export function draw(renderer) {
     // Draw animated pulses
     drawCircuitPulses(renderer);
 
-    // Glowing edge line (main terrain surface)
-    renderer.setGlow(COLORS.cyan, 20);
+    // Draw crater glow effects (hot edges from recent explosions)
+    drawCraterGlow(renderer);
+
+    // Draw void corruption effect (near void edge)
+    drawVoidCorruption(renderer, voidY);
+
+    // Glowing edge line (biome-aware)
+    const edgeColor = currentBiomeColors.edge;
+    renderer.setGlow(edgeColor, 20);
     ctx.beginPath();
     ctx.moveTo(0, heights[0]);
     for (let x = 1; x < width; x++) {
         ctx.lineTo(x, heights[x]);
     }
-    ctx.strokeStyle = COLORS.cyan;
+    ctx.strokeStyle = edgeColor;
     ctx.lineWidth = 2;
     ctx.stroke();
     renderer.clearGlow();
 
-    // Secondary edge glow (magenta, slightly offset)
+    // Secondary edge glow (void color, slightly offset)
+    const secondaryColor = currentBiomeColors.voidColor;
     ctx.globalAlpha = 0.3;
-    renderer.setGlow(COLORS.magenta, 10);
+    renderer.setGlow(secondaryColor, 10);
     ctx.beginPath();
     ctx.moveTo(0, heights[0] + 3);
     for (let x = 1; x < width; x++) {
         ctx.lineTo(x, heights[x] + 3);
     }
-    ctx.strokeStyle = COLORS.magenta;
+    ctx.strokeStyle = secondaryColor;
     ctx.lineWidth = 1;
     ctx.stroke();
+    renderer.clearGlow();
+    ctx.globalAlpha = 1;
+}
+
+/**
+ * Draw glowing hot edges around recent craters
+ * Optimized: limit crater count, simplified glow
+ */
+function drawCraterGlow(renderer) {
+    const ctx = renderer.ctx;
+
+    // Only draw the 5 hottest craters for performance
+    const hotCraters = craters
+        .filter(c => c.heat > 0.2)
+        .sort((a, b) => b.heat - a.heat)
+        .slice(0, 5);
+
+    if (hotCraters.length === 0) return;
+
+    // Single glow setup for all craters
+    renderer.setGlow('#ff6600', 12);
+
+    for (const crater of hotCraters) {
+        const glowAlpha = crater.heat * 0.35;
+        ctx.globalAlpha = glowAlpha;
+        ctx.strokeStyle = crater.heat > 0.5 ? '#ff4400' : '#ff8800';
+        ctx.lineWidth = 3 + crater.heat * 3;
+
+        ctx.beginPath();
+        ctx.arc(crater.x, crater.y, crater.radius * 0.8, 0, Math.PI);
+        ctx.stroke();
+    }
+
+    renderer.clearGlow();
+    ctx.globalAlpha = 1;
+}
+
+/**
+ * Draw void corruption effect on terrain near void edge
+ * Optimized: batched drawing, single glow pass
+ */
+function drawVoidCorruption(renderer, voidY) {
+    const ctx = renderer.ctx;
+    const corruptionRange = 100;  // Pixels above void where corruption starts
+
+    // Set glow once for entire corruption effect
+    ctx.globalAlpha = 0.2;
+    renderer.setGlow(currentBiomeColors.voidColor, 8);
+    ctx.fillStyle = currentBiomeColors.voidColor;
+
+    // Batch all corruption rectangles
+    for (let x = 0; x < width; x += 20) {  // Wider spacing for performance
+        const terrainY = heights[x];
+        const distanceToVoid = voidY - terrainY;
+
+        if (distanceToVoid > 0 && distanceToVoid < corruptionRange) {
+            ctx.fillRect(x - 10, terrainY, 20, Math.min(distanceToVoid, 50));
+        }
+    }
+
     renderer.clearGlow();
     ctx.globalAlpha = 1;
 }
@@ -1152,5 +1261,7 @@ export const terrain = {
     draw,
     generateProps,
     drawProps,
-    updateCircuitPulses
+    updateCircuitPulses,
+    setBiomeColors,
+    updateCraters
 };

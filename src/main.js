@@ -13,9 +13,24 @@ import { audio } from './audio.js';
 import { degToRad, clamp, distance } from './utils.js';
 import * as events from './events.js';
 import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
+import { postfx, initPostFX, applyAllPostFX, triggerChromatic, activateGlitch, deactivateGlitch, ENABLE_POSTFX } from './postfx.js';
 // Import weapon data and tank types from extracted module
 import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES,
          LOTTERY_RARITY_RATES, LOTTERY_RARITY_COLORS, WEAPONS_BY_RARITY, WEAPON_RARITY_MAP } from './weaponData.js';
+
+// ============================================================================
+// Biome Color Themes
+// ============================================================================
+
+const BIOMES = {
+    CYBER_VOID: { name: 'Cyber Void', hue: 0, sat: 1.0, terrain: '#050510', edge: '#00ffff', voidColor: '#ff00ff' },
+    ICE_FIELD: { name: 'Ice Field', hue: 180, sat: 0.8, terrain: '#0a1520', edge: '#00ffff', voidColor: '#00ddff' },
+    LAVA_CORE: { name: 'Lava Core', hue: -15, sat: 1.4, terrain: '#1a0a05', edge: '#ff4400', voidColor: '#ff2200' },
+    TOXIC_ZONE: { name: 'Toxic Zone', hue: 90, sat: 1.3, terrain: '#051a0a', edge: '#44ff00', voidColor: '#88ff00' },
+    VOID_RIFT: { name: 'Void Rift', hue: 270, sat: 1.2, terrain: '#100520', edge: '#8800ff', voidColor: '#aa00ff' }
+};
+
+const BIOME_KEYS = Object.keys(BIOMES);
 
 // ============================================================================
 // Game Constants
@@ -218,7 +233,10 @@ const state = {
     anomalyProjectile: null,  // For VOID ANOMALY
     // New physics event state
     velocityMultiplier: 1.0,  // For TIME DILATION, MUZZLE OVERCHARGE/DAMPEN
-    wind: 0,                  // For WIND BLAST (horizontal force)
+    baseWind: 0,              // Persistent wind (changes each round)
+    wind: 0,                  // Active wind = baseWind (or amplified during WIND BLAST)
+    windShiftPending: false,  // Show "WIND SHIFT" announcement
+    windShiftTimer: 0,        // Animation timer for wind shift announcement
     extraBounces: 0,          // For ELASTIC WORLD
     recoilPending: false,     // For RECOIL KICK
     voidSurgePending: false,  // For VOID SURGE
@@ -260,7 +278,13 @@ const state = {
     voidCannonBeams: [],  // { x, delay, timer, ownerId, color }
 
     // Lightning arc for chain lightning
-    lightningArc: null  // { x1, y1, x2, y2, timer, color }
+    lightningArc: null,  // { x1, y1, x2, y2, timer, color }
+
+    // Biome system (visual theme)
+    currentBiome: null,  // Set at game start from BIOMES
+
+    // Death notifications for kill celebrations
+    deathNotifications: []  // { text, x, y, color, timer }
 };
 
 // Tank type keys for selection
@@ -498,6 +522,24 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     setTimeout(() => renderer.flash(color, 0.4), 80);
     setTimeout(() => renderer.flash(COLORS.orange, 0.2), 160);
 
+    // Chromatic aberration on death (maximum intensity)
+    triggerChromatic(5);
+
+    // Sync space battle to player death
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.triggerPlayerKillSync(x);
+    }
+
+    // Death notification (ELIMINATED text rising from corpse)
+    state.deathNotifications.push({
+        text: 'ELIMINATED',
+        x: x,
+        y: y - 50,
+        color: color,
+        timer: 1.5
+    });
+
     // Audio
     audio.playKill();
     if (isVoidDeath) {
@@ -562,7 +604,10 @@ function resetGame() {
     state.anomalyProjectile = null;
     // Reset new physics event state
     state.velocityMultiplier = 1.0;
+    state.baseWind = 0;
     state.wind = 0;
+    state.windShiftPending = false;
+    state.windShiftTimer = 0;
     state.extraBounces = 0;
     state.recoilPending = false;
     state.voidSurgePending = false;
@@ -601,6 +646,15 @@ function resetGame() {
     state.pendingMeteors = [];
     state.voidCannonBeams = [];
     state.lightningArc = null;
+
+    // Reset death notifications
+    state.deathNotifications = [];
+
+    // Select random biome for this game
+    const biomeKey = BIOME_KEYS[Math.floor(Math.random() * BIOME_KEYS.length)];
+    state.currentBiome = BIOMES[biomeKey];
+    terrain.setBiomeColors(state.currentBiome);
+    console.log(`[BIOME] Selected: ${state.currentBiome.name}`);
 }
 
 /**
@@ -625,6 +679,11 @@ function startGame() {
 
     // Roll initial glitch event for round 1
     rollNewGlitchEvent();
+
+    // Roll initial wind for round 1 (no announcement - nothing to shift from)
+    state.baseWind = rollNewWind();
+    state.wind = state.baseWind;
+    state.windShiftPending = false;
 
     // Start with Cosmic Lottery for first turn
     startLottery();
@@ -825,6 +884,7 @@ function fireRailgunBeam(player, weapon, angleRad) {
     renderer.addScreenShake(25);
     renderer.flash(COLORS.white, 0.5);
     renderer.flash(weapon.color, 0.3);
+    triggerChromatic(3);  // Chromatic on railgun hit
     audio.playExplosion(1.2);
 
     // Particles along beam
@@ -2212,6 +2272,15 @@ function onExplode(proj) {
     const bounceDamageBonus = proj.accumulatedDamageBonus || 0;
     const effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier * archetypeDamageMultiplier;
 
+    // Sync space battle to big explosions (blastRadius > 60)
+    if (effectiveBlastRadius > 60) {
+        const ambient = getAmbient();
+        if (ambient && ambient.triggerExplosionSync) {
+            const intensity = Math.min(1, effectiveBlastRadius / 150);  // Scale 60-150 to 0.4-1.0
+            ambient.triggerExplosionSync(proj.x, intensity);
+        }
+    }
+
     // ENHANCED Visual effects - scale with blast radius
     // RAILGUN gets special high-impact visuals
     const isRailgun = proj.weaponKey === 'RAILGUN' || proj.tankType === 'PHANTOM';
@@ -3178,10 +3247,10 @@ function spawnProximityHomingFragments(proj, target, count, homingStrength) {
             y: proj.y,
             vx: Math.cos(spreadAngle) * speed,
             vy: Math.sin(spreadAngle) * speed,
-            radius: 5,
+            radius: 6,
             color: '#aa00ff',
             bounces: 0,
-            maxBounces: 1,
+            maxBounces: 3,
             trail: [],
             weaponKey: proj.weaponKey,
             isCluster: true,
@@ -3445,6 +3514,16 @@ function endTurn() {
 
             // Roll new glitch event for this round
             rollNewGlitchEvent();
+
+            // Roll new wind for this round
+            const previousWind = state.baseWind;
+            state.baseWind = rollNewWind();
+            state.wind = state.baseWind;
+            // Show announcement if wind changed
+            if (previousWind !== state.baseWind) {
+                state.windShiftPending = true;
+                state.windShiftTimer = 1.5; // 1.5 second announcement
+            }
         }
 
         // Wait for player to press space before starting next turn
@@ -3598,13 +3677,14 @@ function rollCardExcluding(excludeKeys) {
 }
 
 /**
- * Generate 3 lottery cards with pity system - NO DUPLICATES
+ * Generate 3 random lottery cards + 1 guaranteed Mortar (4 total)
+ * Pity system ensures rare+ every 5 turns - NO DUPLICATES
  */
 function generateLotteryCards() {
     const cards = [];
-    const usedWeapons = [];
+    const usedWeapons = ['MORTAR'];  // Exclude Mortar from random pool (it's guaranteed)
 
-    // Roll 3 unique cards
+    // Roll 3 unique random cards
     for (let i = 0; i < 3; i++) {
         const card = rollCardExcluding(usedWeapons);
         cards.push(card);
@@ -3619,7 +3699,7 @@ function generateLotteryCards() {
         );
         if (!hasRarePlus) {
             // Upgrade the first card to rare (excluding other cards' weapons)
-            const otherWeapons = [cards[1].weaponKey, cards[2].weaponKey];
+            const otherWeapons = [cards[1].weaponKey, cards[2].weaponKey, 'MORTAR'];
             const rarePool = WEAPONS_BY_RARITY.rare?.filter(k => !otherWeapons.includes(k)) || [];
             if (rarePool.length > 0) {
                 const weaponKey = rarePool[Math.floor(Math.random() * rarePool.length)];
@@ -3633,6 +3713,11 @@ function generateLotteryCards() {
         c.rarity === 'rare' || c.rarity === 'epic' || c.rarity === 'legendary'
     );
     state.lottery.pityCounter = hasRarePlus ? 0 : state.lottery.pityCounter + 1;
+
+    // Add guaranteed Mortar as 1st card (always common rarity, marked as guaranteed)
+    const mortarCard = createCard('MORTAR', 'common');
+    mortarCard.guaranteed = true;  // Mark as guaranteed fallback
+    cards.unshift(mortarCard);
 
     return cards;
 }
@@ -3743,7 +3828,7 @@ function handleLotteryInput() {
 
     const player = getCurrentPlayer();
 
-    // Number keys for direct selection
+    // Number keys for direct selection (1-4 for 4 cards)
     if (input.wasPressed('Digit1') || input.wasPressed('Numpad1')) {
         selectLotteryCard(0);
         return;
@@ -3754,6 +3839,10 @@ function handleLotteryInput() {
     }
     if (input.wasPressed('Digit3') || input.wasPressed('Numpad3')) {
         selectLotteryCard(2);
+        return;
+    }
+    if (input.wasPressed('Digit4') || input.wasPressed('Numpad4')) {
+        selectLotteryCard(3);  // Guaranteed Mortar
         return;
     }
 
@@ -3767,13 +3856,13 @@ function handleLotteryInput() {
         return;
     }
 
-    // Arrow key navigation
+    // Arrow key navigation (0-3 for 4 cards)
     if (input.wasPressed('ArrowLeft')) {
         state.lottery.selectedIndex = Math.max(0, state.lottery.selectedIndex - 1);
         audio.playSelect();
     }
     if (input.wasPressed('ArrowRight')) {
-        state.lottery.selectedIndex = Math.min(2, state.lottery.selectedIndex + 1);
+        state.lottery.selectedIndex = Math.min(3, state.lottery.selectedIndex + 1);
         audio.playSelect();
     }
 
@@ -3841,15 +3930,113 @@ function updateLotteryNotifications(dt) {
 /**
  * Get current gravity adjusted for events
  */
+/**
+ * Roll new wind value for the round
+ * Returns 0 (15% calm) or ±0.02 to ±0.08
+ */
+function rollNewWind() {
+    if (Math.random() < 0.15) return 0; // 15% calm
+    const magnitude = Math.random() * 0.15; // 0 to 0.15
+    const direction = Math.random() < 0.5 ? -1 : 1;
+    return magnitude * direction;
+}
+
 function getEffectiveGravity() {
     return state.gravity || DEFAULT_GRAVITY;
 }
 
 /**
- * Get current wind (from events)
+ * Get current wind (base wind or amplified during WIND BLAST)
  */
 function getEffectiveWind() {
     return state.wind || 0;
+}
+
+/**
+ * Simulate a hitscan beam (instant, straight line) with wall bounces
+ * Used for Railgun, Plasma Bolt, and other instant-hit weapons
+ * Returns { hitX, hitY, hitsTarget, distance, bounces } or null if OOB
+ */
+function simulateHitscan(startX, startY, angleDeg, targetX, targetY, targetRadius, weaponOverride = null) {
+    const weapon = weaponOverride || WEAPONS[getCurrentPlayer().weapon] || WEAPONS.RAILGUN;
+    const angleRad = degToRad(180 - angleDeg);
+    const maxBounces = (weapon.bounces || 1) + state.extraBounces;
+
+    let x = startX;
+    let y = startY - 20;  // Barrel offset
+    let dx = Math.cos(angleRad);
+    let dy = -Math.sin(angleRad);
+
+    // Normalize direction
+    const len = Math.sqrt(dx * dx + dy * dy);
+    dx /= len;
+    dy /= len;
+
+    // Step size for ray tracing
+    const stepSize = 5;
+    const maxSteps = 2000;  // Enough to cross the map multiple times
+    let bounces = 0;
+
+    for (let step = 0; step < maxSteps; step++) {
+        // Move along the ray
+        x += dx * stepSize;
+        y += dy * stepSize;
+
+        // Wall bounces
+        if (x < WORLD_LEFT && bounces < maxBounces) {
+            x = WORLD_LEFT;
+            dx = -dx;
+            bounces++;
+        }
+        if (x > WORLD_RIGHT && bounces < maxBounces) {
+            x = WORLD_RIGHT;
+            dx = -dx;
+            bounces++;
+        }
+
+        // Check if beam hits target tank
+        const distToTarget = Math.sqrt((x - targetX) ** 2 + (y - targetY) ** 2);
+        if (distToTarget < targetRadius + 5) {  // Small buffer for hit detection
+            return {
+                hitX: x,
+                hitY: y,
+                hitsTarget: true,
+                distance: 0,  // Direct hit
+                bounces: bounces
+            };
+        }
+
+        // Check terrain hit
+        const groundY = terrain.getHeightAt(x);
+        if (y >= groundY) {
+            // Hit terrain - return distance to target
+            return {
+                hitX: x,
+                hitY: y,
+                hitsTarget: false,
+                distance: distToTarget,
+                bounces: bounces
+            };
+        }
+
+        // Check void
+        if (y > state.voidY) {
+            return {
+                hitX: x,
+                hitY: y,
+                hitsTarget: false,
+                distance: Math.sqrt((x - targetX) ** 2 + (y - targetY) ** 2),
+                bounces: bounces
+            };
+        }
+
+        // Out of bounds (above screen is OK for beams going up)
+        if (x < -200 || x > VIRTUAL_WIDTH + 200 || y > VIRTUAL_HEIGHT + 200) {
+            return null;
+        }
+    }
+
+    return null;  // Timeout
 }
 
 /**
@@ -3975,12 +4162,12 @@ function findOptimalShot(ai, target, weapon) {
     const basePowerMin = 0.4;
     const basePowerMax = 0.98;
 
-    // Direct shots - increased grid resolution for better accuracy
-    for (let angleStep = 0; angleStep <= 20; angleStep++) {
-        const testAngle = angleMin + (angleMax - angleMin) * (angleStep / 20);
+    // Direct shots - 30x20 grid for better accuracy on 2560px world
+    for (let angleStep = 0; angleStep <= 30; angleStep++) {
+        const testAngle = angleMin + (angleMax - angleMin) * (angleStep / 30);
 
-        for (let powerStep = 0; powerStep <= 16; powerStep++) {
-            const testPower = basePowerMin + (powerStep / 16) * (basePowerMax - basePowerMin);
+        for (let powerStep = 0; powerStep <= 20; powerStep++) {
+            const testPower = basePowerMin + (powerStep / 20) * (basePowerMax - basePowerMin);
 
             const result = simulateTrajectory(
                 ai.x, ai.y, testAngle, testPower,
@@ -4001,11 +4188,11 @@ function findOptimalShot(ai, target, weapon) {
 
     // Bank shots (if direct shot not found or for variety)
     if (!foundHit || Math.random() < 0.2) {
-        for (let angleStep = 0; angleStep <= 8; angleStep++) {
-            const testAngle = bankAngleMin + (bankAngleMax - bankAngleMin) * (angleStep / 8);
+        for (let angleStep = 0; angleStep <= 12; angleStep++) {
+            const testAngle = bankAngleMin + (bankAngleMax - bankAngleMin) * (angleStep / 12);
 
-            for (let powerStep = 0; powerStep <= 8; powerStep++) {
-                const testPower = 0.5 + (powerStep / 8) * 0.45;
+            for (let powerStep = 0; powerStep <= 12; powerStep++) {
+                const testPower = 0.5 + (powerStep / 12) * 0.45;
 
                 const result = simulateTrajectory(
                     ai.x, ai.y, testAngle, testPower,
@@ -4025,10 +4212,10 @@ function findOptimalShot(ai, target, weapon) {
         }
     }
 
-    // Fine-tune around best found solution (only if we found something)
+    // Fine-tune around best found solution with tighter window
     if (bestDistance < Infinity) {
-        for (let fineAngle = bestAngle - 4; fineAngle <= bestAngle + 4; fineAngle += 0.5) {
-            for (let finePower = bestPower - 0.08; finePower <= bestPower + 0.08; finePower += 0.02) {
+        for (let fineAngle = bestAngle - 3; fineAngle <= bestAngle + 3; fineAngle += 0.3) {
+            for (let finePower = bestPower - 0.06; finePower <= bestPower + 0.06; finePower += 0.015) {
                 const result = simulateTrajectory(
                     ai.x, ai.y, fineAngle, clamp(finePower, 0.3, 0.98),
                     target.x, target.y, TANK_RADIUS, weapon
@@ -4157,18 +4344,54 @@ function prepareAITurn() {
         return;
     }
 
-    // Find best target (lowest health enemy, weighted by distance)
+    // Helper: Check if enemy is in a "hole" (terrain around them is higher)
+    const isInHole = (enemy) => {
+        const enemyGroundY = terrain.getHeightAt(enemy.x);
+        const leftGroundY = terrain.getHeightAt(enemy.x - 80);
+        const rightGroundY = terrain.getHeightAt(enemy.x + 80);
+        // Enemy is in a hole if terrain on both sides is at least 40px higher
+        return leftGroundY < enemyGroundY - 40 && rightGroundY < enemyGroundY - 40;
+    };
+
+    // Helper: Check if there's clear line-of-sight to target
+    const hasClearLOS = (enemy) => {
+        const dx = enemy.x - ai.x;
+        const dy = enemy.y - ai.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const steps = Math.ceil(dist / 20);
+
+        for (let i = 1; i < steps; i++) {
+            const t = i / steps;
+            const checkX = ai.x + dx * t;
+            const checkY = ai.y + dy * t;
+            const groundY = terrain.getHeightAt(checkX);
+            if (checkY > groundY - 10) {
+                return false;  // Terrain blocks LOS
+            }
+        }
+        return true;
+    };
+
+    // Find best target with situational scoring
     let target = null;
     let bestScore = -Infinity;
     for (const enemy of enemies) {
-        // Score: heavily prefer low health, secondary prefer close distance
+        // Base score: heavily prefer low health, secondary prefer close distance
         const healthScore = (100 - enemy.health) * 15;  // Lower health = much higher score
         const distScore = -Math.abs(enemy.x - ai.x) / 50;  // Closer = higher score
 
         // Bonus for enemies near void
         const voidProximity = (state.voidY - enemy.y) < 150 ? 200 : 0;
 
-        const score = healthScore + distScore + voidProximity;
+        // Bonus for clear LOS with hitscan weapon
+        const isHitscanWeapon = weapon.projectileSpeed === 0;
+        const losBonus = (isHitscanWeapon && hasClearLOS(enemy)) ? 150 : 0;
+
+        // Bonus for enemies in holes with splash weapons
+        const isSplashWeapon = (weapon.blastRadius || 0) >= 80;
+        const holeBonus = (isSplashWeapon && isInHole(enemy)) ? 100 : 0;
+
+        const score = healthScore + distScore + voidProximity + losBonus + holeBonus;
 
         if (score > bestScore) {
             bestScore = score;
@@ -4186,51 +4409,81 @@ function prepareAITurn() {
 
     // === WEAPON-SPECIFIC SHOT LOGIC ===
 
-    // RAILGUN: Instant beam - aim directly at target with bank shot consideration
-    if (ai.weapon === 'RAILGUN') {
+    // HITSCAN WEAPONS: Instant beam - use simulateHitscan for accurate targeting
+    const isHitscan = weapon.projectileSpeed === 0 ||
+                      weapon.behavior === 'railgunBeam' ||
+                      weapon.behavior === 'plasmaBeam' ||
+                      weapon.behavior === 'instantBeam';
+
+    if (isHitscan) {
         const dx = target.x - ai.x;
-        const dy = target.y - ai.y;
         const shootingRight = dx > 0;
 
-        // CORRECTED angle ranges (same as findOptimalShot):
+        // CORRECTED angle ranges:
         // To shoot RIGHT: angleDeg 95-165
         // To shoot LEFT: angleDeg 15-85
-        let bestRailAngle = shootingRight ? 130 : 50;  // Smart defaults toward target
+        let bestHitscanAngle = shootingRight ? 130 : 50;  // Smart defaults toward target
 
-        // Grid search for best railgun angle
+        // Grid search for best angle using proper hitscan simulation
         const angleMin = shootingRight ? 95 : 15;
         const angleMax = shootingRight ? 165 : 85;
 
-        let bestRailDist = Infinity;
-        for (let testAngle = angleMin; testAngle <= angleMax; testAngle += 3) {
-            // Simulate beam path
-            const result = simulateTrajectory(ai.x, ai.y, testAngle, 0.5, target.x, target.y, TANK_RADIUS, weapon);
-            if (result && result.distance < bestRailDist) {
-                bestRailDist = result.distance;
-                bestRailAngle = testAngle;
+        let bestHitscanDist = Infinity;
+        let foundDirectHit = false;
+
+        // Direct shots - finer grid for precision weapons
+        for (let testAngle = angleMin; testAngle <= angleMax; testAngle += 2) {
+            const result = simulateHitscan(ai.x, ai.y, testAngle, target.x, target.y, TANK_RADIUS, weapon);
+            if (result) {
+                if (result.hitsTarget) {
+                    // Direct hit found!
+                    bestHitscanAngle = testAngle;
+                    bestHitscanDist = 0;
+                    foundDirectHit = true;
+                    break;  // Can't do better than a direct hit
+                } else if (result.distance < bestHitscanDist) {
+                    bestHitscanDist = result.distance;
+                    bestHitscanAngle = testAngle;
+                }
             }
         }
 
-        // Also try bank shots off walls (opposite direction)
-        const bankAngleMin = shootingRight ? 15 : 95;
-        const bankAngleMax = shootingRight ? 85 : 165;
-        for (let testAngle = bankAngleMin; testAngle <= bankAngleMax; testAngle += 5) {
-            const result = simulateTrajectory(ai.x, ai.y, testAngle, 0.5, target.x, target.y, TANK_RADIUS, weapon);
-            if (result && result.bounces > 0 && result.distance < bestRailDist) {
-                bestRailDist = result.distance;
-                bestRailAngle = testAngle;
+        // Also try bank shots off walls (if no direct hit and weapon has bounces)
+        if (!foundDirectHit && (weapon.bounces || 0) > 0) {
+            const bankAngleMin = shootingRight ? 15 : 95;
+            const bankAngleMax = shootingRight ? 85 : 165;
+            for (let testAngle = bankAngleMin; testAngle <= bankAngleMax; testAngle += 3) {
+                const result = simulateHitscan(ai.x, ai.y, testAngle, target.x, target.y, TANK_RADIUS, weapon);
+                if (result && result.bounces > 0) {
+                    if (result.hitsTarget) {
+                        bestHitscanAngle = testAngle;
+                        bestHitscanDist = 0;
+                        foundDirectHit = true;
+                        break;
+                    } else if (result.distance < bestHitscanDist) {
+                        bestHitscanDist = result.distance;
+                        bestHitscanAngle = testAngle;
+                    }
+                }
             }
         }
 
-        // 80% accuracy for railgun (it's a skill weapon)
-        const willHitRail = Math.random() < 0.80;
-        if (willHitRail) {
-            state.aiTargetAngle = bestRailAngle;
+        // Accuracy: 85% for hitscan weapons (they're precision tools)
+        // Scale accuracy with distance - harder to hit far targets
+        const distanceToTarget = Math.sqrt((target.x - ai.x) ** 2 + (target.y - ai.y) ** 2);
+        const distancePenalty = Math.min(distanceToTarget / 2000, 0.15);  // Up to 15% penalty for far targets
+        const accuracy = 0.85 - distancePenalty;
+
+        const willHit = Math.random() < accuracy;
+        if (willHit && foundDirectHit) {
+            state.aiTargetAngle = bestHitscanAngle;
         } else {
-            state.aiTargetAngle = bestRailAngle + (Math.random() - 0.5) * 6;
+            // Near miss - add small error (tighter for close targets)
+            const errorScale = foundDirectHit ? 4 : 8;
+            state.aiTargetAngle = bestHitscanAngle + (Math.random() - 0.5) * errorScale;
         }
-        state.aiTargetPower = 0.5;  // Railgun power doesn't matter much (beam)
-        state.aiThinkTime = 800 + Math.random() * 400;  // Slightly longer think for precision
+        state.aiTargetPower = 0.5;  // Power doesn't affect hitscan
+        state.aiThinkTime = 700 + Math.random() * 400;  // Slightly longer think for precision
         applyEventAdjustments();
         return;
     }
@@ -4238,23 +4491,46 @@ function prepareAITurn() {
     // Find the optimal shot using trajectory simulation
     const optimalShot = findOptimalShot(ai, target, weapon);
 
-    // 70% chance of perfect shot, 30% chance of near miss
-    const willHit = Math.random() < 0.70;
+    // 80% chance of perfect shot - AI is a real threat
+    const willHit = Math.random() < 0.80;
 
     if (willHit && optimalShot.perfect) {
         // Use the calculated optimal shot
         state.aiTargetAngle = optimalShot.angle;
         state.aiTargetPower = optimalShot.power;
     } else {
-        // Near miss - add small error (but still close)
-        const angleError = (Math.random() - 0.5) * 8;  // ±4 degrees (tighter than before)
-        const powerError = (Math.random() - 0.5) * 0.08;  // ±4% power (tighter)
+        // Near miss - tight error range so AI still gets close
+        const angleError = (Math.random() - 0.5) * 6;  // ±3 degrees
+        const powerError = (Math.random() - 0.5) * 0.06;  // ±3% power
         state.aiTargetAngle = clamp(optimalShot.angle + angleError, 10, 170);
         state.aiTargetPower = clamp(optimalShot.power + powerError, 0.35, 0.98);
     }
 
     // Apply event-aware adjustments
     applyEventAdjustments();
+
+    // Self-damage avoidance: Check if shot would land too close to AI
+    const selfDamageCheck = simulateTrajectory(
+        ai.x, ai.y, state.aiTargetAngle, state.aiTargetPower,
+        ai.x, ai.y, TANK_RADIUS, weapon
+    );
+    if (selfDamageCheck) {
+        const distToSelf = Math.sqrt(
+            (selfDamageCheck.hitX - ai.x) ** 2 + (selfDamageCheck.hitY - ai.y) ** 2
+        );
+        const dangerRadius = (weapon.blastRadius || 80) + TANK_RADIUS;
+
+        if (distToSelf < dangerRadius) {
+            // Shot would damage self - adjust power or angle
+            if (state.aiTargetPower < 0.8) {
+                state.aiTargetPower = clamp(state.aiTargetPower + 0.15, 0.5, 0.95);
+            } else {
+                // Adjust angle to shoot higher arc
+                const adjustment = (state.aiTargetAngle > 90) ? -10 : 10;
+                state.aiTargetAngle = clamp(state.aiTargetAngle + adjustment, 20, 160);
+            }
+        }
+    }
 
     // Think time before acting (0.6-1.2 seconds - faster)
     state.aiThinkTime = 600 + Math.random() * 600;
@@ -4264,12 +4540,10 @@ function prepareAITurn() {
 }
 
 /**
- * Adjust AI shot based on active glitch events
+ * Adjust AI shot based on active glitch events and persistent wind
  */
 function applyEventAdjustments() {
-    if (!state.activeEvent) return;
-
-    const eventName = state.activeEvent.name;
+    const eventName = state.activeEvent?.name;
 
     // Gravity adjustments
     if (eventName === 'GRAVITY FLUX' || eventName === 'HEAVY GRAVITY') {
@@ -4287,10 +4561,15 @@ function applyEventAdjustments() {
         }
     }
 
-    // Wind compensation
-    if (eventName === 'WIND BLAST' && state.wind !== 0) {
-        // Compensate aim against wind direction
-        const windCompensation = -state.wind * 3;  // Aim opposite to wind
+    // Wind compensation - applies to ALL wind (persistent + event amplification)
+    if (state.wind !== 0) {
+        // Base compensation: aim opposite to wind direction
+        const baseCompensation = -state.wind * 3;
+
+        // Add ±10% imperfection so AI isn't perfect
+        const imperfection = 0.9 + Math.random() * 0.2;  // 0.9 to 1.1
+        const windCompensation = baseCompensation * imperfection;
+
         state.aiTargetAngle = clamp(state.aiTargetAngle + windCompensation, 10, 170);
     }
 
@@ -4460,17 +4739,26 @@ function updateTankPhysics(player) {
 function update(dt) {
     state.time += dt;
 
-    // Always update ambient world systems (clouds, UFOs, weather) for all phases
+    // Always update ambient world systems (clouds, UFOs, weather, wind streaks) for all phases
     const ambient = getAmbient();
     if (ambient) {
-        ambient.update(dt, state.voidY, state.players);
+        const isWindBlast = state.activeEvent && state.activeEvent.name === 'WIND BLAST';
+        ambient.update(dt, state.voidY, state.players, state.wind, isWindBlast);
     }
 
     // Update terrain circuit pulse animations
     terrain.updateCircuitPulses(dt);
 
+    // Update terrain crater glow decay
+    terrain.updateCraters(dt);
+
     // Update lottery notifications (floating text from AI picks)
     updateLotteryNotifications(dt);
+
+    // Update death notifications (ELIMINATED text)
+    for (const notif of state.deathNotifications) {
+        notif.timer -= dt;
+    }
 
     // ========================================================================
     // DEBUG COMMANDS (active during gameplay phases)
@@ -4577,6 +4865,14 @@ function update(dt) {
             audio.playPurchase();
         }
 
+        // X = Give current player VOID_SPLITTER
+        if (input.wasPressed('KeyX')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'VOID_SPLITTER';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got VOID SPLITTER`);
+            audio.playPurchase();
+        }
+
         // 1-9 = Cycle through weapons
         for (let i = 1; i <= 9; i++) {
             if (input.wasPressed(`Digit${i}`)) {
@@ -4587,6 +4883,12 @@ function update(dt) {
                 console.log(`[DEBUG] P${state.currentPlayer + 1} got ${WEAPONS[player.weapon].name}`);
                 audio.playSelect();
             }
+        }
+
+        // P = Toggle post-processing effects
+        if (input.wasPressed('KeyP')) {
+            const enabled = postfx.togglePostFX();
+            console.log(`[DEBUG] Post-FX: ${enabled ? 'ON' : 'OFF'}`);
         }
     }
 
@@ -4727,7 +5029,13 @@ function update(dt) {
             resetGame();  // Rematch with same mode
         }
         if (input.escape) {
+            console.log('[DEBUG] Escape pressed in gameover - returning to title');
             resetToTitle();  // Back to title
+        }
+        // Also allow Space to return to title for convenience
+        if (input.spaceReleased) {
+            console.log('[DEBUG] Space released in gameover - returning to title');
+            resetToTitle();
         }
     }
 
@@ -4791,6 +5099,14 @@ function update(dt) {
     // Decay event notification timer
     if (state.activeEvent && state.activeEvent.timer > 0) {
         state.activeEvent.timer -= dt;
+    }
+
+    // Decay wind shift announcement timer
+    if (state.windShiftPending && state.windShiftTimer > 0) {
+        state.windShiftTimer -= dt;
+        if (state.windShiftTimer <= 0) {
+            state.windShiftPending = false;
+        }
     }
 
     // Decay UFO buff notification timer
@@ -5056,6 +5372,7 @@ function updateBlackHoles(dt) {
             particles.sparks(hole.x, hole.y, 80, '#ff00ff');
             renderer.addScreenShake(40);
             renderer.flash('#8800ff', 0.5);
+            triggerChromatic(4);  // Strong chromatic on black hole collapse
             audio.playExplosion(1.0);
 
             // Damage all players in blast
@@ -5322,9 +5639,9 @@ function updateOrbitalBeacons(dt) {
             if (beacon.timer > 2.0) {
                 beacon.phase = 'firing';
                 beacon.timer = 0;
-                // Pause the space battle briefly
-                if (ambient && ambient.pauseBattle) {
-                    ambient.pauseBattle(0.5);
+                // Sync space battle to orbital strike
+                if (ambient && ambient.triggerOrbitalSync) {
+                    ambient.triggerOrbitalSync();
                 }
             }
         }
@@ -5662,6 +5979,13 @@ function triggerCinematicNukeExplosion(nuke) {
     renderer.flash('#ffffff', 1.0);  // FULL white flash
     renderer.addScreenShake(80);     // Massive shake
     audio.playExplosion(4.0);        // VERY loud boom
+
+    // Sync space battle to nuke - CHAOS IN THE SKY
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.triggerNukeSync(nuke.x);
+        triggerChromatic(4);  // Strong chromatic on nuke
+    }
 
     // Huge white core - the initial detonation point
     particles.explosion(nuke.x, nuke.y, 300, '#ffffff', effectiveBlastRadius * 0.4);
@@ -6100,6 +6424,11 @@ function render() {
     // Apply 0.5x world scale to fit 3840x1800 virtual world into 1920x900 canvas
     ctx.scale(WORLD_SCALE, WORLD_SCALE);
 
+    // Biome color filter disabled for performance
+    // The terrain/edge colors already provide biome theming
+    // Uncomment if needed: ctx.filter = `hue-rotate(${state.currentBiome?.hue || 0}deg)`;
+
+
     // Apply camera zoom (punch-in effect on hits) - works in virtual coordinates
     if (state.cameraZoom > 0) {
         const zoomScale = 1 + state.cameraZoom;
@@ -6123,7 +6452,7 @@ function render() {
     }
 
     // Draw terrain
-    terrain.draw(renderer);
+    terrain.draw(renderer, state.voidY);
 
     // Draw terrain props (trees, buildings, pylons, rocks)
     terrain.drawProps(renderer);
@@ -6324,6 +6653,9 @@ function render() {
     // Restore from world scale - HUD rendered at 1:1
     ctx.restore();
 
+    // Clear biome filter before HUD rendering
+    ctx.filter = 'none';
+
     // ========================================================================
     // HUD RENDERING (at 1:1 scale, pinned to screen)
     // ========================================================================
@@ -6341,6 +6673,9 @@ function render() {
     // Round indicator + FPS (for debugging)
     renderer.drawText(`Round ${getCurrentRound()}`, CANVAS_WIDTH - 20, 30, COLORS.white, 14, 'right', false);
     renderer.drawText(`FPS: ${fpsCounter.fps}`, CANVAS_WIDTH - 20, 50, fpsCounter.fps < 50 ? COLORS.magenta : '#666666', 10, 'right', false);
+
+    // Wind indicator (persistent, below turn indicator)
+    renderWindIndicator();
 
     // Player stats - compact horizontal strip for 5-6 players
     const statsStartX = 20;
@@ -6400,6 +6735,30 @@ function render() {
         if (infoText) {
             renderer.drawText(infoText, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 40, '#888888', 16, 'center', false);
         }
+        renderer.ctx.globalAlpha = 1;
+    }
+
+    // Wind shift announcement (when wind changes between rounds)
+    if (state.windShiftPending && state.windShiftTimer > 0) {
+        const alpha = Math.min(1, state.windShiftTimer);
+        renderer.ctx.globalAlpha = alpha;
+
+        // "WIND SHIFT" title
+        renderer.setGlow(COLORS.cyan, 15);
+        renderer.drawText('WIND SHIFT', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50, COLORS.cyan, 28, 'center', true);
+        renderer.clearGlow();
+
+        // Show new wind value
+        let windText;
+        if (Math.abs(state.baseWind) < 0.005) {
+            windText = '~ CALM ~';
+        } else {
+            const arrows = Math.abs(state.baseWind) > 0.10 ? '>>>' : (Math.abs(state.baseWind) > 0.05 ? '>>' : '>');
+            const direction = state.baseWind > 0 ? arrows : arrows.split('').map(() => '<').join('');
+            windText = `${direction} ${Math.abs(state.baseWind).toFixed(2)}`;
+        }
+        renderer.drawText(windText, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 80, '#ffffff', 20, 'center', false);
+
         renderer.ctx.globalAlpha = 1;
     }
 
@@ -6485,6 +6844,25 @@ function render() {
         renderer.drawText('Press SPACE to continue', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 40, '#aaaaaa', 14, 'center', false);
         renderer.ctx.globalAlpha = 1;
     }
+
+    // Draw death notifications (kill celebrations)
+    for (let i = state.deathNotifications.length - 1; i >= 0; i--) {
+        const notif = state.deathNotifications[i];
+        if (notif.timer <= 0) {
+            state.deathNotifications.splice(i, 1);
+            continue;
+        }
+        const alpha = Math.min(1, notif.timer);
+        const rise = (1.5 - notif.timer) * 30;  // Rise up as it fades
+        renderer.ctx.globalAlpha = alpha;
+        renderer.setGlow(notif.color, 20);
+        renderer.drawText(notif.text, notif.x * WORLD_SCALE, (notif.y - rise) * WORLD_SCALE, notif.color, 24, 'center', true);
+        renderer.clearGlow();
+        renderer.ctx.globalAlpha = 1;
+    }
+
+    // Apply post-processing effects (bloom, vignette, chromatic aberration)
+    applyAllPostFX(renderer.canvas, renderer.ctx, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     renderer.endFrame();
 }
@@ -6928,6 +7306,46 @@ function drawNuke(nuke) {
         ctx.arc(nuke.x, nuke.y, nuke.radius * 2 + ringPhase * 50, 0, Math.PI * 2);
         ctx.stroke();
     }
+}
+
+// ============================================================================
+// Wind System Rendering
+// ============================================================================
+
+/**
+ * Render wind indicator in HUD
+ * Shows arrow direction and strength, cyan normally, magenta during WIND BLAST
+ */
+function renderWindIndicator() {
+    const wind = state.wind;
+    const isWindBlast = state.activeEvent && state.activeEvent.name === 'WIND BLAST';
+
+    // Determine display text
+    let windText;
+    if (Math.abs(wind) < 0.005) {
+        windText = '~ CALM ~';
+    } else {
+        const arrows = Math.abs(wind) > 0.10 ? '>>>' : (Math.abs(wind) > 0.05 ? '>>' : '>');
+        const direction = wind > 0 ? arrows : arrows.split('').map(() => '<').join('');
+        windText = `${direction} ${Math.abs(wind).toFixed(2)}`;
+    }
+
+    // Color: cyan normally, magenta during WIND BLAST
+    const color = isWindBlast ? COLORS.magenta : COLORS.cyan;
+
+    // Pulsing glow effect
+    const pulse = 0.6 + Math.sin(state.time * 3) * 0.4;
+
+    // Position in top right quadrant, same height as player stats
+    const x = CANVAS_WIDTH - 120;
+    const y = 60;
+
+    // Draw with subtle glow
+    if (Math.abs(wind) >= 0.005 || isWindBlast) {
+        renderer.setGlow(color, 8 * pulse);
+    }
+    renderer.drawText(`WIND: ${windText}`, x, y, color, 12, 'right', false);
+    renderer.clearGlow();
 }
 
 // ============================================================================
@@ -7784,11 +8202,11 @@ function renderLottery() {
     // Show current player
     renderer.drawText(`PLAYER ${playerIndex + 1}`, CANVAS_WIDTH / 2, 95, player.color, 18, 'center', true);
 
-    // Card dimensions and positioning
-    const cardWidth = 180;
-    const cardHeight = 240;
-    const cardSpacing = 40;
-    const totalWidth = cardWidth * 3 + cardSpacing * 2;
+    // Card dimensions and positioning (4 cards now)
+    const cardWidth = 160;    // Slightly narrower to fit 4
+    const cardHeight = 220;   // Slightly shorter
+    const cardSpacing = 30;   // Tighter spacing
+    const totalWidth = cardWidth * 4 + cardSpacing * 3;
     const startX = (CANVAS_WIDTH - totalWidth) / 2;
     const cardY = CANVAS_HEIGHT / 2 - cardHeight / 2;
 
@@ -7799,9 +8217,9 @@ function renderLottery() {
         yOffset = -400 * (1 - easeOutBounce(progress));
     }
 
-    // Render the 3 cards
+    // Render all 4 cards (3 random + 1 guaranteed Mortar)
     const revealed = state.lottery.animationPhase !== 'descending';
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
         const card = state.lottery.cards[i];
         if (!card) continue;
 
@@ -7819,7 +8237,7 @@ function renderLottery() {
     renderer.drawText(rerollText, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 80, rerollColor, 16, 'center', false);
 
     // Controls hint
-    renderer.drawText('Press 1, 2, or 3 to select  |  ← → to highlight  |  SPACE to confirm', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+    renderer.drawText('Press 1-4 to select  |  ← → to highlight  |  SPACE to confirm  |  1 = Default', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
 }
 
 /**
@@ -7855,20 +8273,25 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
 
     // Rarity label at top
     const rarityLabel = card.rarity.toUpperCase();
-    renderer.drawText(rarityLabel, x + width / 2, y + 25, colors.border, 12, 'center', false);
+    renderer.drawText(rarityLabel, x + width / 2, y + 20, colors.border, 11, 'center', false);
+
+    // Show "SAFE PICK" for guaranteed Mortar card
+    if (card.guaranteed) {
+        renderer.drawText('DEFAULT WEAPON', x + width / 2, y + 35, '#00ff88', 10, 'center', false);
+    }
 
     // Weapon name with glow
     renderer.setGlow(colors.glow, 10);
-    renderer.drawText(card.name, x + width / 2, y + 60, '#ffffff', 18, 'center', true);
+    renderer.drawText(card.name, x + width / 2, y + 55, '#ffffff', 16, 'center', true);
     renderer.clearGlow();
 
     // Animated projectile preview
     const weapon = WEAPONS[card.weaponKey];
     if (weapon) {
-        const previewY = y + 100;
-        const bounce = Math.sin(state.time * 6) * 4;
+        const previewY = y + 85;
+        const bounce = Math.sin(state.time * 6) * 3;
         const pulse = 0.8 + Math.sin(state.time * 5) * 0.2;
-        const previewRadius = (weapon.projectileRadius || 6) * pulse * 1.5;
+        const previewRadius = (weapon.projectileRadius || 6) * pulse * 1.3;
 
         renderer.setGlow(weapon.color || colors.glow, 15);
         renderer.drawCircle(x + width / 2, previewY + bounce, previewRadius, weapon.color || '#ffffff', true);
@@ -7876,7 +8299,7 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
 
         // Trail effect
         for (let t = 1; t <= 3; t++) {
-            const trailX = x + width / 2 - t * 10;
+            const trailX = x + width / 2 - t * 8;
             const alpha = 0.4 - t * 0.1;
             renderer.ctx.globalAlpha = alpha;
             renderer.drawCircle(trailX, previewY + bounce, previewRadius * (1 - t * 0.2), weapon.color || '#ffffff', true);
@@ -7885,19 +8308,19 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
     }
 
     // Stats
-    const statsY = y + 140;
-    renderer.drawText(`DMG: ${card.damage}`, x + width / 2, statsY, '#aaaaaa', 14, 'center', false);
-    renderer.drawText(`Radius: ${card.blastRadius}`, x + width / 2, statsY + 20, '#aaaaaa', 14, 'center', false);
+    const statsY = y + 115;
+    renderer.drawText(`DMG: ${card.damage}`, x + width / 2, statsY, '#aaaaaa', 12, 'center', false);
+    renderer.drawText(`Radius: ${card.blastRadius}`, x + width / 2, statsY + 16, '#aaaaaa', 12, 'center', false);
 
-    // Description (truncated if too long)
-    const desc = card.description && card.description.length > 25
-        ? card.description.slice(0, 22) + '...'
+    // Description (truncated if too long - shorter for narrower cards)
+    const desc = card.description && card.description.length > 20
+        ? card.description.slice(0, 17) + '...'
         : (card.description || '');
-    renderer.drawText(desc, x + width / 2, statsY + 50, '#666666', 10, 'center', false);
+    renderer.drawText(desc, x + width / 2, statsY + 38, '#666666', 9, 'center', false);
 
     // Selection number at bottom
     const numColor = isSelected ? '#ffffff' : '#555555';
-    renderer.drawText(`[${number}]`, x + width / 2, y + height - 25, numColor, 20, 'center', isSelected);
+    renderer.drawText(`[${number}]`, x + width / 2, y + height - 20, numColor, 18, 'center', isSelected);
 
     // Rarity-specific visual effects
     if (card.rarity === 'legendary' && isSelected) {
@@ -7995,6 +8418,9 @@ function init() {
     const canvas = document.getElementById('game');
     renderer = new Renderer(canvas);
     renderer.resize(CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Initialize post-processing effects
+    initPostFX(CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Initialize ambient world systems (clouds, UFOs, weather) - use virtual dimensions
     const ambient = initAmbient(VIRTUAL_WIDTH, VIRTUAL_HEIGHT);

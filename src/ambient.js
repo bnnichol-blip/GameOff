@@ -159,11 +159,11 @@ const SPACE_BATTLE_CONFIG = {
     dustSizeMin: 1,
     dustSizeMax: 2,
 
-    // === DISTANT FLASHES (rare) ===
+    // === DISTANT FLASHES (game sync reactions) ===
     distantFlashChance: 0.0015,
-    distantFlashRadius: 80,
-    distantFlashDuration: 0.25,
-    distantFlashAlpha: 0.15,
+    distantFlashRadius: 120,        // Bigger flashes
+    distantFlashDuration: 0.4,      // Last longer
+    distantFlashAlpha: 0.5,         // MUCH brighter (was 0.15)
 
     // === ATMOSPHERE ===
     hazeAlpha: 0.04,
@@ -211,6 +211,21 @@ const AMBIENT_CONFIG = {
     glitchCount: 8,
     dustSpeed: 5,
     glitchFlickerRate: 0.1
+};
+
+// Wind streak configuration
+const WIND_STREAK_CONFIG = {
+    maxStreaks: 40,           // Maximum wind streaks at once
+    baseSpeed: 800,           // Base horizontal speed (pixels/sec)
+    lengthMin: 30,            // Minimum streak length
+    lengthMax: 80,            // Maximum streak length
+    spawnRate: 0.15,          // Base spawn chance per frame (scaled by wind)
+    yMin: 50,                 // Top of spawn zone
+    yMaxPct: 0.8,             // Bottom of spawn zone (% of canvas height)
+    alpha: 0.15,              // Base opacity
+    alphaWindBlast: 0.35,     // Opacity during WIND BLAST
+    color: '#ffffff',         // Normal color
+    colorWindBlast: '#ff00ff' // Color during WIND BLAST
 };
 
 // ============================================================================
@@ -690,6 +705,78 @@ class AmbientParticle {
 }
 
 // ============================================================================
+// Wind Streak System
+// ============================================================================
+
+class WindStreak {
+    constructor(canvasWidth, canvasHeight, wind, isWindBlast) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
+        this.reset(wind, isWindBlast, true);
+    }
+
+    reset(wind, isWindBlast, initial = false) {
+        const cfg = WIND_STREAK_CONFIG;
+        const absWind = Math.abs(wind);
+
+        // Length scales with wind intensity
+        const lengthScale = 0.5 + absWind * 8; // 0.5 to ~1.1 at max wind
+        this.length = randomRange(cfg.lengthMin, cfg.lengthMax) * lengthScale;
+
+        // Spawn from upwind edge
+        if (wind > 0) {
+            this.x = initial ? randomRange(-100, this.canvasWidth) : -this.length;
+        } else {
+            this.x = initial ? randomRange(0, this.canvasWidth + 100) : this.canvasWidth + this.length;
+        }
+
+        // Random Y position
+        const yMax = this.canvasHeight * cfg.yMaxPct;
+        this.y = randomRange(cfg.yMin, yMax);
+
+        // Speed scales with wind
+        this.speed = cfg.baseSpeed * absWind * 10 * randomRange(0.8, 1.2);
+
+        // Direction matches wind
+        this.direction = wind > 0 ? 1 : -1;
+
+        // Visual properties
+        this.alpha = isWindBlast ? cfg.alphaWindBlast : cfg.alpha;
+        this.color = isWindBlast ? cfg.colorWindBlast : cfg.color;
+
+        // Slight vertical drift
+        this.vy = randomRange(-20, 20);
+
+        this.dead = false;
+    }
+
+    update(dt, wind) {
+        // Move horizontally with wind
+        this.x += this.speed * this.direction * dt;
+        this.y += this.vy * dt;
+
+        // Check if off screen
+        if (this.direction > 0 && this.x > this.canvasWidth + this.length) {
+            this.dead = true;
+        } else if (this.direction < 0 && this.x < -this.length) {
+            this.dead = true;
+        }
+    }
+
+    draw(renderer) {
+        const ctx = renderer.ctx;
+        ctx.globalAlpha = this.alpha;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(this.x - this.direction * this.length, this.y);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+}
+
+// ============================================================================
 // EPIC SPACE BATTLE SYSTEM - "Holy shit there's a WAR up there"
 // ============================================================================
 
@@ -1098,9 +1185,27 @@ class Fighter {
         this.trail = [];
     }
 
+    /**
+     * Fighter takes damage and explodes (for game sync effects)
+     */
+    takeDamage(amount) {
+        this.exploding = true;
+        this.explosionTimer = 0.5;  // Brief explosion duration
+    }
+
     update(dt, fireCallback) {
         const cfg = SPACE_BATTLE_CONFIG.fighter;
         const sky = getSkyBounds(this.canvasHeight);
+
+        // Handle explosion
+        if (this.exploding) {
+            this.explosionTimer -= dt;
+            if (this.explosionTimer <= 0) {
+                this.exploding = false;
+                this.reset();  // Respawn as new fighter
+            }
+            return;  // Don't update position while exploding
+        }
 
         // Store trail
         this.trail.push({ x: this.x, y: this.y });
@@ -1139,6 +1244,38 @@ class Fighter {
     draw(renderer) {
         const ctx = renderer.ctx;
         const w = this.width;
+
+        // Draw explosion if exploding - BIG AND VISIBLE
+        if (this.exploding) {
+            const explosionProgress = 1 - (this.explosionTimer / 0.5);  // 0 to 1
+            const explosionAlpha = Math.max(0.3, 1 - explosionProgress);
+            const explosionRadius = 15 + explosionProgress * 50;  // Grows from 15 to 65
+
+            ctx.globalAlpha = explosionAlpha;
+            renderer.setGlow('#ff4400', 25);
+
+            // Outer orange ring
+            ctx.fillStyle = '#ff6600';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, explosionRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Middle yellow
+            ctx.fillStyle = '#ffaa00';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, explosionRadius * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Hot white core
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, explosionRadius * 0.3, 0, Math.PI * 2);
+            ctx.fill();
+
+            renderer.clearGlow();
+            ctx.globalAlpha = 1;
+            return;  // Don't draw normal ship
+        }
 
         // Trail
         if (this.trail.length > 1) {
@@ -1454,10 +1591,10 @@ class DistantFlash {
         this.active = false;
     }
 
-    trigger(canvasWidth, canvasHeight) {
+    trigger(x, y) {
         const cfg = SPACE_BATTLE_CONFIG;
-        this.x = randomRange(50, canvasWidth - 50);
-        this.y = randomRange(canvasHeight * 0.02, canvasHeight * 0.15);
+        this.x = x;
+        this.y = y;
         this.radius = 0;
         this.maxRadius = cfg.distantFlashRadius * randomRange(0.5, 1.5);
         this.life = cfg.distantFlashDuration;
@@ -1478,23 +1615,32 @@ class DistantFlash {
 
         const ctx = renderer.ctx;
         const cfg = SPACE_BATTLE_CONFIG;
-        const baseAlpha = cfg.distantFlashAlpha || 0.15;
-        const alpha = clamp(this.life / this.maxLife, 0, 1) * baseAlpha;
+        const baseAlpha = cfg.distantFlashAlpha || 0.5;
+        const lifeRatio = clamp(this.life / this.maxLife, 0, 1);
+        const alpha = lifeRatio * baseAlpha;
 
-        // Very subtle glow
+        // Bright expanding glow - MUCH more visible
         ctx.globalAlpha = alpha;
-        renderer.setGlow(this.color, 15);
-        ctx.fillStyle = this.color;
+        renderer.setGlow(this.color, 30);
+
+        // Hot white core
+        ctx.fillStyle = '#ffffff';
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius * 0.15, 0, Math.PI * 2);
+        ctx.arc(this.x, this.y, this.radius * 0.3, 0, Math.PI * 2);
         ctx.fill();
 
-        // Faint outer ring
-        ctx.globalAlpha = alpha * 0.4;
-        ctx.strokeStyle = this.color;
-        ctx.lineWidth = 1;
+        // Colored middle
+        ctx.fillStyle = this.color;
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius * 0.6, 0, Math.PI * 2);
+        ctx.arc(this.x, this.y, this.radius * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Expanding outer ring
+        ctx.globalAlpha = alpha * 0.6;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
         ctx.stroke();
 
         renderer.clearGlow();
@@ -1700,6 +1846,9 @@ export class AmbientSystem {
 
         // Lightning strikes
         this.lightningStrikes = [];
+
+        // Wind streaks (visual wind particles)
+        this.windStreaks = [];
         this.terrainDamageCallback = null;  // Set by main.js
         this.tankDamageCallback = null;     // Set by main.js
 
@@ -1712,6 +1861,12 @@ export class AmbientSystem {
 
         // UFO destruction tracking
         this.lastDestroyedUFO = null;
+
+        // Game event sync - chaos mode
+        this.chaosMultiplier = 1.0;
+        this.chaosTimer = 0;
+        this.battlePaused = false;
+        this.pauseTimer = 0;
 
         // Initialize clouds
         this.initClouds();
@@ -1871,8 +2026,43 @@ export class AmbientSystem {
         return null;
     }
 
-    update(dt, voidY, players = []) {
+    /**
+     * Update wind streak particles based on current wind
+     */
+    updateWindStreaks(dt, wind, isWindBlast) {
+        const cfg = WIND_STREAK_CONFIG;
+        const absWind = Math.abs(wind);
+
+        // No streaks if calm
+        if (absWind < 0.005) {
+            this.windStreaks = [];
+            return;
+        }
+
+        // Spawn rate scales with wind intensity
+        const spawnChance = cfg.spawnRate * absWind * 10;
+
+        // Maybe spawn new streaks
+        if (this.windStreaks.length < cfg.maxStreaks && Math.random() < spawnChance) {
+            this.windStreaks.push(new WindStreak(
+                this.canvasWidth, this.canvasHeight, wind, isWindBlast
+            ));
+        }
+
+        // Update existing streaks
+        for (const streak of this.windStreaks) {
+            streak.update(dt, wind);
+        }
+
+        // Remove dead streaks
+        this.windStreaks = this.windStreaks.filter(s => !s.dead);
+    }
+
+    update(dt, voidY, players = [], wind = 0, isWindBlast = false) {
         this.time += dt;
+
+        // Update wind streaks
+        this.updateWindStreaks(dt, wind, isWindBlast);
 
         // Update clouds
         for (const cloud of this.farClouds) {
@@ -1980,7 +2170,9 @@ export class AmbientSystem {
         if (Math.random() < SPACE_BATTLE_CONFIG.distantFlashChance) {
             const flash = this.distantFlashes.find(f => !f.active);
             if (flash) {
-                flash.trigger(this.canvasWidth, this.canvasHeight);
+                const flashX = randomRange(50, this.canvasWidth - 50);
+                const flashY = randomRange(this.canvasHeight * 0.02, this.canvasHeight * 0.15);
+                flash.trigger(flashX, flashY);
             }
         }
 
@@ -2065,6 +2257,142 @@ export class AmbientSystem {
      */
     setBeaconDropCallback(callback) {
         this.onBeaconDrop = callback;
+    }
+
+    // =========================================================================
+    // GAME EVENT SYNC - React to gameplay events
+    // =========================================================================
+
+    /**
+     * Trigger space battle reaction to game explosion
+     * @param {number} groundX - X position of explosion (0-2560)
+     * @param {number} intensity - 0-1 scale (0.3=small, 0.6=medium, 1.0=nuke)
+     */
+    triggerExplosionSync(groundX, intensity = 0.5) {
+        const skyY = this.canvasHeight * randomRange(0.1, 0.35);
+        const cfg = SPACE_BATTLE_CONFIG;
+
+        // Spawn distant flashes based on intensity
+        const flashCount = Math.floor(intensity * 3) + 1;
+        for (let i = 0; i < flashCount; i++) {
+            const flash = this.distantFlashes.find(f => !f.active);
+            if (flash) {
+                const offsetX = randomRange(-200, 200);
+                flash.trigger(groundX + offsetX, skyY + randomRange(-50, 50));
+            }
+        }
+
+        // Trigger impacts on nearby ships
+        if (intensity > 0.5) {
+            for (const ship of this.allShips) {
+                const dist = Math.abs(ship.x - groundX);
+                if (dist < 300 && Math.random() < intensity * 0.4) {
+                    const impact = this.impactPool.find(i => !i.active);
+                    if (impact) {
+                        impact.trigger(ship.x, ship.y, 'hit', ship);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * React to player death - dramatic explosion in space
+     * @param {number} groundX - X position where player died
+     */
+    triggerPlayerKillSync(groundX) {
+        console.log('[SPACE BATTLE] Player kill sync at x:', groundX);
+
+        // Big flash cluster - more flashes
+        for (let i = 0; i < 6; i++) {
+            const flash = this.distantFlashes.find(f => !f.active);
+            if (flash) {
+                const skyY = this.canvasHeight * randomRange(0.08, 0.35);
+                flash.trigger(groundX + randomRange(-200, 200), skyY);
+            }
+        }
+
+        // ALWAYS kill at least one fighter on player death
+        const allFighters = this.fighters.filter(f => !f.exploding);
+        if (allFighters.length > 0) {
+            const victim = allFighters[Math.floor(Math.random() * allFighters.length)];
+            console.log('[SPACE BATTLE] Killing fighter on player death');
+            victim.takeDamage(1);
+        }
+    }
+
+    /**
+     * React to nuke/massive explosion - chaos in space
+     * @param {number} groundX - X position of nuke
+     */
+    triggerNukeSync(groundX) {
+        console.log('[SPACE BATTLE] Nuke sync triggered at x:', groundX);
+
+        // Massive flash barrage - more flashes, spread over time
+        for (let i = 0; i < 12; i++) {
+            setTimeout(() => {
+                const flash = this.distantFlashes.find(f => !f.active);
+                if (flash) {
+                    const skyY = this.canvasHeight * randomRange(0.05, 0.4);
+                    flash.trigger(groundX + randomRange(-400, 400), skyY);
+                }
+            }, i * 40);
+        }
+
+        // Damage multiple ships (higher chance)
+        for (const ship of this.allShips) {
+            const dist = Math.abs(ship.x - groundX);
+            if (dist < 600 && Math.random() < 0.5) {
+                const impact = this.impactPool.find(i => !i.active);
+                if (impact) {
+                    impact.trigger(ship.x, ship.y, Math.random() < 0.4 ? 'critical' : 'hit', ship);
+                }
+            }
+        }
+
+        // GUARANTEE 2-4 fighter kills on nuke
+        const allFighters = this.fighters.filter(f => !f.exploding);
+        const killCount = Math.min(allFighters.length, 2 + Math.floor(Math.random() * 3));
+        console.log('[SPACE BATTLE] Killing', killCount, 'fighters');
+        for (let i = 0; i < killCount; i++) {
+            if (allFighters[i]) {
+                setTimeout(() => {
+                    if (allFighters[i] && !allFighters[i].exploding) {
+                        allFighters[i].takeDamage(1);
+                    }
+                }, i * 150 + Math.random() * 100);
+            }
+        }
+    }
+
+    /**
+     * React to orbital strike - brief pause then chaos
+     */
+    triggerOrbitalSync() {
+        this.pauseBattle(0.3);  // Brief pause for dramatic effect
+
+        // After pause, extra firing
+        setTimeout(() => {
+            for (let i = 0; i < 5; i++) {
+                const flash = this.distantFlashes.find(f => !f.active);
+                if (flash) {
+                    flash.trigger(
+                        randomRange(0, this.canvasWidth),
+                        this.canvasHeight * randomRange(0.1, 0.35)
+                    );
+                }
+            }
+        }, 350);
+    }
+
+    /**
+     * Increase battle intensity temporarily (during combat phases)
+     * @param {number} multiplier - Firing rate multiplier (1.5 = 50% more)
+     * @param {number} duration - How long in seconds
+     */
+    setChaosMode(multiplier, duration) {
+        this.chaosMultiplier = multiplier;
+        this.chaosTimer = duration;
     }
 
     // Draw background elements (behind terrain)
@@ -2177,6 +2505,11 @@ export class AmbientSystem {
         // Weather particles
         for (const particle of this.weatherParticles) {
             particle.draw(renderer);
+        }
+
+        // Wind streaks
+        for (const streak of this.windStreaks) {
+            streak.draw(renderer);
         }
 
         // Glitch specks (on top)
