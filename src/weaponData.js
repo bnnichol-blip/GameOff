@@ -114,19 +114,7 @@ export const WEAPONS = {
         stageDelay: 0.15,      // Slower than nuke for drama
         screenShake: 25        // Strong screen shake
     },
-    DRILL: {
-        name: 'Drill',
-        description: 'Tunnel borer - pierces terrain',
-        tier: 'MID',
-        damage: 80,        // Normal mid-tier damage on exit
-        blastRadius: 50,
-        bounces: 0,
-        projectileRadius: 6,
-        projectileSpeed: 1.1,
-        color: '#cccccc',
-        behavior: 'drill',
-        tunnelWidth: 40    // Medium-width tunnel carve
-    },
+    // REMOVED: DRILL weapon (causes terrain disappearance issues - 1D heightmap limitation)
     // REMOVED: SHIELD weapon
     SEEKER: {
         name: 'Seeker',

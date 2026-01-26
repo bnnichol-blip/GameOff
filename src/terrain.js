@@ -1186,6 +1186,28 @@ export function hasCeilingAt(x) {
     return getCeilingAt(x) !== null;
 }
 
+/**
+ * Get ceiling slope at a given X position (for bounce reflection)
+ * @param {number} x - X coordinate
+ * @returns {number} Slope value (rise/run) - positive means ceiling goes down to right
+ */
+export function getCeilingSlopeAt(x) {
+    if (!ceilingHeights) return 0;
+
+    const xi = Math.floor(x);
+    if (xi < 0 || xi >= width) return 0;
+
+    const sampleDist = 10;
+    const leftX = Math.max(0, xi - sampleDist);
+    const rightX = Math.min(width - 1, xi + sampleDist);
+
+    const leftHeight = ceilingHeights[leftX] || 0;
+    const rightHeight = ceilingHeights[rightX] || 0;
+
+    // Return slope: positive means ceiling goes lower (higher Y) to the right
+    return (rightHeight - leftHeight) / (rightX - leftX);
+}
+
 // ============================================================================
 // Destruction
 // ============================================================================
@@ -1233,27 +1255,32 @@ function rebuildCeilingRegions() {
 }
 
 /**
- * Synchronize ceiling state after any terrain modification.
- * 1. Validates ceiling-floor separation (prevents overlap)
- * 2. Rebuilds ceiling regions from actual data
+ * Synchronize ceiling state after terrain modifications.
+ * Implements skylight logic: when floor destruction meets ceiling, clear the ceiling
+ * to prevent visual artifacts from layer inversion.
+ *
+ * NOTE: True "Worms-style" floating terrain is not possible with a 1D heightmap.
+ * Each X coordinate can only store ONE floor height, so destroying the base of
+ * terrain overwrites the old surface value. The ceiling system is for overhangs,
+ * not floating floor chunks.
  */
 function syncCeilingState() {
     if (!ceilingHeights || !heights) return;
 
-    const MIN_GAP = 60;
-    const SKYLIGHT_THRESHOLD = 20;
+    // Skylight logic: clear ceiling where floor has been destroyed up to meet it
+    // This prevents visual glitches from layer inversion
+    const minGap = 60;  // Minimum required gap between floor and ceiling
 
-    // Validate separation
     for (let x = 0; x < width; x++) {
         if (ceilingHeights[x] > 0) {
             const gap = heights[x] - ceilingHeights[x];
-            if (gap < MIN_GAP || ceilingHeights[x] <= SKYLIGHT_THRESHOLD) {
+            // If floor and ceiling meet or overlap, create a "skylight" (clear ceiling)
+            if (gap < minGap) {
                 ceilingHeights[x] = 0;
             }
         }
     }
 
-    // Rebuild regions from validated data
     rebuildCeilingRegions();
 }
 
@@ -1326,11 +1353,6 @@ export function destroy(cx, cy, radius) {
     const startX = Math.max(0, Math.floor(cx - radius));
     const endX = Math.min(width - 1, Math.ceil(cx + radius));
 
-    // Skylight threshold: if ceiling gets this close to top of world, remove it
-    const skylightThreshold = 20;
-    // Minimum gap between floor and ceiling before creating skylight
-    const minGap = 60;  // Increased to ensure clear visual separation
-
     for (let x = startX; x <= endX; x++) {
         const dx = x - cx;
 
@@ -1363,17 +1385,7 @@ export function destroy(cx, cy, radius) {
                 }
             }
 
-            // SKYLIGHT LOGIC: Remove ceiling if it would cause visual bugs
-            if (hasCeiling && ceilingHeights[x] > 0) {
-                // Case 1: Ceiling is carved too close to top of world
-                if (ceilingHeights[x] <= skylightThreshold) {
-                    ceilingHeights[x] = 0;  // Create skylight
-                }
-                // Case 2: Floor and ceiling meet or overlap (layer inversion)
-                else if (heights[x] - ceilingHeights[x] < minGap) {
-                    ceilingHeights[x] = 0;  // Create skylight to prevent ghost terrain
-                }
-            }
+            // Ceiling cleanup handled by syncCeilingState() skylight logic
         }
     }
 
@@ -2656,6 +2668,7 @@ export const terrain = {
     isPointInCeiling,
     getCeilingAt,
     hasCeilingAt,
+    getCeilingSlopeAt,
     getTerrainStyleName,
     burn,
     destroy,

@@ -267,9 +267,6 @@ export function handleProjectileUpdate(proj, dt, callbacks = {}) {
         return handleRollerUpdate(proj, dt, weapon, callbacks);
     }
 
-    // DRILL behavior - handled in handleProjectileImpact
-    // (Drilling happens when projectile is in terrain)
-
     return null;  // Continue normal update
 }
 
@@ -426,37 +423,6 @@ export function handleProjectileImpact(proj, callbacks = {}) {
             vy: finalVy,
             behavior: 'bouncer'
         };
-    }
-
-    // DRILL behavior - pierce through terrain, carving a tunnel
-    if (weapon.behavior === 'drill') {
-        proj.inTerrain = true;
-
-        // Carve tunnel while drilling - continuous terrain destruction
-        const tunnelWidth = weapon.tunnelWidth || 40;
-        terrain.destroy(proj.x, proj.y, tunnelWidth * 0.5);
-
-        // Slow down slightly while drilling
-        proj.vx *= 0.995;
-        proj.vy *= 0.995;
-
-        // Spawn drill particles (more dramatic)
-        if (Math.random() < 0.6) {
-            particles.sparks(proj.x, proj.y, 5, '#886644');
-            particles.sparks(proj.x, proj.y, 3, '#aa8866');
-        }
-
-        // Visual drill glow
-        if (Math.random() < 0.3) {
-            particles.trail(proj.x, proj.y, '#cccccc');
-        }
-
-        // Small screen shake while drilling
-        if (renderer && Math.random() < 0.1) {
-            renderer.addScreenShake(2);
-        }
-
-        return { action: 'continueDrilling' };
     }
 
     // NUKE behavior - land and start fuse timer instead of exploding

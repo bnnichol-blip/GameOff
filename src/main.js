@@ -1801,8 +1801,118 @@ function updateProjectile(dt) {
 
     // Check projectile termination conditions (Codex suggestion)
     // When moving downward, check ceiling FIRST - the "roof" should be hit before the floor
-    if (movingDown && terrain.isPointInCeiling(proj.x, proj.y)) {
-        // Ceiling hit while falling - simple explosion, no special behaviors
+    if (terrain.isPointInCeiling(proj.x, proj.y)) {
+        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+        const ceilingY = terrain.getCeilingAt(proj.x);
+
+        // BOUNCER behavior - bounce off ceiling like pinball
+        if (projWeapon && projWeapon.behavior === 'bouncer') {
+            // Calculate ceiling slope for reflection
+            const slope = terrain.getCeilingSlopeAt(proj.x);
+
+            // Calculate ceiling normal (perpendicular to surface, pointing DOWN)
+            // For ceiling, normal points into the room (opposite of ground)
+            const normalLen = Math.sqrt(slope * slope + 1);
+            const nx = -slope / normalLen;
+            const ny = 1 / normalLen;  // Positive because normal points DOWN from ceiling
+
+            // Reflect velocity: v' = v - 2(v·n)n
+            const dot = proj.vx * nx + proj.vy * ny;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;  // Energy loss on bounce
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
+
+            // Ensure minimum DOWNWARD velocity so it doesn't get stuck in ceiling
+            if (proj.vy < 3) proj.vy = 3;
+
+            // Move projectile below ceiling surface
+            if (ceilingY !== null) {
+                proj.y = ceilingY + proj.radius + 2;
+            }
+
+            // Trigger bounce effects
+            onBounce(proj);
+            particles.sparks(proj.x, proj.y, 20, proj.color);
+            particles.sparks(proj.x, proj.y, 10, '#ffffff');
+            audio.playBounce();
+
+            // Check if out of bounces
+            if (proj.bounces >= proj.maxBounces) {
+                proj.isFinalBounce = true;
+                onExplode(proj);
+                state.projectile = null;
+            }
+            return;
+        }
+
+        // VOID_SPLITTER landing behavior - land on ceiling, pause, then spawn rising homing fragments
+        if (projWeapon && projWeapon.behavior === 'voidSplitterLand' && !proj.isVoidLanded) {
+            proj.isVoidLanded = true;
+            proj.voidPauseTimer = projWeapon.pauseDuration || 1.0;
+            proj.vx = 0;
+            proj.vy = 0;
+            // Place on ceiling surface (just below it)
+            if (ceilingY !== null) {
+                proj.y = ceilingY + proj.radius;
+            }
+            // Visual feedback - ominous landing
+            particles.explosion(proj.x, proj.y, 30, '#aa00ff', 40);
+            particles.sparks(proj.x, proj.y, 15, '#660088');
+            renderer.addScreenShake(8);
+            audio.playBounce();
+            return;
+        }
+
+        // BOUNCING BETTY / BOUNCE DAMAGE UP behavior - bounces off ceiling with increasing damage
+        if (projWeapon && (projWeapon.behavior === 'bounceDamageUp' || projWeapon.behavior === 'bouncingBetty')) {
+            // Calculate ceiling slope for reflection
+            const slope = terrain.getCeilingSlopeAt(proj.x);
+            const normalLen = Math.sqrt(slope * slope + 1);
+            const nx = -slope / normalLen;
+            const ny = 1 / normalLen;  // Points DOWN from ceiling
+
+            const dot = proj.vx * nx + proj.vy * ny;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.9;
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.9;
+
+            // Ensure good bounce - push DOWNWARD
+            if (proj.vy < 4) proj.vy = 4;
+
+            // Position below ceiling
+            if (ceilingY !== null) {
+                proj.y = ceilingY + proj.radius + 2;
+            }
+
+            // Track damage modifier
+            proj.accumulatedDamageBonus = (proj.accumulatedDamageBonus || 0) + (projWeapon.bounceDamageModifier || 0);
+
+            onBounce(proj);
+            particles.sparks(proj.x, proj.y, 15, proj.color);
+            audio.playBounce();
+
+            if (proj.bounces >= proj.maxBounces) {
+                proj.isFinalBounce = true;
+                onExplode(proj);
+                state.projectile = null;
+            }
+            return;
+        }
+
+        // ROLLER behavior - hits ceiling, falls off immediately
+        if (projWeapon && projWeapon.behavior === 'roller' && !proj.isRolling) {
+            // Don't start rolling mode - just bounce off and fall
+            // Position below ceiling surface
+            if (ceilingY !== null) {
+                proj.y = ceilingY + proj.radius + 2;
+            }
+            // Reverse/dampen vertical velocity, keep horizontal
+            proj.vy = Math.abs(proj.vy) * 0.5;  // Now moving downward
+            // Visual feedback
+            particles.sparks(proj.x, proj.y, 15, proj.color);
+            audio.playBounce();
+            return; // Continue falling, will start rolling when it hits ground
+        }
+
+        // Default: Ceiling hit - explode
         onExplode(proj);
         state.projectile = null;
         return;
@@ -1882,49 +1992,6 @@ function updateProjectile(dt) {
                 state.projectile = null;
             }
             return;
-        }
-
-        // DRILL behavior - carve 40px circular tunnel along arc, pass through terrain
-        if (projWeapon && projWeapon.behavior === 'drill') {
-            // Track that we're in terrain and how long we've been drilling
-            proj.inTerrain = true;
-            proj.drillTime = (proj.drillTime || 0) + 0.016;  // Approx 1 frame at 60fps
-
-            // Carve circular tunnel along the drill's path (40px diameter)
-            const tunnelRadius = (projWeapon.tunnelWidth || 40) / 2;
-            // Use destroy to carve a circular hole at current position
-            terrain.destroy(proj.x, proj.y, tunnelRadius);
-
-            // Maintain momentum while drilling (passes through with slight friction)
-            proj.vx *= 0.995;
-            proj.vy *= 0.995;
-
-            // Spawn drill particles
-            if (Math.random() < 0.6) {
-                particles.sparks(proj.x, proj.y, 5, '#886644');
-                particles.sparks(proj.x, proj.y, 3, '#aa8866');
-            }
-
-            // Visual drill glow
-            if (Math.random() < 0.3) {
-                particles.trail(proj.x, proj.y, '#cccccc');
-            }
-
-            // Small screen shake while drilling
-            if (Math.random() < 0.1) {
-                renderer.addScreenShake(2);
-            }
-
-            // Check for player collision while drilling (direct hit)
-            for (const player of state.players) {
-                const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
-                if (dist < proj.radius + TANK_RADIUS * 0.5) {
-                    onExplode(proj);
-                    state.projectile = null;
-                    return;
-                }
-            }
-            return; // Don't explode, keep drilling through
         }
 
         // UNDERGROUND SEEKER behavior - start burrowing
@@ -2080,21 +2147,59 @@ function updateProjectile(dt) {
         onExplode(proj);
         state.projectile = null;
         return;
-    } else {
-        // DRILL behavior - explode when exiting terrain into open air
-        // Only trigger if drill has been inside terrain long enough (prevents immediate exit due to terrain.destroy)
-        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-        if (projWeapon && projWeapon.behavior === 'drill' && proj.inTerrain && proj.drillTime > 0.1) {
-            // Just exited terrain after drilling - explode
-            onExplode(proj);
-            state.projectile = null;
-            return;
-        }
     }
 
-    // 1b. Hits ceiling (cavern overhang)
+    // 1b. Hits ceiling (cavern overhang) - fallback check for edge cases
     if (terrain.isPointInCeiling(proj.x, proj.y)) {
-        // Ceiling hit - simple explosion, no special behaviors
+        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+        const ceilingY = terrain.getCeilingAt(proj.x);
+
+        // BOUNCER - bounce off
+        if (projWeapon && projWeapon.behavior === 'bouncer') {
+            const slope = terrain.getCeilingSlopeAt(proj.x);
+            const normalLen = Math.sqrt(slope * slope + 1);
+            const nx = -slope / normalLen;
+            const ny = 1 / normalLen;
+            const dot = proj.vx * nx + proj.vy * ny;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
+            if (proj.vy < 3) proj.vy = 3;
+            if (ceilingY !== null) proj.y = ceilingY + proj.radius + 2;
+            onBounce(proj);
+            particles.sparks(proj.x, proj.y, 20, proj.color);
+            audio.playBounce();
+            if (proj.bounces >= proj.maxBounces) {
+                proj.isFinalBounce = true;
+                onExplode(proj);
+                state.projectile = null;
+            }
+            return;
+        }
+
+        // BOUNCING BETTY - bounce off
+        if (projWeapon && (projWeapon.behavior === 'bounceDamageUp' || projWeapon.behavior === 'bouncingBetty')) {
+            const slope = terrain.getCeilingSlopeAt(proj.x);
+            const normalLen = Math.sqrt(slope * slope + 1);
+            const nx = -slope / normalLen;
+            const ny = 1 / normalLen;
+            const dot = proj.vx * nx + proj.vy * ny;
+            proj.vx = (proj.vx - 2 * dot * nx) * 0.9;
+            proj.vy = (proj.vy - 2 * dot * ny) * 0.9;
+            if (proj.vy < 4) proj.vy = 4;
+            if (ceilingY !== null) proj.y = ceilingY + proj.radius + 2;
+            proj.accumulatedDamageBonus = (proj.accumulatedDamageBonus || 0) + (projWeapon.bounceDamageModifier || 0);
+            onBounce(proj);
+            particles.sparks(proj.x, proj.y, 15, proj.color);
+            audio.playBounce();
+            if (proj.bounces >= proj.maxBounces) {
+                proj.isFinalBounce = true;
+                onExplode(proj);
+                state.projectile = null;
+            }
+            return;
+        }
+
+        // Default: Ceiling hit - explode
         onExplode(proj);
         state.projectile = null;
         return;
