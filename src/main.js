@@ -8828,9 +8828,9 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
         renderer.drawText(descLines[i], x + width / 2, descStartY + i * lineHeight, '#888888', 10, 'center', false);
     }
 
-    // Selection number at bottom
+    // Selection number below card (outside)
     const numColor = isSelected ? '#ffffff' : '#555555';
-    renderer.drawText(`[${number}]`, x + width / 2, y + height - 20, numColor, 18, 'center', isSelected);
+    renderer.drawText(`[${number}]`, x + width / 2, y + height + 25, numColor, 18, 'center', isSelected);
 
     // Rarity-specific visual effects
     if (card.rarity === 'legendary' && isSelected) {
