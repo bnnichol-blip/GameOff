@@ -15,7 +15,7 @@
 
 import { state } from './state.js';
 // NOTE: Archetype functions removed - all tanks now have identical gameplay
-import { WEAPONS, TANK_TYPES, TANK_ARCHETYPES } from './weaponData.js';
+import { WEAPONS, TANK_TYPES } from './weaponData.js';
 import { particles } from './particles.js';
 import { terrain } from './terrain.js';
 import { audio } from './audio.js';

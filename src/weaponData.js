@@ -582,13 +582,6 @@ export const TANK_TYPES = {
 };
 
 // ============================================================================
-// Tank Archetypes (DEPRECATED - kept for migration compatibility)
-// ============================================================================
-
-// DEPRECATED - kept for migration compatibility
-export const TANK_ARCHETYPES = {};
-
-// ============================================================================
 // Tank Cosmetics (Pure Visual - No Gameplay Differences)
 // ============================================================================
 

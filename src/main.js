@@ -15,7 +15,7 @@ import * as events from './events.js';
 import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 import { postfx, initPostFX, applyAllPostFX, triggerChromatic, activateGlitch, deactivateGlitch, ENABLE_POSTFX } from './postfx.js';
 // Import weapon data and tank types from extracted module
-import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES, TANKS, getTankById,
+import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANKS, getTankById,
          LOTTERY_RARITY_RATES, LOTTERY_RARITY_COLORS, WEAPONS_BY_RARITY, WEAPON_RARITY_MAP } from './weaponData.js';
 
 // ============================================================================
@@ -172,9 +172,7 @@ function createPlayers(numPlayers, humanCount = numPlayers) {
 
 // NOTE: WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS are now imported from weaponData.js
 
-// NOTE: TANK_TYPES and TANK_ARCHETYPES are now imported from weaponData.js
-
-const ARCHETYPE_KEYS = Object.keys(TANK_ARCHETYPES);
+// NOTE: TANK_TYPES is now imported from weaponData.js
 
 // ============================================================================
 // Game State

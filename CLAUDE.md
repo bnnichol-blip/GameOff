@@ -14,7 +14,7 @@
 
 1. **Ricochet** — Projectiles bounce off walls (configurable per weapon)
 2. **The Rising Void** — After each round, the floor rises, shrinking the arena
-3. **Tank Archetypes** — 5 unique playstyles with passive abilities
+3. **Tank Cosmetics** — 8 unique tanks with distinct shapes and colors
 4. **Cosmic Lottery** — Per-turn card selection replaces traditional shop
 5. **Glitch Events** — Random modifiers that change gameplay each round
 6. **Cave Systems** — Destructible ceiling overhangs with full collision
@@ -23,7 +23,7 @@
 **Mode:** Turn-based artillery combat
 
 ### Core Loop
-1. Select archetype at game start
+1. Select tank at game start
 2. **Cosmic Lottery**: Pick 1 of 5 cards (weapons with rarities)
 3. Aim with arrow keys, HOLD Space to charge, RELEASE to fire
 4. Projectiles bounce off walls, explode on terrain/players
@@ -42,7 +42,7 @@
 **Geometry Wars meets Tron.** No sprites. Just shapes, glow, and particles.
 
 - **Background:** Black (space battle and UFOs currently disabled)
-- **Tanks:** Geometric shapes with archetype-specific designs
+- **Tanks:** Geometric shapes with tank-specific designs
 - **Terrain:** Dark fill with neon edge lines, destructible with cave overhangs
 - **Projectiles:** Glowing shapes with particle trails
 - **Void:** Pulsing magenta gradient, glitchy edge
@@ -57,17 +57,25 @@
 
 ---
 
-## Tank Archetypes
+## Tank Cosmetics
 
-Players select an archetype at game start. Each has a passive ability:
+Players select a tank at game start. All tanks have identical stats - just unique looks!
 
-| Archetype | Ability | Playstyle |
-|-----------|---------|-----------|
-| **STRIKER** | +33% damage dealt | Aggressive glass cannon |
-| **FORTRESS** | -33% damage taken | Defensive anchor |
-| **HUNTER** | Slight projectile homing | Precision tracker |
-| **SPECTER** | Hover 20px above terrain | Aerial phantom |
-| **MERCHANT** | +20 coins per turn | Economic advantage |
+| Tank | Shape | Color |
+|------|-------|-------|
+| **Volt** | Triangle | Cyan |
+| **Blaze** | Square | Orange |
+| **Phantom** | Pentagon | Magenta |
+| **Hive** | Hexagon | Gold |
+| **Razor** | Diamond | Red |
+| **Nova** | Star | White |
+| **Orb** | Circle | Lime |
+| **Titan** | Octagon | Purple |
+
+**Death Signatures:**
+- Particles burst outward as mini versions of the tank's shape
+- Crater carved in the shape of the tank
+- Permanent "goo" stain remains in the crater (30% opacity)
 
 ---
 
@@ -175,7 +183,7 @@ When orbital weapons are used, beacons fall from the sky. Players can claim them
     main.js               # Game loop, state, lottery, all logic (~8600 lines)
     terrain.js            # Terrain generation/destruction/collision (~2700 lines)
     ambient.js            # Background effects, weather (~2550 lines)
-    weaponData.js         # Weapon definitions + archetypes
+    weaponData.js         # Weapon definitions + tank cosmetics
     weaponBehaviors.js    # Complex weapon behavior handlers
     particles.js          # Particle system
     events.js             # Glitch event system
@@ -246,7 +254,7 @@ The AI is functional and competitive:
 - Considers terrain obstacles and bounces
 - Prioritizes low-HP targets
 - Auto-selects highest rarity lottery card
-- Participates in archetype selection
+- Participates in tank selection
 
 ---
 
@@ -301,4 +309,4 @@ The AI is functional and competitive:
 
 ---
 
-*Last Updated: January 25, 2026*
+*Last Updated: January 27, 2026*

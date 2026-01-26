@@ -2,8 +2,6 @@
 // state.js - Game State and Helper Functions
 // ============================================================================
 
-import { TANK_ARCHETYPES } from './weaponData.js';
-
 // Constants needed for state initialization (exported for other modules)
 export const VIRTUAL_WIDTH = 2560;
 export const VIRTUAL_HEIGHT = 1440;
