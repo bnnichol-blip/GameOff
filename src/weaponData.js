@@ -582,63 +582,84 @@ export const TANK_TYPES = {
 };
 
 // ============================================================================
-// Tank Archetypes (Abilities + Visuals)
+// Tank Archetypes (DEPRECATED - kept for migration compatibility)
 // ============================================================================
 
-export const TANK_ARCHETYPES = {
-    STRIKER: {
-        name: 'STRIKER',
-        description: 'Offensive powerhouse',
-        abilityName: 'Overdrive',
-        abilityDesc: '+33% damage dealt',
-        abilityRules: { damageBonus: 0.33 },
-        palette: { base: '#ff4444', glow: '#ff6666' },  // Red
-        chassisShape: 3,   // Triangle - aggressive
-        turretLength: 38,
-        turretWidth: 5
+// DEPRECATED - kept for migration compatibility
+export const TANK_ARCHETYPES = {};
+
+// ============================================================================
+// Tank Cosmetics (Pure Visual - No Gameplay Differences)
+// ============================================================================
+
+export const TANKS = [
+    {
+        id: 'VOLT',
+        name: 'Volt',
+        shape: 'triangle',
+        sides: 3,
+        color: '#00FFFF',
+        glowColor: '#00FFFF'
     },
-    FORTRESS: {
-        name: 'FORTRESS',
-        description: 'Immovable anchor',
-        abilityName: 'Armor Plating',
-        abilityDesc: '-33% damage taken',
-        abilityRules: { damageReduction: 0.33 },
-        palette: { base: '#888888', glow: '#aaaaaa' },  // Gray
-        chassisShape: 4,   // Square - solid
-        turretLength: 28,
-        turretWidth: 8
+    {
+        id: 'BLAZE',
+        name: 'Blaze',
+        shape: 'square',
+        sides: 4,
+        color: '#FF8800',
+        glowColor: '#FFAA00'
     },
-    HUNTER: {
-        name: 'HUNTER',
-        description: 'Precision tracker',
-        abilityName: 'Target Lock',
-        abilityDesc: 'All projectiles home slightly',
-        abilityRules: { homingStrength: 0.02 },
-        palette: { base: '#ffaa00', glow: '#ffcc00' },  // Orange
-        chassisShape: 6,   // Hexagon - tactical
-        turretLength: 35,
-        turretWidth: 4
+    {
+        id: 'PHANTOM',
+        name: 'Phantom',
+        shape: 'pentagon',
+        sides: 5,
+        color: '#FF00FF',
+        glowColor: '#FF66FF'
     },
-    SPECTER: {
-        name: 'SPECTER',
-        description: 'Aerial phantom',
-        abilityName: 'Hover Jets',
-        abilityDesc: 'Hover 20px above terrain',
-        abilityRules: { hoverHeight: 20 },
-        palette: { base: '#aa44ff', glow: '#cc66ff' },  // Purple
-        chassisShape: 5,   // Pentagon - floaty
-        turretLength: 32,
-        turretWidth: 4
+    {
+        id: 'HIVE',
+        name: 'Hive',
+        shape: 'hexagon',
+        sides: 6,
+        color: '#FFD700',
+        glowColor: '#FFEE66'
     },
-    MERCHANT: {
-        name: 'MERCHANT',
-        description: 'Economic advantage',
-        abilityName: 'Trade Routes',
-        abilityDesc: '+20 bonus coins per turn',
-        abilityRules: { bonusCoins: 20 },
-        palette: { base: '#ffff00', glow: '#ffff66' },  // Yellow/gold
-        chassisShape: 4,   // Square - merchant cart
-        turretLength: 26,
-        turretWidth: 7
+    {
+        id: 'RAZOR',
+        name: 'Razor',
+        shape: 'diamond',
+        sides: 4,  // Rotated 45 degrees
+        color: '#FF3333',
+        glowColor: '#FF6666'
+    },
+    {
+        id: 'NOVA',
+        name: 'Nova',
+        shape: 'star',
+        sides: 5,  // 5-pointed star
+        color: '#FFFFFF',
+        glowColor: '#FFFFFF'
+    },
+    {
+        id: 'ORB',
+        name: 'Orb',
+        shape: 'circle',
+        sides: 0,  // Circle has no sides
+        color: '#00FF00',
+        glowColor: '#66FF66'
+    },
+    {
+        id: 'TITAN',
+        name: 'Titan',
+        shape: 'octagon',
+        sides: 8,
+        color: '#AA00FF',
+        glowColor: '#CC66FF'
     }
-};
+];
+
+// Helper to get tank by ID
+export function getTankById(id) {
+    return TANKS.find(t => t.id === id) || TANKS[0];
+}
