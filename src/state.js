@@ -199,58 +199,13 @@ export function getCurrentPlayer() {
 }
 
 /**
- * Get a player's archetype data (or null if none selected)
+ * NOTE: Archetype passive functions removed - all tanks now have identical gameplay
+ * These functions are kept as stubs for backwards compatibility with existing imports
  */
-export function getArchetype(player) {
-    return player.archetype ? TANK_ARCHETYPES[player.archetype] : null;
-}
-
-/**
- * Get damage multiplier from archetype (STRIKER: +33% damage dealt)
- */
-export function getArchetypeDamageMultiplier(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.damageBonus) {
-        return 1 + arch.abilityRules.damageBonus;
-    }
-    return 1;
-}
-
-/**
- * Get damage reduction from archetype (FORTRESS: -33% damage taken)
- */
-export function getArchetypeDamageReduction(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.damageReduction) {
-        return arch.abilityRules.damageReduction;
-    }
-    return 0;
-}
-
-/**
- * Get homing strength from archetype (HUNTER: slight homing)
- */
-export function getArchetypeHomingStrength(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.homingStrength) {
-        return arch.abilityRules.homingStrength;
-    }
-    return 0;
-}
-
-/**
- * Get hover height from archetype (SPECTER: hover 20px above terrain)
- */
-export function getArchetypeHoverHeight(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.hoverHeight) {
-        return arch.abilityRules.hoverHeight;
-    }
-    return 0;
-}
-
-/**
- * Legacy functions kept for compatibility - return neutral values
- */
+export function getArchetype(player) { return null; }
+export function getArchetypeDamageMultiplier(player) { return 1; }
+export function getArchetypeDamageReduction(player) { return 0; }
+export function getArchetypeHomingStrength(player) { return 0; }
+export function getArchetypeHoverHeight(player) { return 0; }
 export function getArchetypeBonusBounces(player) { return 0; }
 export function getArchetypeFallSpeedMult(player) { return 1; }

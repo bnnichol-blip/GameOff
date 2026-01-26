@@ -13,7 +13,8 @@
 // not to replace them entirely. General physics remain in main.js.
 // ============================================================================
 
-import { state, getArchetype, getArchetypeDamageMultiplier, getArchetypeDamageReduction, getArchetypeHomingStrength } from './state.js';
+import { state } from './state.js';
+// NOTE: Archetype functions removed - all tanks now have identical gameplay
 import { WEAPONS, TANK_TYPES, TANK_ARCHETYPES } from './weaponData.js';
 import { particles } from './particles.js';
 import { terrain } from './terrain.js';
@@ -790,10 +791,8 @@ function applyDyingLightEffects(proj, weapon, firingPlayerIdx, effectiveBlastRad
             if (dist < weapon.shockwaveRadius) {
                 const falloff = 1 - (dist / weapon.shockwaveRadius);
                 const shockDmg = weapon.shockwaveDamage * falloff;
-                // Apply damage reduction
-                const reduction = getArchetypeDamageReduction(player);
-                const finalShockDmg = shockDmg * (1 - reduction);
-                player.health = Math.max(0, player.health - finalShockDmg);
+                // No archetype damage reduction - all tanks have identical gameplay
+                player.health = Math.max(0, player.health - shockDmg);
 
                 // Shockwave hit visual
                 particles.sparks(player.x, player.y, 25, '#ffffff');
@@ -842,10 +841,8 @@ function applyDyingLightEffects(proj, weapon, firingPlayerIdx, effectiveBlastRad
                     const dist = distance(chainX, chainY, player.x, player.y);
                     if (dist < chainRadius) {
                         const falloff = 1 - (dist / chainRadius);
-                        let dmg = chainDamage * falloff;
-                        // Apply damage reduction
-                        const reduction = getArchetypeDamageReduction(player);
-                        dmg *= (1 - reduction);
+                        const dmg = chainDamage * falloff;
+                        // No archetype damage reduction - all tanks have identical gameplay
                         player.health = Math.max(0, player.health - dmg);
                         particles.sparks(player.x, player.y, 20, '#ff6600');
 

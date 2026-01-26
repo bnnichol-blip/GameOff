@@ -314,23 +314,11 @@ function getCurrentPlayer() {
 // ============================================================================
 
 /**
- * Get a player's archetype data (or null if none selected)
- */
-function getArchetype(player) {
-    return player.archetype ? TANK_ARCHETYPES[player.archetype] : null;
-}
-
-/**
- * Apply turn-start abilities (MERCHANT: +20 coins per turn)
+ * Apply turn-start abilities
+ * NOTE: Archetype passives removed - all tanks are now cosmetic only
  */
 function applyTurnStartAbilities(player) {
-    const arch = getArchetype(player);
-    if (!arch) return;
-
-    // MERCHANT: Bonus coins each turn
-    if (arch.abilityRules.bonusCoins) {
-        player.coins += arch.abilityRules.bonusCoins;
-    }
+    // No archetype bonuses - all tanks have identical gameplay
 }
 
 /**
@@ -371,61 +359,9 @@ function applyRadiationDamage(playerIndex) {
 }
 
 /**
- * Apply initial abilities when game starts (currently no start abilities)
- */
-function applyGameStartAbilities(player) {
-    // All 5 archetypes have passive abilities, no start setup needed
-}
-
-/**
- * Get damage multiplier from archetype (STRIKER: +33% damage dealt)
- */
-function getArchetypeDamageMultiplier(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.damageBonus) {
-        return 1 + arch.abilityRules.damageBonus;
-    }
-    return 1;
-}
-
-/**
- * Get damage reduction from archetype (FORTRESS: -33% damage taken)
- */
-function getArchetypeDamageReduction(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.damageReduction) {
-        return arch.abilityRules.damageReduction;
-    }
-    return 0;
-}
-
-/**
- * Get homing strength from archetype (HUNTER: slight homing)
- */
-function getArchetypeHomingStrength(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.homingStrength) {
-        return arch.abilityRules.homingStrength;
-    }
-    return 0;
-}
-
-/**
- * Get hover height from archetype (SPECTER: hover 20px above terrain)
- */
-function getArchetypeHoverHeight(player) {
-    const arch = getArchetype(player);
-    if (arch && arch.abilityRules.hoverHeight) {
-        return arch.abilityRules.hoverHeight;
-    }
-    return 0;
-}
-
-/**
  * Legacy functions kept for compatibility - return neutral values
+ * NOTE: Archetype passives removed - all tanks now have identical gameplay
  */
-function getArchetypeBonusBounces(player) { return 0; }
-function getArchetypeFallSpeedMult(player) { return 1; }
 function isKnockbackImmune(player) { return false; }
 function getVoidGracePeriod(player) { return 0; }
 
@@ -680,10 +616,8 @@ function advanceArchetypeSelection() {
 }
 
 function startGame() {
-    // Called after all players select archetypes
-
-    // Apply initial archetype abilities (if any)
-    state.players.forEach(p => applyGameStartAbilities(p));
+    // Called after all players select tanks
+    // NOTE: Archetype abilities removed - all tanks have identical gameplay
 
     // Show terrain style notification
     const terrainStyleName = terrain.getTerrainStyleName();
@@ -776,7 +710,7 @@ function fireProjectile() {
         color: weapon.color || player.color,
         bounces: 0,
         // Apply extra bounces from ELASTIC WORLD event + UFO buff
-        maxBounces: weaponBounces + state.extraBounces + bounceBonus + getArchetypeBonusBounces(player),
+        maxBounces: weaponBounces + state.extraBounces + bounceBonus,  // No archetype bounce bonuses
         trail: [],
         weaponKey: player.weapon,  // Store weapon key for explosion handling
         tankType: player.tankType, // Keep for backwards compatibility
@@ -822,7 +756,7 @@ function fireRailgunBeam(player, weapon, angleRad) {
     // Get buffs
     const buffs = state.ufoBuffs[state.currentPlayer];
     const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
-    const archetypeDmgMult = getArchetypeDamageMultiplier(player);
+    const archetypeDmgMult = 1;  // No archetype bonuses
     const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
 
     // Trace beam path with bounces
@@ -930,7 +864,7 @@ function fireRailgunBeam(player, weapon, angleRad) {
 function firePlasmaBeam(player, weapon, angleRad) {
     const buffs = state.ufoBuffs[state.currentPlayer];
     const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
-    const archetypeDmgMult = getArchetypeDamageMultiplier(player);
+    const archetypeDmgMult = 1;  // No archetype bonuses
     const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
 
     // Trace beam path - no bounces, stops at terrain
@@ -1314,33 +1248,7 @@ function updateProjectile(dt) {
         }
     }
 
-    // HUNTER archetype - slight homing on all projectiles
-    const firingPlayerForHoming = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-    const homingStrength = getArchetypeHomingStrength(state.players[firingPlayerForHoming]);
-    if (homingStrength > 0 && !proj.isRolling) {
-        // Find nearest living enemy for homing
-        let homingTarget = null;
-        let minHomingDist = Infinity;
-        for (let i = 0; i < state.players.length; i++) {
-            if (i === firingPlayerForHoming) continue;
-            const p = state.players[i];
-            if (p.health <= 0) continue;
-            const d = distance(proj.x, proj.y, p.x, p.y);
-            if (d < minHomingDist) {
-                minHomingDist = d;
-                homingTarget = p;
-            }
-        }
-        if (homingTarget) {
-            const hdx = homingTarget.x - proj.x;
-            const hdy = homingTarget.y - proj.y;
-            const hdist = Math.sqrt(hdx * hdx + hdy * hdy);
-            if (hdist > 0) {
-                proj.vx += (hdx / hdist) * homingStrength;
-                proj.vy += (hdy / hdist) * homingStrength;
-            }
-        }
-    }
+    // NOTE: HUNTER archetype homing removed - all tanks have identical gameplay
 
     // Get weapon for behavior checks
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
@@ -2361,7 +2269,7 @@ function onExplode(proj) {
                 const falloff = 1 - (dist / blastRadius);
                 const dmg = damage * falloff;
                 // Apply FORTRESS damage reduction
-                const reduction = getArchetypeDamageReduction(player);
+                const reduction = 0;  // No archetype reductions
                 const finalDmg = dmg * (1 - reduction);
                 player.health = Math.max(0, player.health - finalDmg);
                 particles.sparks(player.x, player.y, 20, '#ffaa00');
@@ -2404,7 +2312,7 @@ function onExplode(proj) {
                 const falloff = 1 - (dist / blastRadius);
                 let dmg = damage * falloff * (proj.buffedDamageMultiplier || 1);
                 // Apply FORTRESS damage reduction
-                const reduction = getArchetypeDamageReduction(player);
+                const reduction = 0;  // No archetype reductions
                 dmg *= (1 - reduction);
                 player.health = Math.max(0, player.health - dmg);
                 particles.sparks(player.x, player.y, 15, proj.color || '#ffaa00');
@@ -2478,7 +2386,7 @@ function onExplode(proj) {
     const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
     const firingPlayerForDamage = state.players[firingPlayerIdx];
     const buffDamageMultiplier = proj.buffedDamageMultiplier || 1;
-    const archetypeDamageMultiplier = getArchetypeDamageMultiplier(firingPlayerForDamage);
+    const archetypeDamageMultiplier = 1;  // No archetype bonuses
     const blastBonus = proj.buffedBlastBonus || 0;
     // BOUNCING_BETTY: Scale blast radius with bounces (55 → 125 max)
     let baseBlastRadius = weapon.blastRadius;
@@ -2649,13 +2557,7 @@ function onExplode(proj) {
                 hitPlayer = player;
                 state.lastHitPos = { x: proj.x, y: proj.y };
 
-                // Apply FORTRESS damage reduction (-33% damage taken)
-                const damageReduction = getArchetypeDamageReduction(player);
-                if (damageReduction > 0) {
-                    damage *= (1 - damageReduction);
-                    // Visual feedback for armor
-                    particles.sparks(player.x, player.y, 15, '#888888');
-                }
+                // No archetype damage reduction - all tanks have identical gameplay
 
                 // Apply shield damage reduction if player has a shield
                 if (player.shield > 0) {
@@ -3059,7 +2961,7 @@ function onExplode(proj) {
                     const falloff = 1 - (dist / weapon.shockwaveRadius);
                     const shockDmg = weapon.shockwaveDamage * falloff;
                     // Apply damage reduction
-                    const reduction = getArchetypeDamageReduction(player);
+                    const reduction = 0;  // No archetype reductions
                     const finalShockDmg = shockDmg * (1 - reduction);
                     player.health = Math.max(0, player.health - finalShockDmg);
                     totalEnemyDamage += finalShockDmg;
@@ -3119,7 +3021,7 @@ function onExplode(proj) {
                             const falloff = 1 - (dist / chainRadius);
                             let dmg = chainDamage * falloff;
                             // Apply damage reduction
-                            const reduction = getArchetypeDamageReduction(player);
+                            const reduction = 0;  // No archetype reductions
                             dmg *= (1 - reduction);
                             player.health = Math.max(0, player.health - dmg);
                             particles.sparks(player.x, player.y, 20, '#ff6600');
@@ -5031,19 +4933,12 @@ function updateTankPhysics(player) {
     enforceTankBounds(player);
 
     // === VERTICAL PHYSICS (falling) ===
+    // NOTE: SPECTER hover removed - all tanks have identical gameplay
     const groundY = terrain.getHeightAt(player.x);
-    const hoverHeight = getArchetypeHoverHeight(player);  // SPECTER hovers above terrain
-    const targetY = groundY - TANK_RADIUS - hoverHeight;  // Target position (on ground or hovering)
     const tankBottom = player.y + TANK_RADIUS;
 
-    if (hoverHeight > 0) {
-        // SPECTER: Smoothly hover at fixed height above terrain
-        // Don't apply gravity - just smoothly move toward target hover height
-        const diff = targetY - player.y;
-        player.y += diff * 0.15;  // Smooth interpolation
-        player.vy = 0;  // No falling velocity
-    } else if (tankBottom < groundY) {
-        // Normal tank: above ground — fall
+    if (tankBottom < groundY) {
+        // Above ground — fall
         player.vy += state.gravity;
         player.y += player.vy;
 
@@ -9149,7 +9044,7 @@ function init() {
         (player, damage, x, y) => {
             if (player.health > 0) {
                 // Apply FORTRESS damage reduction
-                const reduction = getArchetypeDamageReduction(player);
+                const reduction = 0;  // No archetype reductions
                 const finalDamage = damage * (1 - reduction);
                 player.health = Math.max(0, player.health - finalDamage);
                 particles.sparks(x, y, 20, '#ff0000');
