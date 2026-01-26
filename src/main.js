@@ -7053,15 +7053,45 @@ function render() {
 
         const isActive = i === state.currentPlayer && state.phase === 'aiming';
 
-        // Get archetype visuals (fallback to defaults)
-        const archetype = player.archetype ? TANK_ARCHETYPES[player.archetype] : null;
-        const shape = archetype ? archetype.chassisShape : 6;
-        const tankColor = archetype ? archetype.palette.base : player.color;
-        const turretLen = archetype ? archetype.turretLength : 40;
-        const turretWid = archetype ? archetype.turretWidth : 6;
+        // Get tank cosmetics from tankId (fallback to defaults)
+        const tank = player.tankId ? getTankById(player.tankId) : null;
+        const tankColor = tank ? tank.color : player.color;
+        const tankSize = 30;  // Base tank size
 
-        // Tank body (shape based on archetype)
-        renderer.drawRegularPolygon(player.x, player.y, TANK_RADIUS, shape, 0, tankColor, true);
+        // Tank body (shape based on tank type)
+        if (tank) {
+            switch (tank.shape) {
+                case 'triangle':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 3, -Math.PI / 2, tankColor, isActive);
+                    break;
+                case 'square':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 4, Math.PI / 4, tankColor, isActive);
+                    break;
+                case 'pentagon':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 5, -Math.PI / 2, tankColor, isActive);
+                    break;
+                case 'hexagon':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, tankColor, isActive);
+                    break;
+                case 'diamond':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 4, 0, tankColor, isActive);
+                    break;
+                case 'star':
+                    drawStar(renderer.ctx, player.x, player.y, tankSize, 5, tankColor, isActive);
+                    break;
+                case 'circle':
+                    renderer.drawCircle(player.x, player.y, tankSize, tankColor, isActive);
+                    break;
+                case 'octagon':
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 8, Math.PI / 8, tankColor, isActive);
+                    break;
+                default:
+                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, tankColor, isActive);
+            }
+        } else {
+            // Fallback to hexagon if no tank selected
+            renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, player.color, isActive);
+        }
 
         // Shield indicator (glowing ring around tank when shielded)
         if (player.shield > 0) {
@@ -7086,12 +7116,16 @@ function render() {
             ctx.restore();
         }
 
-        // Turret (uses archetype-specific length and width)
-        const turretLength = turretLen;
-        const angleRad = degToRad(180 - player.angle);
+        // Turret extending from tank center at aim angle
+        const turretLength = 40;
+        const turretWidth = 6;
+        const angleRad = (180 - player.angle) * Math.PI / 180;
         const turretX = player.x + Math.cos(angleRad) * turretLength;
-        const turretY = player.y - 20 - Math.sin(angleRad) * turretLength;
-        renderer.drawLine(player.x, player.y - 20, turretX, turretY, tankColor, turretWid, true);
+        const turretY = player.y - Math.sin(angleRad) * turretLength;
+        renderer.drawLine(player.x, player.y, turretX, turretY, tankColor, turretWidth, isActive);
+
+        // Turret tip (small circle at end)
+        renderer.drawCircle(turretX, turretY, 4, tankColor, isActive);
 
         // Power meter (only for active player when charging)
         if (isActive && (player.charging || player.power > 0)) {
@@ -7126,9 +7160,9 @@ function render() {
         const healthColor = healthPercent > 0.5 ? COLORS.green : (healthPercent > 0.25 ? COLORS.orange : COLORS.magenta);
         renderer.drawRect(healthBarX + 1, healthBarY + 1, (healthBarWidth - 2) * healthPercent, healthBarHeight - 2, healthColor, true);
 
-        // Archetype label
-        if (archetype) {
-            renderer.drawText(archetype.name, player.x, player.y + 45, tankColor, 10, 'center', false);
+        // Tank name label
+        if (tank) {
+            renderer.drawText(tank.name, player.x, player.y + 45, tankColor, 10, 'center', false);
         }
     }
 
@@ -7209,14 +7243,14 @@ function render() {
         const p = state.players[i];
         const x = statsStartX + i * playerSpacing;
         const weaponName = p.weapon ? WEAPONS[p.weapon]?.name : '';
-        const archetype = p.archetype ? TANK_ARCHETYPES[p.archetype] : null;
+        const tank = p.tankId ? getTankById(p.tankId) : null;
         const isDead = p.health <= 0;
         const isActive = i === state.currentPlayer && state.phase === 'aiming';
 
-        // Player label with health and archetype
-        const labelColor = isDead ? '#444444' : (archetype ? archetype.palette.base : p.color);
-        const archetypeName = archetype ? archetype.name : '';
-        const label = `P${i + 1} ${archetypeName}: ${isDead ? 'X' : Math.round(p.health) + '%'}`;
+        // Player label with health and tank name
+        const labelColor = isDead ? '#444444' : (tank ? tank.color : p.color);
+        const tankName = tank ? tank.name : '';
+        const label = `P${i + 1} ${tankName}: ${isDead ? 'X' : Math.round(p.health) + '%'}`;
         renderer.drawText(label, x, statsY, labelColor, isActive ? 14 : 12, 'left', isActive);
 
         // Weapon, coins, and shield (smaller, below)
