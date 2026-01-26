@@ -422,6 +422,12 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     const deathBlastRadius = isVoidDeath ? 150 : 200;
     terrain.destroy(x, y, deathBlastRadius);
 
+    // Create shaped crater matching the tank that died
+    terrain.destroyShape(x, y, deathBlastRadius * 0.8, shape, sides);
+
+    // Create permanent goo stain in the crater
+    terrain.createGooStain(x, y, deathBlastRadius * 0.6, shape, sides, color);
+
     // Shape-specific directional particle burst
     particles.tankDeathBurst(x, y, shape, color, sides);
 
@@ -517,6 +523,7 @@ function resetGame() {
     // Generate terrain with spawn positions for balancing (use virtual dimensions)
     terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, spawnXs, 250);  // Large edge margin to push terrain down at walls
     terrain.generateProps();  // Add stylized props (trees, buildings, pylons)
+    terrain.clearGooStains();  // Clear any goo stains from previous game
 
     // Position tanks on terrain
     state.players.forEach(p => {
@@ -4986,6 +4993,9 @@ function update(dt) {
     // Update terrain crater glow decay
     terrain.updateCraters(dt);
 
+    // Update goo stain glow timers
+    terrain.updateGooStains(dt);
+
     // Update lottery notifications (floating text from AI picks)
     updateLotteryNotifications(dt);
 
@@ -6876,6 +6886,9 @@ function render() {
 
     // Draw terrain
     terrain.draw(renderer, state.voidY);
+
+    // Draw goo stains from tank deaths (permanent marks in craters)
+    terrain.renderGooStains(ctx);
 
     // Draw terrain debug overlay if enabled
     terrain.debugDraw(renderer);

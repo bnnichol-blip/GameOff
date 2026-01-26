@@ -29,6 +29,9 @@ let currentBiomeColors = {
 // Crater tracking for hot glow effect
 let craters = [];  // { x, y, radius, heat: 1.0 }
 
+// Goo stains from tank deaths (permanent colored marks)
+let gooStains = [];  // { x, y, radius, shape, sides, color, alpha, glowTimer }
+
 // Ceiling system for cavern overhangs
 let ceilingHeights = null;  // Second heightmap for ceiling, null = no ceiling
 let ceilingRegions = [];    // [{startX, endX}] for efficient queries
@@ -2078,6 +2081,167 @@ export function updateCraters(dt) {
     }
 }
 
+// ============================================================================
+// Goo Stain System - Permanent marks from tank deaths
+// ============================================================================
+
+/**
+ * Helper: Draw a polygon shape for goo stain
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} cx - Center X
+ * @param {number} cy - Center Y
+ * @param {number} radius - Stain radius
+ * @param {number} sides - Number of sides
+ * @param {number} rotation - Rotation angle in radians
+ */
+function drawStainPolygon(ctx, cx, cy, radius, sides, rotation) {
+    ctx.beginPath();
+    for (let i = 0; i < sides; i++) {
+        const angle = rotation + (i / sides) * Math.PI * 2 - Math.PI / 2;
+        // Add organic waviness to edges
+        const waveRadius = radius * (0.9 + Math.sin(i * 3.7) * 0.15);
+        const x = cx + Math.cos(angle) * waveRadius;
+        const y = cy + Math.sin(angle) * waveRadius;
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    }
+    ctx.closePath();
+}
+
+/**
+ * Helper: Draw a star shape for goo stain
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} cx - Center X
+ * @param {number} cy - Center Y
+ * @param {number} radius - Stain radius
+ */
+function drawStainStar(ctx, cx, cy, radius) {
+    const points = 5;
+    const innerRadius = radius * 0.4;
+    ctx.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+        const angle = (i / (points * 2)) * Math.PI * 2 - Math.PI / 2;
+        const r = i % 2 === 0 ? radius : innerRadius;
+        // Add organic waviness
+        const waveR = r * (0.9 + Math.sin(i * 2.3) * 0.12);
+        const x = cx + Math.cos(angle) * waveR;
+        const y = cy + Math.sin(angle) * waveR;
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    }
+    ctx.closePath();
+}
+
+/**
+ * Create a permanent goo stain at a death location
+ * @param {number} cx - Center X position
+ * @param {number} cy - Center Y position
+ * @param {number} radius - Stain radius
+ * @param {string} shape - Shape type ('circle', 'triangle', 'square', 'pentagon', 'hexagon', 'star', 'diamond')
+ * @param {number} sides - Number of sides for polygon shapes
+ * @param {string} color - Stain color
+ */
+export function createGooStain(cx, cy, radius, shape, sides, color) {
+    gooStains.push({
+        x: cx,
+        y: cy,
+        radius: radius,
+        shape: shape,
+        sides: sides,
+        color: color,
+        alpha: 0.4,      // Permanent alpha (30-40% visibility)
+        glowTimer: 5.0,  // 5 seconds of bright glow that fades
+        rotation: Math.random() * Math.PI * 2  // Random rotation for variety
+    });
+}
+
+/**
+ * Update goo stain glow timers
+ * @param {number} dt - Delta time in seconds
+ */
+export function updateGooStains(dt) {
+    for (const stain of gooStains) {
+        if (stain.glowTimer > 0) {
+            stain.glowTimer -= dt;
+            if (stain.glowTimer < 0) stain.glowTimer = 0;
+        }
+    }
+}
+
+/**
+ * Render all goo stains
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ */
+export function renderGooStains(ctx) {
+    for (const stain of gooStains) {
+        // Calculate current alpha: base alpha + glow bonus
+        const glowBonus = (stain.glowTimer / 5.0) * 0.4;  // Up to 0.4 extra alpha during glow
+        const currentAlpha = stain.alpha + glowBonus;
+
+        // Calculate glow intensity for shadow effect
+        const glowIntensity = (stain.glowTimer / 5.0) * 30;  // Up to 30px glow
+
+        ctx.save();
+        ctx.globalAlpha = currentAlpha;
+        ctx.fillStyle = stain.color;
+
+        // Add glow effect during initial bright phase
+        if (glowIntensity > 0) {
+            ctx.shadowBlur = glowIntensity;
+            ctx.shadowColor = stain.color;
+        }
+
+        // Draw shape-specific stain
+        switch (stain.shape) {
+            case 'circle':
+                ctx.beginPath();
+                ctx.arc(stain.x, stain.y, stain.radius, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            case 'star':
+                drawStainStar(ctx, stain.x, stain.y, stain.radius);
+                ctx.fill();
+                break;
+            case 'diamond':
+                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 4, Math.PI / 4 + stain.rotation);
+                ctx.fill();
+                break;
+            case 'triangle':
+                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 3, stain.rotation);
+                ctx.fill();
+                break;
+            case 'square':
+                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 4, stain.rotation);
+                ctx.fill();
+                break;
+            case 'pentagon':
+                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 5, stain.rotation);
+                ctx.fill();
+                break;
+            case 'hexagon':
+            default:
+                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, stain.sides || 6, stain.rotation);
+                ctx.fill();
+                break;
+        }
+
+        ctx.restore();
+    }
+}
+
+/**
+ * Clear all goo stains (for game reset)
+ */
+export function clearGooStains() {
+    gooStains = [];
+}
+
 /**
  * Draw the terrain with Tron circuit board aesthetic
  * @param {Renderer} renderer - The renderer instance
@@ -2921,6 +3085,10 @@ export const terrain = {
     updateCircuitPulses,
     setBiomeColors,
     updateCraters,
+    createGooStain,
+    updateGooStains,
+    renderGooStains,
+    clearGooStains,
     setDebugMode,
     debugDraw
 };
