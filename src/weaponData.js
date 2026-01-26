@@ -15,7 +15,7 @@ export const WEAPONS = {
     // REMOVED: BABY_SHOT, MIRV, SHIELD
     BOUNCER: {
         name: 'Bouncer',
-        description: 'Pinball chaos - explodes on every bounce',
+        description: 'Pinball chaos - explodes on every bounce!',
         tier: 'PREMIUM',
         damage: 70,        // Reduced from 80 per bounce
         blastRadius: 80,   // Mortar-level blast radius
@@ -30,7 +30,7 @@ export const WEAPONS = {
     },
     DIRT_BALL: {
         name: 'Dirt Ball',
-        description: 'Creates massive jagged peak',
+        description: 'Create Terrain! Elevate Your Tank! Create Cover!',
         tier: 'CHEAP',
         damage: 0,         // Utility only - no damage
         blastRadius: 120,  // Same size as Digger
@@ -43,7 +43,7 @@ export const WEAPONS = {
     },
     DIGGER: {
         name: 'Digger',
-        description: 'Massive jagged crater to void',
+        description: 'Dig a massive jagged crater to void!',
         tier: 'CHEAP',
         damage: 0,         // Utility only - no direct damage
         blastRadius: 120,  // Large crater
@@ -56,7 +56,7 @@ export const WEAPONS = {
     },
     ROLLER: {
         name: 'Roller',
-        description: 'Shockwaves while rolling',
+        description: 'Roll Out! Make lots of Explosions! Finish with a BANG!',
         tier: 'CHEAP',
         damage: 80,        // Final explosion damage
         blastRadius: 75,
@@ -73,7 +73,7 @@ export const WEAPONS = {
     // === MID TIER (40-70 coins) ===
     MORTAR: {
         name: 'Mortar',
-        description: 'Reliable AoE baseline',
+        description: 'Bread and Butter. Good damage, big booms, trick shots.',
         tier: 'CHEAP',     // Always available in lottery as common
         damage: 75,        // Slightly reduced from 80
         blastRadius: 100,  // THE baseline blast radius (unchanged)
@@ -84,7 +84,7 @@ export const WEAPONS = {
     },
     SPLITTER: {
         name: 'Splitter',
-        description: 'Chain-split mayhem! (16 total bombs)',
+        description: 'Airbursting, Chain-splitting Mayhem! 16 total bombs!',
         tier: 'MID',
         damage: 70,
         blastRadius: 90,
@@ -101,7 +101,7 @@ export const WEAPONS = {
     },
     HEAVY_SHELL: {
         name: 'Heavy Shell',
-        description: 'Mini nuke - tight devastating fireball',
+        description: "Heavy Bullets Don't Travel Far. But They Hurt!",
         tier: 'MID',
         damage: 160,          // High damage
         blastRadius: 100,     // Tight but powerful
@@ -118,7 +118,7 @@ export const WEAPONS = {
     // REMOVED: SHIELD weapon
     SEEKER: {
         name: 'Seeker',
-        description: 'Lock-on homing missile',
+        description: 'Only total noobs can miss with this weapon.',
         tier: 'MID',
         damage: 80,
         blastRadius: 75,
@@ -133,7 +133,7 @@ export const WEAPONS = {
     },
     CLUSTER: {
         name: 'Cluster',
-        description: 'Wide spray of bomblets',
+        description: 'Better than one bomb? LOTS of really cool bombs.',
         tier: 'MID',
         damage: 35,        // Buffed from 25
         blastRadius: 50,   // Buffed from 30
@@ -148,7 +148,7 @@ export const WEAPONS = {
     // === PREMIUM TIER (80-120 coins) ===
     RAILGUN: {
         name: 'Railgun',
-        description: 'ORBITAL: Instant devastating beam (3 shots)',
+        description: "Don't stand in front of this thing when it shoots...",
         tier: 'ORBITAL',
         damage: 120,
         blastRadius: 20,
@@ -197,7 +197,7 @@ export const WEAPONS = {
     // NAPALM: REMOVED from game
     CHAIN_LIGHTNING: {
         name: 'Chain Lightning',
-        description: 'Overload - huge first hit, one jump',
+        description: 'ZAP! Huge hit, chains to nearby enemies!',
         tier: 'SPECTACLE',
         damage: 140,       // Huge damage on first target (Overload)
         blastRadius: 25,
@@ -212,7 +212,7 @@ export const WEAPONS = {
     },
     NUKE: {
         name: 'Nuke',
-        description: 'ORBITAL: Cinematic multi-stage detonation (2 shots)',
+        description: 'Sometimes, the world just has to burn.',
         tier: 'ORBITAL',   // Moved to orbital tier - limited stock
         damage: 180,       // Massive damage
         blastRadius: 400,  // Huge blast
@@ -232,7 +232,7 @@ export const WEAPONS = {
     // === ORBITAL TIER (Limited Stock - purchased from space battle) ===
     ORBITAL_BEACON: {
         name: 'Orbital Beacon',
-        description: 'Call down devastating beam from capital ship (2.5s delay)',
+        description: 'Summon the finger of GOD.',
         tier: 'ORBITAL',
         damage: 75,
         blastRadius: 150,
@@ -245,7 +245,7 @@ export const WEAPONS = {
     },
     STRAFING_RUN: {
         name: 'Strafing Run',
-        description: 'DEVASTATING fighter strafe - 400px carpet bomb!',
+        description: 'WE NEED AIR SUPPORT, BOYS!',
         tier: 'SPECTACLE',   // Changed from ORBITAL to SPECTACLE (Epic rarity)
         damagePerBullet: 45,   // Buffed damage per bullet
         damage: 45,            // For display (buffed)
@@ -264,7 +264,7 @@ export const WEAPONS = {
     // GIGA OP: Double damage, massive blast, void rise, multi-explosion, screen shockwave
     DYING_STAR: {
         name: 'Dying Star',
-        description: 'ULTIMATE WEAPON. Devastates everything.',
+        description: 'THE ULTIMATE WEAPON. Devastate everything.',
         tier: 'SPECIAL',
         damage: 200,           // Massive base damage
         blastRadius: 250,      // Huge blast radius
@@ -288,7 +288,7 @@ export const WEAPONS = {
     // === CHEAP TIER (15-35 coins) ===
     PLASMA_BOLT: {
         name: 'Plasma Bolt',
-        description: 'Hitscan beam - irradiates targets (20 dmg/turn for 2 turns)',
+        description: 'A Radioactive Laser Beam! (stops at terrain)',
         tier: 'CHEAP',
         damage: 25,        // Reduced from 50 - relies on radiation
         blastRadius: 25,
@@ -303,7 +303,7 @@ export const WEAPONS = {
     },
     BUCK_SHOT: {
         name: 'Buck Shot',
-        description: '5 fast frags in tight 30° cone, 800px max range',
+        description: 'A Shotgun Blast for Tanks!',
         tier: 'CHEAP',
         damage: 20,
         blastRadius: 35,
@@ -320,7 +320,7 @@ export const WEAPONS = {
     // === MID TIER (40-70 coins) ===
     GRAVITY_MORTAR: {
         name: 'Gravity Mortar',
-        description: '4 bomblets drop at apex of flight',
+        description: 'The higher you shoot, the bigger the boom.',
         tier: 'MID',
         damage: 50,        // Buffed damage per bomblet
         blastRadius: 50,
@@ -333,7 +333,7 @@ export const WEAPONS = {
     },
     VOID_SPLITTER: {
         name: 'Void Splitter',
-        description: 'Land → pause → 3 void fragments float up and home to targets',
+        description: 'FEAR THE FRAGMENTS OF THE VOID!',
         tier: 'MID',
         damage: 60,           // Each fragment deals 60 (2x)
         blastRadius: 120,     // Large blast radius (3x)
@@ -348,7 +348,7 @@ export const WEAPONS = {
     },
     BOUNCING_BETTY: {
         name: 'Bouncing Betty',
-        description: 'Pinball mayhem! +20 dmg/bounce, radius scales (55→125)',
+        description: 'Every bounce increases the boom!',
         tier: 'MID',
         damage: 20,           // Starting damage
         blastRadius: 55,      // Starting radius, scales up to 125 with bounces
@@ -366,7 +366,7 @@ export const WEAPONS = {
     // === PREMIUM TIER (80-120 coins) ===
     SOLAR_FLARE: {
         name: 'Solar Flare',
-        description: 'Rains fire along trajectory, napalm on impact',
+        description: 'Rains fiery fury from above!',
         tier: 'PREMIUM',
         damage: 50,              // Main shell explosion damage
         blastRadius: 50,         // Main shell explosion radius
@@ -385,7 +385,7 @@ export const WEAPONS = {
     },
     VOID_DRILL: {
         name: 'Void Drill',
-        description: 'Burrow → seek → erupt from below',
+        description: 'The Void is Calling!',
         tier: 'PREMIUM',
         damage: 90,
         blastRadius: 70,
@@ -401,7 +401,7 @@ export const WEAPONS = {
     // === SPECTACLE TIER (130-200 coins) ===
     METEOR_SHOWER: {
         name: 'Meteor Shower',
-        description: 'Fire upward - 6 meteors rain across the map!',
+        description: 'Reach to the stars and CALL THE FIRE!',
         tier: 'SPECTACLE',
         damage: 0,              // Signal flare does no damage
         meteorDamage: 80,       // Each meteor deals 80 damage
@@ -417,7 +417,7 @@ export const WEAPONS = {
     },
     BLACK_HOLE_GRENADE: {
         name: 'Black Hole Grenade',
-        description: 'Powerful gravity well - drags tanks into explosion',
+        description: 'A vortex of black death.',
         tier: 'SPECTACLE',
         damage: 100,
         blastRadius: 150,
@@ -434,7 +434,7 @@ export const WEAPONS = {
     },
     VOID_CANNON: {
         name: 'Void Cannon',
-        description: 'Orbital beam cuts to the void with gravity pull',
+        description: "Don't stare too long into the void...",
         tier: 'SPECTACLE',
         damage: 120,
         blastRadius: 100,

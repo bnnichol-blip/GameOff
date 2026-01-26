@@ -8723,6 +8723,30 @@ function renderLottery() {
 }
 
 /**
+ * Word wrap text to fit within maxChars per line
+ */
+function wrapText(text, maxChars) {
+    if (!text || text.length <= maxChars) return [text || ''];
+
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+
+    for (const word of words) {
+        const testLine = currentLine ? currentLine + ' ' + word : word;
+        if (testLine.length <= maxChars) {
+            currentLine = testLine;
+        } else {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+        }
+    }
+    if (currentLine) lines.push(currentLine);
+
+    return lines;
+}
+
+/**
  * Render a single lottery card
  */
 function renderLotteryCard(card, x, y, width, height, isSelected, number, revealed) {
@@ -8794,11 +8818,15 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
     renderer.drawText(`DMG: ${card.damage}`, x + width / 2, statsY, '#aaaaaa', 12, 'center', false);
     renderer.drawText(`Radius: ${card.blastRadius}`, x + width / 2, statsY + 16, '#aaaaaa', 12, 'center', false);
 
-    // Description (truncated if too long - shorter for narrower cards)
-    const desc = card.description && card.description.length > 20
-        ? card.description.slice(0, 17) + '...'
-        : (card.description || '');
-    renderer.drawText(desc, x + width / 2, statsY + 38, '#666666', 9, 'center', false);
+    // Description with word wrapping (max ~18 chars per line for 140px width)
+    const desc = card.description || '';
+    const maxCharsPerLine = 22;
+    const descLines = wrapText(desc, maxCharsPerLine);
+    const lineHeight = 12;
+    const descStartY = statsY + 36;
+    for (let i = 0; i < Math.min(descLines.length, 3); i++) {
+        renderer.drawText(descLines[i], x + width / 2, descStartY + i * lineHeight, '#888888', 10, 'center', false);
+    }
 
     // Selection number at bottom
     const numColor = isSelected ? '#ffffff' : '#555555';
