@@ -427,7 +427,9 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     terrain.createGooStain(x, y, deathBlastRadius * 0.6, shape, sides, color);
 
     // Shape-specific directional particle burst
-    particles.tankDeathBurst(x, y, shape, color, sides);
+    if (typeof particles.tankDeathBurst === 'function') {
+        particles.tankDeathBurst(x, y, shape, color, sides);
+    }
 
     // SPECTACULAR MULTI-STAGE EXPLOSION (3x particles)
     if (isVoidDeath) {
