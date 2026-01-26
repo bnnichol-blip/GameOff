@@ -8,6 +8,12 @@ import { COLORS } from './renderer.js';
 import { particles } from './particles.js';
 
 // ============================================================================
+// Feature Toggles (for debugging/performance)
+// ============================================================================
+const DISABLE_UFOS = true;           // Disable UFO spawning and rendering
+const DISABLE_SPACE_BATTLE = true;   // Disable background space battle
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -26,21 +32,21 @@ const CLOUD_CONFIG = {
 };
 
 const UFO_CONFIG = {
-    spawnChance: 0.003,   // Per frame chance (3x more frequent)
-    maxConcurrent: 4,     // Max UFOs at once (was 2)
+    spawnChance: 0.002,   // Per frame chance (reduced)
+    maxConcurrent: 2,     // Max UFOs at once (reduced from 4)
     minSpeed: 50,
     maxSpeed: 100,
     wobbleSpeed: 2,
     wobbleAmount: 15,
-    shootInterval: 1500,  // ms between shots (faster)
-    shootChance: 0.6,     // Chance to shoot when interval hits
+    shootInterval: 2000,  // ms between shots (slower)
+    shootChance: 0.4,     // Chance to shoot when interval hits (reduced)
     // Combat properties
     health: 1,            // UFOs die in one hit
     hitboxWidth: 35,      // Ellipse hitbox width (half-width)
     hitboxHeight: 12,     // Ellipse hitbox height (half-height)
     // Shot damage properties
-    shotDamage: 8,        // Damage to tanks
-    shotBlastRadius: 40   // Terrain destruction radius
+    shotDamage: 0,        // No damage to tanks (was 8)
+    shotBlastRadius: 0    // No terrain destruction (was 40)
 };
 
 // Buff types that UFOs can drop
@@ -2073,106 +2079,110 @@ export class AmbientSystem {
         }
 
         // Maybe spawn UFO
-        if (Math.random() < UFO_CONFIG.spawnChance) {
+        if (!DISABLE_UFOS && Math.random() < UFO_CONFIG.spawnChance) {
             this.spawnUFO();
         }
 
         // Update UFOs
-        for (const ufo of this.ufos) {
-            ufo.update(dt, this.time);
-        }
-        this.ufos = this.ufos.filter(u => !u.dead);
+        if (!DISABLE_UFOS) {
+            for (const ufo of this.ufos) {
+                ufo.update(dt, this.time);
+            }
+            this.ufos = this.ufos.filter(u => !u.dead);
 
-        // Update UFO shots (with damage)
-        for (const shot of this.ufoShots) {
-            shot.update(dt, this.canvasHeight, voidY, players);
+            // Update UFO shots (with damage)
+            for (const shot of this.ufoShots) {
+                shot.update(dt, this.canvasHeight, voidY, players);
+            }
+            this.ufoShots = this.ufoShots.filter(s => !s.dead);
         }
-        this.ufoShots = this.ufoShots.filter(s => !s.dead);
 
         // =====================================================================
         // EPIC SPACE BATTLE UPDATE
         // =====================================================================
 
-        // Callback for ships to fire projectiles
-        const fireProjectile = (x, y, target, color, type, sourceWidth, fixedAngle = null) => {
-            // Find inactive projectile in pool
-            const proj = this.projectilePool.find(p => !p.active);
-            if (proj) {
-                proj.fire(x, y, target, color, type, sourceWidth, fixedAngle);
+        if (!DISABLE_SPACE_BATTLE) {
+            // Callback for ships to fire projectiles
+            const fireProjectile = (x, y, target, color, type, sourceWidth, fixedAngle = null) => {
+                // Find inactive projectile in pool
+                const proj = this.projectilePool.find(p => !p.active);
+                if (proj) {
+                    proj.fire(x, y, target, color, type, sourceWidth, fixedAngle);
+                }
+            };
+
+            // Callback for creating impact effects
+            const addImpact = (x, y, type, targetShip) => {
+                const impact = this.impactPool.find(i => !i.active);
+                if (impact) {
+                    impact.trigger(x, y, type, targetShip, this.onBeaconDrop);
+                }
+            };
+
+            // Callback for smoke trails
+            const addSmoke = (x, y) => {
+                const smoke = this.smokeParticles.find(s => !s.active);
+                if (smoke) {
+                    smoke.spawn(x, y);
+                }
+            };
+
+            // Skip ship updates during battle pause (for dramatic orbital strike effect)
+            if (!this.battlePaused) {
+                // Update dreadnoughts
+                for (const ship of this.dreadnoughts) {
+                    ship.update(dt, fireProjectile, addImpact, addSmoke);
+                }
+
+                // Update cruisers
+                for (const ship of this.cruisers) {
+                    ship.update(dt, fireProjectile, addImpact, addSmoke);
+                }
+
+                // Update fighters
+                for (const fighter of this.fighters) {
+                    fighter.update(dt, fireProjectile);
+                }
+
+                // Update projectiles
+                for (const proj of this.projectilePool) {
+                    proj.update(dt, addImpact);
+                }
+            } else {
+                // Still update projectiles even during pause (they're mid-flight)
+                for (const proj of this.projectilePool) {
+                    proj.update(dt, addImpact);
+                }
             }
-        };
 
-        // Callback for creating impact effects
-        const addImpact = (x, y, type, targetShip) => {
-            const impact = this.impactPool.find(i => !i.active);
-            if (impact) {
-                impact.trigger(x, y, type, targetShip, this.onBeaconDrop);
-            }
-        };
-
-        // Callback for smoke trails
-        const addSmoke = (x, y) => {
-            const smoke = this.smokeParticles.find(s => !s.active);
-            if (smoke) {
-                smoke.spawn(x, y);
-            }
-        };
-
-        // Skip ship updates during battle pause (for dramatic orbital strike effect)
-        if (!this.battlePaused) {
-            // Update dreadnoughts
-            for (const ship of this.dreadnoughts) {
-                ship.update(dt, fireProjectile, addImpact, addSmoke);
+            // Update impacts
+            for (const impact of this.impactPool) {
+                impact.update(dt);
             }
 
-            // Update cruisers
-            for (const ship of this.cruisers) {
-                ship.update(dt, fireProjectile, addImpact, addSmoke);
+            // Update smoke
+            for (const smoke of this.smokeParticles) {
+                smoke.update(dt);
             }
 
-            // Update fighters
-            for (const fighter of this.fighters) {
-                fighter.update(dt, fireProjectile);
+            // Update space dust
+            for (const dust of this.spaceDust) {
+                dust.update(dt);
             }
 
-            // Update projectiles
-            for (const proj of this.projectilePool) {
-                proj.update(dt, addImpact);
+            // Update distant flashes
+            for (const flash of this.distantFlashes) {
+                flash.update(dt);
             }
-        } else {
-            // Still update projectiles even during pause (they're mid-flight)
-            for (const proj of this.projectilePool) {
-                proj.update(dt, addImpact);
-            }
-        }
 
-        // Update impacts
-        for (const impact of this.impactPool) {
-            impact.update(dt);
-        }
-
-        // Update smoke
-        for (const smoke of this.smokeParticles) {
-            smoke.update(dt);
-        }
-
-        // Update space dust
-        for (const dust of this.spaceDust) {
-            dust.update(dt);
-        }
-
-        // Update distant flashes
-        for (const flash of this.distantFlashes) {
-            flash.update(dt);
-        }
-
-        // Spawn distant flashes randomly
-        if (Math.random() < SPACE_BATTLE_CONFIG.distantFlashChance) {
-            const flash = this.distantFlashes.find(f => !f.active);
-            if (flash) {
-                const flashX = randomRange(50, this.canvasWidth - 50);
-                const flashY = randomRange(this.canvasHeight * 0.02, this.canvasHeight * 0.15);
-                flash.trigger(flashX, flashY);
+            // Spawn distant flashes randomly
+            if (Math.random() < SPACE_BATTLE_CONFIG.distantFlashChance) {
+                const flash = this.distantFlashes.find(f => !f.active);
+                if (flash) {
+                    const flashX = randomRange(50, this.canvasWidth - 50);
+                    const flashY = randomRange(this.canvasHeight * 0.02, this.canvasHeight * 0.15);
+                    flash.trigger(flashX, flashY);
+                }
             }
         }
 
@@ -2404,67 +2414,69 @@ export class AmbientSystem {
         // EPIC SPACE BATTLE - Layered back to front
         // =====================================================================
 
-        // 1. Distant flashes (furthest back - far-off explosions)
-        for (const flash of this.distantFlashes) {
-            flash.draw(renderer);
+        if (!DISABLE_SPACE_BATTLE) {
+            // 1. Distant flashes (furthest back - far-off explosions)
+            for (const flash of this.distantFlashes) {
+                flash.draw(renderer);
+            }
+
+            // 2. Space dust (atmospheric particles)
+            for (const dust of this.spaceDust) {
+                dust.draw(renderer);
+            }
+
+            // 3. Dreadnoughts (massive, furthest layer, dimmest)
+            for (const ship of this.dreadnoughts) {
+                ship.draw(renderer);
+            }
+
+            // 4. Smoke trails from damaged ships
+            for (const smoke of this.smokeParticles) {
+                smoke.draw(renderer);
+            }
+
+            // 5. Cruisers (medium layer)
+            for (const ship of this.cruisers) {
+                ship.draw(renderer);
+            }
+
+            // 6. Fighters (nearest, brightest)
+            for (const fighter of this.fighters) {
+                fighter.draw(renderer);
+            }
+
+            // 7. Projectiles (laser bolts between ships)
+            for (const proj of this.projectilePool) {
+                proj.draw(renderer);
+            }
+
+            // 8. Impacts (shield flickers and explosions)
+            for (const impact of this.impactPool) {
+                impact.draw(renderer);
+            }
+
+            // === DEPTH OVERLAY - Push the entire battle back visually ===
+            // Dark gradient overlay makes the battle feel miles away
+            const depthAlpha = SPACE_BATTLE_CONFIG.depthOverlayAlpha || 0.25;
+            ctx.globalAlpha = depthAlpha;
+            const depthGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
+            depthGradient.addColorStop(0, 'rgba(0, 0, 0, 0.4)');
+            depthGradient.addColorStop(0.5, 'rgba(5, 5, 15, 0.3)');
+            depthGradient.addColorStop(1, 'rgba(10, 5, 20, 0.2)');
+            ctx.fillStyle = depthGradient;
+            ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
+            ctx.globalAlpha = 1;
+
+            // Very subtle atmospheric haze across whole sky
+            ctx.globalAlpha = SPACE_BATTLE_CONFIG.hazeAlpha;
+            const hazeGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
+            hazeGradient.addColorStop(0, 'transparent');
+            hazeGradient.addColorStop(0.5, 'rgba(30, 20, 40, 0.03)');
+            hazeGradient.addColorStop(1, 'rgba(20, 15, 35, 0.05)');
+            ctx.fillStyle = hazeGradient;
+            ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
+            ctx.globalAlpha = 1;
         }
-
-        // 2. Space dust (atmospheric particles)
-        for (const dust of this.spaceDust) {
-            dust.draw(renderer);
-        }
-
-        // 3. Dreadnoughts (massive, furthest layer, dimmest)
-        for (const ship of this.dreadnoughts) {
-            ship.draw(renderer);
-        }
-
-        // 4. Smoke trails from damaged ships
-        for (const smoke of this.smokeParticles) {
-            smoke.draw(renderer);
-        }
-
-        // 5. Cruisers (medium layer)
-        for (const ship of this.cruisers) {
-            ship.draw(renderer);
-        }
-
-        // 6. Fighters (nearest, brightest)
-        for (const fighter of this.fighters) {
-            fighter.draw(renderer);
-        }
-
-        // 7. Projectiles (laser bolts between ships)
-        for (const proj of this.projectilePool) {
-            proj.draw(renderer);
-        }
-
-        // 8. Impacts (shield flickers and explosions)
-        for (const impact of this.impactPool) {
-            impact.draw(renderer);
-        }
-
-        // === DEPTH OVERLAY - Push the entire battle back visually ===
-        // Dark gradient overlay makes the battle feel miles away
-        const depthAlpha = SPACE_BATTLE_CONFIG.depthOverlayAlpha || 0.25;
-        ctx.globalAlpha = depthAlpha;
-        const depthGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
-        depthGradient.addColorStop(0, 'rgba(0, 0, 0, 0.4)');
-        depthGradient.addColorStop(0.5, 'rgba(5, 5, 15, 0.3)');
-        depthGradient.addColorStop(1, 'rgba(10, 5, 20, 0.2)');
-        ctx.fillStyle = depthGradient;
-        ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
-        ctx.globalAlpha = 1;
-
-        // Very subtle atmospheric haze across whole sky
-        ctx.globalAlpha = SPACE_BATTLE_CONFIG.hazeAlpha;
-        const hazeGradient = ctx.createLinearGradient(0, 0, 0, skyBottom);
-        hazeGradient.addColorStop(0, 'transparent');
-        hazeGradient.addColorStop(0.5, 'rgba(30, 20, 40, 0.03)');
-        hazeGradient.addColorStop(1, 'rgba(20, 15, 35, 0.05)');
-        ctx.fillStyle = hazeGradient;
-        ctx.fillRect(0, 0, this.canvasWidth, skyBottom);
-        ctx.globalAlpha = 1;
 
         // Far clouds (behind everything else, but after space battle)
         for (const cloud of this.farClouds) {
@@ -2488,13 +2500,15 @@ export class AmbientSystem {
     // Draw foreground elements (after everything else)
     drawForeground(renderer) {
         // UFOs
-        for (const ufo of this.ufos) {
-            ufo.draw(renderer);
-        }
+        if (!DISABLE_UFOS) {
+            for (const ufo of this.ufos) {
+                ufo.draw(renderer);
+            }
 
-        // UFO shots
-        for (const shot of this.ufoShots) {
-            shot.draw(renderer);
+            // UFO shots
+            for (const shot of this.ufoShots) {
+                shot.draw(renderer);
+            }
         }
 
         // Lightning strikes (dramatic, above everything)
@@ -2520,11 +2534,7 @@ export class AmbientSystem {
 
     // Optional: Trigger lightning flash during storms
     triggerLightning(renderer) {
-        if (this.weatherType === 'rain' && Math.random() < 0.002) {
-            renderer.flash('#ffffff', 0.4);
-            // Could add thunder sound here if audio is available
-            return true;
-        }
+        // Disabled - was causing jarring white box flashes
         return false;
     }
 }

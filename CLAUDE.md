@@ -3,7 +3,7 @@
 *A game jam entry for "Game Off" January 2026*
 
 **Theme:** "One Button Away"
-**Status:** Active Development
+**Status:** Feature Complete, Polish Phase
 **Target:** Win the $300 prize
 
 ---
@@ -12,20 +12,21 @@
 
 **VOID ARTILLERY** is a 2D artillery duel with unique hooks:
 
-1. **Ricochet** — Projectiles bounce off walls (infinite bounces)
+1. **Ricochet** — Projectiles bounce off walls (configurable per weapon)
 2. **The Rising Void** — After each round, the floor rises, shrinking the arena
 3. **Tank Archetypes** — 5 unique playstyles with passive abilities
-4. **Weapon Economy** — Shop system with 40+ weapons (transitioning to Cosmic Lottery)
+4. **Cosmic Lottery** — Per-turn card selection replaces traditional shop
 5. **Glitch Events** — Random modifiers that change gameplay each round
+6. **Cave Systems** — Destructible ceiling overhangs with full collision
 
 **Players:** 1-4 (humans and/or AI)
 **Mode:** Turn-based artillery combat
 
 ### Core Loop
 1. Select archetype at game start
-2. Each turn: Aim with arrow keys, HOLD Space to charge, RELEASE to fire
-3. Projectiles bounce off walls, explode on terrain/players
-4. After each round: Shop for new weapons (or upcoming: Cosmic Lottery)
+2. **Cosmic Lottery**: Pick 1 of 5 cards (weapons with rarities)
+3. Aim with arrow keys, HOLD Space to charge, RELEASE to fire
+4. Projectiles bounce off walls, explode on terrain/players
 5. Void rises, arena shrinks
 6. Last tank standing wins
 
@@ -40,20 +41,19 @@
 
 **Geometry Wars meets Tron.** No sprites. Just shapes, glow, and particles.
 
-- **Background:** Black with space battle ambient effects
+- **Background:** Black (space battle and UFOs currently disabled)
 - **Tanks:** Geometric shapes with archetype-specific designs
-- **Terrain:** Dark fill with neon edge lines, destructible
+- **Terrain:** Dark fill with neon edge lines, destructible with cave overhangs
 - **Projectiles:** Glowing shapes with particle trails
 - **Void:** Pulsing magenta gradient, glitchy edge
 - **Explosions:** Particle bursts, screen shake, bloom
 
-**Color Palette:**
-- Cyan `#00ffff` — Player 1
-- Magenta `#ff00ff` — Player 2, void, danger
-- Green `#00ff00` — Player 3
-- Orange `#ffaa00` — Player 4
-- Yellow `#ffff00` — Highlights, charge meter
-- White `#ffffff` — Explosions, impacts
+**Biomes (5 color themes):**
+- CYBER_VOID — Purple/cyan
+- ICE_FIELD — Blue/cyan
+- LAVA_CORE — Orange/red
+- TOXIC_ZONE — Green/yellow
+- VOID_RIFT — Purple/magenta
 
 ---
 
@@ -63,43 +63,82 @@ Players select an archetype at game start. Each has a passive ability:
 
 | Archetype | Ability | Playstyle |
 |-----------|---------|-----------|
-| **STRIKER** | +33% damage dealt | Aggressive, glass cannon |
-| **FORTRESS** | -33% damage taken | Defensive, outlast opponents |
-| **HUNTER** | Slight projectile homing | Precision, never miss |
-| **MERCHANT** | +20 coins per turn | Economic, buy better weapons |
-| **SPECTER** | Hover above terrain | Mobile, avoid void longer |
+| **STRIKER** | +33% damage dealt | Aggressive glass cannon |
+| **FORTRESS** | -33% damage taken | Defensive anchor |
+| **HUNTER** | Slight projectile homing | Precision tracker |
+| **SPECTER** | Hover 20px above terrain | Aerial phantom |
+| **MERCHANT** | +20 coins per turn | Economic advantage |
 
 ---
 
-## Weapon System
+## Cosmic Lottery (IMPLEMENTED)
 
-### Current: Shop System
-- Opens every 3 rounds
-- Players spend coins to buy weapons
-- Weapons organized by tier (CHEAP → SPECTACLE)
+The shop system has been **fully replaced** with the Cosmic Lottery:
 
-### Upcoming: Cosmic Lottery
-- Activates at START of every turn
-- 3 random reward cards appear
-- Player picks one (weapon, passive, or item)
-- Rarity system: Common → Legendary
-- See `cosmic_lottery_system_plan.md` for full design
+- Activates at the START of every turn
+- **5 cards displayed**: Mortar (guaranteed) + 3 random + Teleporter (guaranteed)
+- Player picks with 1-5 keys
+- AI auto-selects highest rarity card
 
-### Weapon Categories (40+ weapons)
+### Rarity System
+| Rarity | Rate | Unlock |
+|--------|------|--------|
+| Common | 50% | Round 1+ |
+| Uncommon | 30% | Round 1+ |
+| Rare | 15% | Round 3+ |
+| Epic | 4% | Round 5+ |
+| Legendary | 1% | Round 7+ |
 
-**Standard Ordnance:** Plasma Bolt, Scatter Shell, Neutron Blast, Tracer Round
+### Pity System
+After 5 consecutive common-only turns, guarantees a Rare+ weapon.
 
-**Multi-Stage:** Cluster bombs, MIRV, Splitter, Gravity Mortar
+---
 
-**Terrain Manipulation:** Terrain Eater, Fissure Charge, Matter Constructor, Singularity Drill
+## Weapon System (41 weapons)
 
-**Bounce Specialists:** Bouncing Betty, Ricochet Storm, Angle Amplifier
+### By Tier
 
-**Void/Space Themed:** Meteor Shower, Black Hole Grenade, Solar Flare, Cosmic Ray
+**CHEAP:** Mortar, Bouncer, Dirt Ball, Digger, Roller, Plasma Bolt
 
-**Orbital Weapons:** Nuke, Railgun, Orbital Beacon, Strafing Run
+**MID:** Splitter, Seeker, Cluster, Drill, Heavy Shell, Scatter Shell, Gravity Mortar, Bouncing Betty
 
-**Ultimate:** Dying Star, Supernova, Armageddon Protocol, Void Cannon
+**PREMIUM:** Railgun, Quake, Teleporter, Chain Lightning, Void Splitter
+
+**SPECTACLE:** Napalm, Fissure Charge, Solar Flare, Singularity Drill, Meteor Shower
+
+**ORBITAL/SPECIAL:** Orbital Beacon, Strafing Run, Dying Star, Black Hole Grenade, Void Cannon, Nuke
+
+### Weapon Behaviors
+- **Standard** — Simple projectiles
+- **Cluster/Split** — Break into sub-projectiles
+- **Terrain Tools** — Digger, Dirt Ball, Fissure
+- **Bouncer** — Pinball physics, explodes on each bounce
+- **Roller** — Rolls along terrain surface
+- **Drill** — Tunnels through terrain
+- **Orbital** — Called from space, special targeting
+
+---
+
+## Terrain System
+
+### Generation Types (6)
+- **Rolling Hills** — Gentle sine wave terrain
+- **Canyon** — Deep trenches with ledges
+- **Plateau** — Flat elevated sections with cliffs
+- **Islands** — Floating terrain chunks
+- **Caves** — Full ceiling coverage (30% chance for massive tunnel)
+- **Bridge** — Spanning structure over gap
+
+### Features
+- **Cavern Overhangs** — Partial ceilings with destructible walls
+- **Stalactites/Stalagmites** — Cave decorations
+- **Jagged Variation** — Micro-noise for natural feel
+
+### Ceiling System (Recently Fixed)
+- Ceilings extend visually to top of screen (solid rock roof)
+- Full collision detection including vertical sides
+- Destruction works from any angle
+- `syncCeilingState()` prevents ghost terrain artifacts
 
 ---
 
@@ -107,56 +146,58 @@ Players select an archetype at game start. Each has a passive ability:
 
 ### Glitch Events
 Random modifiers that activate each round:
-- **Gravity Flux** — Gravity changes (low/high/reverse)
+- **Gravity Flux** — Low/high/reverse gravity
 - **Arsenal Glitch** — Random weapon swap
 - **Void Surge** — Extra void rise after shots
 - **Elastic World** — Extra bounces for all projectiles
 - **Time Dilation** — Projectile speed changes
 
 ### Orbital Strike System
-Special weapons called from orbiting ships:
 - **Orbital Beacon** — Marks location for precision strike
 - **Strafing Run** — Fighter jets strafe across the field
 - **Railgun** — Charging beam with telegraph
 - **Nuke** — Massive explosion with mushroom cloud
 
 ### Desperation Beacons
-When orbital weapons are used, beacons fall from the sky. Players can claim them by shooting them for free orbital strikes.
+When orbital weapons are used, beacons fall from the sky. Players can claim them by shooting them.
 
 ---
 
 ## Technical Architecture
 
-**Stack:** Vanilla JavaScript + HTML Canvas
+**Stack:** Vanilla JavaScript + HTML Canvas (no dependencies)
 
-### Actual File Structure
+### File Structure
 ```
 /void-artillery
-  index.html           # Entry point
+  index.html              # Entry point
   /src
-    main.js            # Game loop, state, all game logic (~8000 lines)
-    input.js           # Keyboard handling
-    renderer.js        # Base drawing utilities
-    particles.js       # Particle system
-    terrain.js         # Terrain generation/destruction
-    audio.js           # Sound effects
-    utils.js           # Math helpers
-    events.js          # Glitch event system
-    ambient.js         # Background space battle
-    weaponData.js      # All weapon definitions
-    state.js           # Shared state and constants
-  PROJECT_STATUS.md    # Current development status
-  CLAUDE.md            # This file
+    main.js               # Game loop, state, lottery, all logic (~8600 lines)
+    terrain.js            # Terrain generation/destruction/collision (~2700 lines)
+    ambient.js            # Background effects, weather (~2550 lines)
+    weaponData.js         # Weapon definitions + archetypes
+    weaponBehaviors.js    # Complex weapon behavior handlers
+    particles.js          # Particle system
+    events.js             # Glitch event system
+    postfx.js             # Post-processing (chromatic, glitch, vignette)
+    audio.js              # Sound effects + music playlist
+    renderer.js           # Base drawing utilities
+    input.js              # Keyboard handling
+    state.js              # Shared state and constants
+    utils.js              # Math helpers
+  STATUS.md               # Current project status
+  CLAUDE.md               # This file
 ```
 
 ### Key Constants
 ```javascript
 const VIRTUAL_WIDTH = 2560;
 const VIRTUAL_HEIGHT = 1440;
+const DISPLAY_SCALE = 0.5;  // Renders at 1280x720
 const NUM_PLAYERS = 4;
-const GRAVITY = 0.3;
-const MAX_POWER = 15;
-const VOID_RISE_PER_ROUND = 30;
+const GRAVITY = 0.15;
+const MAX_POWER = 28;
+const VOID_RISE_PER_ROUND = 50;
 ```
 
 ---
@@ -179,46 +220,8 @@ Active during gameplay (aiming/firing phases):
 | H | Heal to full |
 | K | Kill next enemy |
 | V | Raise void by 100 |
+| T | Toggle terrain debug overlay |
 | 1-9 | Cycle through weapons |
-
----
-
-## AI System
-
-The AI is functional and makes strategic decisions:
-- Calculates optimal angles to hit enemies
-- Considers terrain obstacles
-- Prioritizes low-HP targets
-- Uses appropriate weapons for situations
-- Participates in shop/archetype selection
-
----
-
-## Implemented Juice
-
-- [x] Screen shake (scales with damage)
-- [x] Particles (explosions, trails, sparks)
-- [x] Glow/bloom (shadowBlur on all elements)
-- [x] Projectile trails (fading trail effect)
-- [x] Bounce effects (flash, particles, sound)
-- [x] Void visual (pulsing gradient, glitch edge)
-- [x] Camera zoom (punch zoom on explosions)
-- [x] Weapon-specific effects (meteor trails, railgun charge, nuke mushroom cloud)
-- [ ] Freeze frames (disabled - felt like lag)
-- [ ] Slow-mo on kills (not implemented)
-
----
-
-## Current Development Focus
-
-### Immediate (See PROJECT_STATUS.md)
-1. **Weapon Stabilization** — 35 new weapons need individual testing
-2. **Cosmic Lottery MVP** — Replace shop with per-turn lottery
-
-### Known Issues
-- Some weapons may have untested edge cases
-- Recursion bugs in cluster weapons (mostly fixed)
-- Shop can hang in edge cases (mostly fixed)
 
 ---
 
@@ -230,17 +233,62 @@ The AI is functional and makes strategic decisions:
 | ↑ ↓ | Fine aim adjustment |
 | Space (hold) | Charge power |
 | Space (release) | Fire |
+| 1-5 | Select lottery card |
 | Enter | Confirm selection |
 | Esc | Pause/menu |
 
 ---
 
+## AI System
+
+The AI is functional and competitive:
+- Calculates optimal angles to hit enemies
+- Considers terrain obstacles and bounces
+- Prioritizes low-HP targets
+- Auto-selects highest rarity lottery card
+- Participates in archetype selection
+
+---
+
+## Implemented Polish
+
+- [x] Screen shake (scales with damage)
+- [x] Particles (explosions, trails, sparks, fire fields)
+- [x] Glow/bloom (shadowBlur on all elements)
+- [x] Projectile trails (fading trail effect)
+- [x] Bounce effects (flash, particles, sound)
+- [x] Void visual (pulsing gradient, glitch edge)
+- [x] Camera zoom (punch zoom on explosions)
+- [x] Post-processing (chromatic aberration, vignette)
+- [x] Nuke mushroom cloud with stems
+- [x] Railgun charge telegraph
+- [x] Napalm animated fire fields
+- [x] 4-track music playlist
+
+---
+
+## Disabled Features (Performance)
+
+- Space battle background (toggle: `DISABLE_SPACE_BATTLE`)
+- UFO system (toggle: `DISABLE_UFOS`)
+- Lightning flashes during rain (disabled in code)
+
+---
+
+## Planned But Not Implemented
+
+- **Wind System** — Design complete in `docs/plans/2026-01-25-wind-system-design.md`
+- **Passives** — Damage boost, HP, bounces (lottery expansion)
+- **Cursed Items** — Risk/reward choices
+- **Weapon Evolutions** — Combine weapons for upgrades
+
+---
+
 ## Reference Documents
 
-- `PROJECT_STATUS.md` — Current tasks and progress
-- `cosmic_lottery_system_plan.md` — Full lottery design
-- `CosmicLotteryImplementationPlan.md` — Technical integration
-- `plan.md` — 35 weapons implementation plan
+- `STATUS.md` — Current project status (latest)
+- `cosmic_lottery_system_plan.md` — Original lottery design
+- `docs/plans/2026-01-25-wind-system-design.md` — Wind mechanics
 
 ---
 
@@ -253,4 +301,4 @@ The AI is functional and makes strategic decisions:
 
 ---
 
-*Last Updated: January 23, 2026*
+*Last Updated: January 25, 2026*

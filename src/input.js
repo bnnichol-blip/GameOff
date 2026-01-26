@@ -39,8 +39,8 @@ class Input {
     }
     
     _onKeyDown(e) {
-        // Prevent default for game keys (arrow keys, space)
-        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+        // Prevent default for game keys (arrow keys, space, escape)
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Escape'].includes(e.code)) {
             e.preventDefault();
         }
         
@@ -104,6 +104,7 @@ class Input {
     get spaceReleased() { return this.wasReleased('Space'); }
     get enter() { return this.wasPressed('Enter'); }
     get escape() { return this.wasPressed('Escape'); }
+    get escapeReleased() { return this.wasReleased('Escape'); }
     
     // Cleanup
     destroy() {

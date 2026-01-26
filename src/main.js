@@ -247,6 +247,9 @@ const state = {
     // UFO buff notification
     buffNotification: null,  // { playerIndex, buffType, timer }
 
+    // Debug visualization
+    terrainDebugMode: false,  // Toggle terrain floor/ceiling debug overlay
+
     // === ORBITAL STRIKE SYSTEMS ===
     orbitalStock: {
         ORBITAL_BEACON: { total: 2, remaining: 2 },
@@ -284,7 +287,8 @@ const state = {
     currentBiome: null,  // Set at game start from BIOMES
 
     // Death notifications for kill celebrations
-    deathNotifications: []  // { text, x, y, color, timer }
+    deathNotifications: [],  // { text, x, y, color, timer }
+    terrainStyleNotification: null  // { text, timer }
 };
 
 // Tank type keys for selection
@@ -650,6 +654,9 @@ function resetGame() {
     // Reset death notifications
     state.deathNotifications = [];
 
+    // Reset terrain style notification
+    state.terrainStyleNotification = null;
+
     // Select random biome for this game
     const biomeKey = BIOME_KEYS[Math.floor(Math.random() * BIOME_KEYS.length)];
     state.currentBiome = BIOMES[biomeKey];
@@ -676,6 +683,13 @@ function startGame() {
 
     // Apply initial archetype abilities (if any)
     state.players.forEach(p => applyGameStartAbilities(p));
+
+    // Show terrain style notification
+    const terrainStyleName = terrain.getTerrainStyleName();
+    state.terrainStyleNotification = {
+        text: terrainStyleName.toUpperCase(),
+        timer: 3.0  // Show for 3 seconds
+    };
 
     // Roll initial glitch event for round 1
     rollNewGlitchEvent();
@@ -1675,6 +1689,10 @@ function updateProjectile(dt) {
         return; // Skip normal physics while rolling
     }
 
+    // Store previous position before moving (for swept collision detection)
+    const prevX = proj.x;
+    const prevY = proj.y;
+
     // Move first (same pattern as working events.js bounce code)
     proj.x += proj.vx;
     proj.y += proj.vy;
@@ -1727,8 +1745,55 @@ function updateProjectile(dt) {
         }
     }
 
+    // === SWEPT VOLUME COLLISION DETECTION ===
+    // Fast projectiles can tunnel through thin terrain. Sample along the path
+    // between previous and current position to catch intermediate collisions.
+    const travelDist = Math.sqrt((proj.x - prevX) ** 2 + (proj.y - prevY) ** 2);
+    const steps = Math.max(1, Math.ceil(travelDist / 8));  // Check every ~8 pixels
+    const movingDown = proj.vy > 0;  // Projectile falling
+
+    for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const checkX = prevX + (proj.x - prevX) * t;
+        const checkY = prevY + (proj.y - prevY) * t;
+
+        // When moving downward, check ceiling FIRST (roof is hit before floor)
+        if (movingDown) {
+            if (terrain.isPointInCeiling(checkX, checkY)) {
+                proj.x = checkX;
+                proj.y = checkY;
+                break;
+            }
+            if (terrain.isPointBelowTerrain(checkX, checkY)) {
+                proj.x = checkX;
+                proj.y = checkY;
+                break;
+            }
+        } else {
+            // Moving up - check floor first, then ceiling
+            if (terrain.isPointBelowTerrain(checkX, checkY)) {
+                proj.x = checkX;
+                proj.y = checkY;
+                break;
+            }
+            if (terrain.isPointInCeiling(checkX, checkY)) {
+                proj.x = checkX;
+                proj.y = checkY;
+                break;
+            }
+        }
+    }
+
     // Check projectile termination conditions (Codex suggestion)
-    // 1. Hits terrain
+    // When moving downward, check ceiling FIRST - the "roof" should be hit before the floor
+    if (movingDown && terrain.isPointInCeiling(proj.x, proj.y)) {
+        // Ceiling hit while falling - simple explosion, no special behaviors
+        onExplode(proj);
+        state.projectile = null;
+        return;
+    }
+
+    // 1. Hits terrain (floor)
     if (terrain.isPointBelowTerrain(proj.x, proj.y)) {
         const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
 
@@ -1991,6 +2056,14 @@ function updateProjectile(dt) {
             state.projectile = null;
             return;
         }
+    }
+
+    // 1b. Hits ceiling (cavern overhang)
+    if (terrain.isPointInCeiling(proj.x, proj.y)) {
+        // Ceiling hit - simple explosion, no special behaviors
+        onExplode(proj);
+        state.projectile = null;
+        return;
     }
 
     // 2. Hits void
@@ -3677,14 +3750,14 @@ function rollCardExcluding(excludeKeys) {
 }
 
 /**
- * Generate 3 random lottery cards + 1 guaranteed Mortar (4 total)
+ * Generate 5 lottery cards: Mortar (slot 1) + 3 random + Teleporter (slot 5)
  * Pity system ensures rare+ every 5 turns - NO DUPLICATES
  */
 function generateLotteryCards() {
     const cards = [];
-    const usedWeapons = ['MORTAR'];  // Exclude Mortar from random pool (it's guaranteed)
+    const usedWeapons = ['MORTAR', 'TELEPORTER'];  // Exclude guaranteed weapons from random pool
 
-    // Roll 3 unique random cards
+    // Roll 3 unique random cards (will be slots 2-4)
     for (let i = 0; i < 3; i++) {
         const card = rollCardExcluding(usedWeapons);
         cards.push(card);
@@ -3699,7 +3772,7 @@ function generateLotteryCards() {
         );
         if (!hasRarePlus) {
             // Upgrade the first card to rare (excluding other cards' weapons)
-            const otherWeapons = [cards[1].weaponKey, cards[2].weaponKey, 'MORTAR'];
+            const otherWeapons = [cards[1].weaponKey, cards[2].weaponKey, 'MORTAR', 'TELEPORTER'];
             const rarePool = WEAPONS_BY_RARITY.rare?.filter(k => !otherWeapons.includes(k)) || [];
             if (rarePool.length > 0) {
                 const weaponKey = rarePool[Math.floor(Math.random() * rarePool.length)];
@@ -3714,10 +3787,15 @@ function generateLotteryCards() {
     );
     state.lottery.pityCounter = hasRarePlus ? 0 : state.lottery.pityCounter + 1;
 
-    // Add guaranteed Mortar as 1st card (always common rarity, marked as guaranteed)
+    // Add guaranteed Mortar as 1st card (slot 1 - always available to shoot)
     const mortarCard = createCard('MORTAR', 'common');
-    mortarCard.guaranteed = true;  // Mark as guaranteed fallback
+    mortarCard.guaranteed = true;
     cards.unshift(mortarCard);
+
+    // Add guaranteed Teleporter as 5th card (slot 5 - always available to move)
+    const teleporterCard = createCard('TELEPORTER', 'common');
+    teleporterCard.guaranteed = true;
+    cards.push(teleporterCard);
 
     return cards;
 }
@@ -3828,9 +3906,9 @@ function handleLotteryInput() {
 
     const player = getCurrentPlayer();
 
-    // Number keys for direct selection (1-4 for 4 cards)
+    // Number keys for direct selection (1-5 for 5 cards)
     if (input.wasPressed('Digit1') || input.wasPressed('Numpad1')) {
-        selectLotteryCard(0);
+        selectLotteryCard(0);  // Mortar (guaranteed)
         return;
     }
     if (input.wasPressed('Digit2') || input.wasPressed('Numpad2')) {
@@ -3842,7 +3920,11 @@ function handleLotteryInput() {
         return;
     }
     if (input.wasPressed('Digit4') || input.wasPressed('Numpad4')) {
-        selectLotteryCard(3);  // Guaranteed Mortar
+        selectLotteryCard(3);
+        return;
+    }
+    if (input.wasPressed('Digit5') || input.wasPressed('Numpad5')) {
+        selectLotteryCard(4);  // Teleporter (guaranteed)
         return;
     }
 
@@ -3856,13 +3938,13 @@ function handleLotteryInput() {
         return;
     }
 
-    // Arrow key navigation (0-3 for 4 cards)
+    // Arrow key navigation (0-4 for 5 cards)
     if (input.wasPressed('ArrowLeft')) {
         state.lottery.selectedIndex = Math.max(0, state.lottery.selectedIndex - 1);
         audio.playSelect();
     }
     if (input.wasPressed('ArrowRight')) {
-        state.lottery.selectedIndex = Math.min(3, state.lottery.selectedIndex + 1);
+        state.lottery.selectedIndex = Math.min(4, state.lottery.selectedIndex + 1);
         audio.playSelect();
     }
 
@@ -4760,6 +4842,14 @@ function update(dt) {
         notif.timer -= dt;
     }
 
+    // Update terrain style notification
+    if (state.terrainStyleNotification && state.terrainStyleNotification.timer > 0) {
+        state.terrainStyleNotification.timer -= dt;
+        if (state.terrainStyleNotification.timer <= 0) {
+            state.terrainStyleNotification = null;
+        }
+    }
+
     // ========================================================================
     // DEBUG COMMANDS (active during gameplay phases)
     // ========================================================================
@@ -4873,22 +4963,29 @@ function update(dt) {
             audio.playPurchase();
         }
 
-        // 1-9 = Cycle through weapons
-        for (let i = 1; i <= 9; i++) {
-            if (input.wasPressed(`Digit${i}`)) {
-                const weaponKeys = Object.keys(WEAPONS);
-                const weaponIndex = (i - 1) % weaponKeys.length;
-                const player = getCurrentPlayer();
-                player.weapon = weaponKeys[weaponIndex];
-                console.log(`[DEBUG] P${state.currentPlayer + 1} got ${WEAPONS[player.weapon].name}`);
-                audio.playSelect();
-            }
+        // 1 = Cycle forward through weapons, 2 = Cycle backward
+        if (input.wasPressed('Digit1') || input.wasPressed('Digit2')) {
+            const weaponKeys = Object.keys(WEAPONS);
+            const player = getCurrentPlayer();
+            const currentIndex = weaponKeys.indexOf(player.weapon);
+            const direction = input.wasPressed('Digit1') ? 1 : -1;
+            const newIndex = (currentIndex + direction + weaponKeys.length) % weaponKeys.length;
+            player.weapon = weaponKeys[newIndex];
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got ${WEAPONS[player.weapon].name} (${newIndex + 1}/${weaponKeys.length})`);
+            audio.playSelect();
         }
 
         // P = Toggle post-processing effects
         if (input.wasPressed('KeyP')) {
             const enabled = postfx.togglePostFX();
             console.log(`[DEBUG] Post-FX: ${enabled ? 'ON' : 'OFF'}`);
+        }
+
+        // T = Toggle terrain debug overlay
+        if (input.wasPressed('KeyT')) {
+            state.terrainDebugMode = !state.terrainDebugMode;
+            terrain.setDebugMode(state.terrainDebugMode);
+            console.log(`[DEBUG] Terrain debug: ${state.terrainDebugMode ? 'ON' : 'OFF'}`);
         }
     }
 
@@ -5028,7 +5125,8 @@ function update(dt) {
         if (input.enter) {
             resetGame();  // Rematch with same mode
         }
-        if (input.escape) {
+        // Check both press and release for more reliable detection
+        if (input.escape || input.escapeReleased) {
             console.log('[DEBUG] Escape pressed in gameover - returning to title');
             resetToTitle();  // Back to title
         }
@@ -6263,7 +6361,14 @@ function updateClusterBomblet(proj, dt) {
     // Check termination
     // FIX: Only check bounce limit if maxBounces > 0 (prevents meteors with maxBounces=0 from instant exploding)
     const hitBounceLimitCheck = proj.maxBounces > 0 && proj.bounces >= proj.maxBounces;
-    if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
+    const movingDown = proj.vy > 0;  // Projectile falling
+
+    // When moving downward, check ceiling FIRST (roof hit before floor)
+    const hitCeiling = movingDown ?
+        (terrain.isPointInCeiling(proj.x, proj.y) || terrain.isPointBelowTerrain(proj.x, proj.y)) :
+        (terrain.isPointBelowTerrain(proj.x, proj.y) || terrain.isPointInCeiling(proj.x, proj.y));
+
+    if (hitCeiling ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100 ||
         hitBounceLimitCheck) {
@@ -6313,8 +6418,9 @@ function updateAnomalyProjectile(dt) {
         particles.trail(proj.x, proj.y, proj.color);
     }
 
-    // Check termination: terrain, void, or out of bounds
+    // Check termination: terrain, ceiling, void, or out of bounds
     if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
+        terrain.isPointInCeiling(proj.x, proj.y) ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100) {
         onAnomalyExplode(proj);
@@ -6453,6 +6559,9 @@ function render() {
 
     // Draw terrain
     terrain.draw(renderer, state.voidY);
+
+    // Draw terrain debug overlay if enabled
+    terrain.debugDraw(renderer);
 
     // Draw terrain props (trees, buildings, pylons, rocks)
     terrain.drawProps(renderer);
@@ -6858,6 +6967,39 @@ function render() {
         renderer.setGlow(notif.color, 20);
         renderer.drawText(notif.text, notif.x * WORLD_SCALE, (notif.y - rise) * WORLD_SCALE, notif.color, 24, 'center', true);
         renderer.clearGlow();
+        renderer.ctx.globalAlpha = 1;
+    }
+
+    // Draw terrain style notification (shown at game start)
+    if (state.terrainStyleNotification && state.terrainStyleNotification.timer > 0) {
+        const notif = state.terrainStyleNotification;
+        // Fade in for first 0.5s, then fade out in last 1s
+        let alpha = 1;
+        if (notif.timer > 2.5) {
+            alpha = (3.0 - notif.timer) * 2;  // Fade in
+        } else if (notif.timer < 1.0) {
+            alpha = notif.timer;  // Fade out
+        }
+        renderer.ctx.globalAlpha = alpha;
+
+        // Draw decorative line + text at top of screen
+        const centerX = CANVAS_WIDTH / 2;
+        const textY = 80;
+        const lineWidth = 200;
+
+        // Draw left decorative line
+        renderer.setGlow('#00ffff', 10);
+        renderer.drawLine(centerX - lineWidth - 20, textY, centerX - 20, textY, '#00ffff', 2, true);
+
+        // Draw right decorative line
+        renderer.drawLine(centerX + 20, textY, centerX + lineWidth + 20, textY, '#00ffff', 2, true);
+        renderer.clearGlow();
+
+        // Draw terrain name
+        renderer.setGlow('#ffffff', 15);
+        renderer.drawText(notif.text, centerX, textY, '#ffffff', 28, 'center', true);
+        renderer.clearGlow();
+
         renderer.ctx.globalAlpha = 1;
     }
 
@@ -8202,11 +8344,11 @@ function renderLottery() {
     // Show current player
     renderer.drawText(`PLAYER ${playerIndex + 1}`, CANVAS_WIDTH / 2, 95, player.color, 18, 'center', true);
 
-    // Card dimensions and positioning (4 cards now)
-    const cardWidth = 160;    // Slightly narrower to fit 4
-    const cardHeight = 220;   // Slightly shorter
-    const cardSpacing = 30;   // Tighter spacing
-    const totalWidth = cardWidth * 4 + cardSpacing * 3;
+    // Card dimensions and positioning (5 cards: Mortar + 3 random + Teleporter)
+    const cardWidth = 140;    // Narrower to fit 5
+    const cardHeight = 200;   // Slightly shorter
+    const cardSpacing = 20;   // Tighter spacing
+    const totalWidth = cardWidth * 5 + cardSpacing * 4;
     const startX = (CANVAS_WIDTH - totalWidth) / 2;
     const cardY = CANVAS_HEIGHT / 2 - cardHeight / 2;
 
@@ -8217,9 +8359,9 @@ function renderLottery() {
         yOffset = -400 * (1 - easeOutBounce(progress));
     }
 
-    // Render all 4 cards (3 random + 1 guaranteed Mortar)
+    // Render all 5 cards (Mortar + 3 random + Teleporter)
     const revealed = state.lottery.animationPhase !== 'descending';
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
         const card = state.lottery.cards[i];
         if (!card) continue;
 
@@ -8237,7 +8379,7 @@ function renderLottery() {
     renderer.drawText(rerollText, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 80, rerollColor, 16, 'center', false);
 
     // Controls hint
-    renderer.drawText('Press 1-4 to select  |  ← → to highlight  |  SPACE to confirm  |  1 = Default', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+    renderer.drawText('Press 1-5 to select  |  ← → to highlight  |  SPACE to confirm  |  1 = Shoot  |  5 = Move', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
 }
 
 /**
