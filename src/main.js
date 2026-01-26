@@ -15,7 +15,7 @@ import * as events from './events.js';
 import { initAmbient, getAmbient, UFO_BUFF_TYPES } from './ambient.js';
 import { postfx, initPostFX, applyAllPostFX, triggerChromatic, activateGlitch, deactivateGlitch, ENABLE_POSTFX } from './postfx.js';
 // Import weapon data and tank types from extracted module
-import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES,
+import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TANK_ARCHETYPES, TANKS, getTankById,
          LOTTERY_RARITY_RATES, LOTTERY_RARITY_COLORS, WEAPONS_BY_RARITY, WEAPON_RARITY_MAP } from './weaponData.js';
 
 // ============================================================================
@@ -156,7 +156,8 @@ function createPlayers(numPlayers, humanCount = numPlayers) {
             charging: false,
             health: 100,
             color: PLAYER_COLORS[i % PLAYER_COLORS.length],
-            archetype: null,      // Tank archetype (ability)
+            tankId: null,         // Tank cosmetic ID (from TANKS array)
+            archetype: null,      // DEPRECATED: Tank archetype (ability) - kept for migration
             tankType: null,       // Legacy - kept for compatibility
             isAI: i >= humanCount,  // Players beyond human count are AI
             shield: 0,
