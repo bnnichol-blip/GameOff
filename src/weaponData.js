@@ -16,9 +16,8 @@ export const WEAPONS = {
     BOUNCER: {
         name: 'Bouncer',
         description: 'Pinball chaos - explodes on every bounce',
-        cost: 100,
         tier: 'PREMIUM',
-        damage: 80,        // Mortar-level damage on each bounce
+        damage: 70,        // Reduced from 80 per bounce
         blastRadius: 80,   // Mortar-level blast radius
         bounces: 4,        // Base bounces (randomized 4-7 at fire time)
         bouncesMin: 4,     // Minimum random bounces
@@ -32,7 +31,6 @@ export const WEAPONS = {
     DIRT_BALL: {
         name: 'Dirt Ball',
         description: 'Creates massive jagged peak',
-        cost: 20,
         tier: 'CHEAP',
         damage: 0,         // Utility only - no damage
         blastRadius: 120,  // Same size as Digger
@@ -46,7 +44,6 @@ export const WEAPONS = {
     DIGGER: {
         name: 'Digger',
         description: 'Massive jagged crater to void',
-        cost: 25,
         tier: 'CHEAP',
         damage: 0,         // Utility only - no direct damage
         blastRadius: 120,  // Large crater
@@ -60,7 +57,6 @@ export const WEAPONS = {
     ROLLER: {
         name: 'Roller',
         description: 'Shockwaves while rolling',
-        cost: 30,
         tier: 'CHEAP',
         damage: 80,        // Final explosion damage
         blastRadius: 75,
@@ -78,9 +74,8 @@ export const WEAPONS = {
     MORTAR: {
         name: 'Mortar',
         description: 'Reliable AoE baseline',
-        cost: 25,          // Cheap tier pricing
         tier: 'CHEAP',     // Always available in lottery as common
-        damage: 80,        // 2-shot TTK baseline (was 100)
+        damage: 75,        // Slightly reduced from 80
         blastRadius: 100,  // THE baseline blast radius (unchanged)
         bounces: 1,
         projectileRadius: 8,
@@ -90,7 +85,6 @@ export const WEAPONS = {
     SPLITTER: {
         name: 'Splitter',
         description: 'Chain-split mayhem! (16 total bombs)',
-        cost: 45,
         tier: 'MID',
         damage: 70,
         blastRadius: 90,
@@ -108,7 +102,6 @@ export const WEAPONS = {
     HEAVY_SHELL: {
         name: 'Heavy Shell',
         description: 'Mini nuke - tight devastating fireball',
-        cost: 50,
         tier: 'MID',
         damage: 160,          // High damage
         blastRadius: 100,     // Tight but powerful
@@ -124,7 +117,6 @@ export const WEAPONS = {
     DRILL: {
         name: 'Drill',
         description: 'Tunnel borer - pierces terrain',
-        cost: 55,
         tier: 'MID',
         damage: 80,        // Normal mid-tier damage on exit
         blastRadius: 50,
@@ -139,7 +131,6 @@ export const WEAPONS = {
     SEEKER: {
         name: 'Seeker',
         description: 'Lock-on homing missile',
-        cost: 60,
         tier: 'MID',
         damage: 80,
         blastRadius: 75,
@@ -148,17 +139,16 @@ export const WEAPONS = {
         projectileSpeed: 0.85,
         color: '#ff44ff',
         behavior: 'seekerLockOn',
-        seekStrength: 0.25,       // Stronger homing after lock (buffed)
-        lockOnDelay: 0.5,         // Seconds to reach apex and lock
+        seekStrength: 0.5,        // Strong homing after lock (doubled)
+        lockOnDelay: 0.25,        // Faster lock-on (halved)
         ignoresTerrain: true      // Keeps chasing through terrain
     },
     CLUSTER: {
         name: 'Cluster',
         description: 'Wide spray of bomblets',
-        cost: 65,
         tier: 'MID',
-        damage: 25,        // Low damage each
-        blastRadius: 30,
+        damage: 35,        // Buffed from 25
+        blastRadius: 50,   // Buffed from 30
         bounces: 1,
         projectileRadius: 8,
         projectileSpeed: 0.8,
@@ -171,7 +161,6 @@ export const WEAPONS = {
     RAILGUN: {
         name: 'Railgun',
         description: 'ORBITAL: Instant devastating beam (3 shots)',
-        cost: 120,
         tier: 'ORBITAL',
         damage: 120,
         blastRadius: 20,
@@ -188,7 +177,6 @@ export const WEAPONS = {
     QUAKE: {
         name: 'Quake',
         description: 'DEVASTATING earthquake - cracks the earth!',
-        cost: 100,
         tier: 'PREMIUM',
         damage: 90,            // Reduced direct damage
         blastRadius: 60,       // Reduced blast radius
@@ -207,7 +195,6 @@ export const WEAPONS = {
     TELEPORTER: {
         name: 'Teleporter',
         description: 'Warp to impact point',
-        cost: 100,
         tier: 'PREMIUM',
         damage: 0,         // No damage, unchanged
         blastRadius: 30,
@@ -219,26 +206,10 @@ export const WEAPONS = {
     },
 
     // === SPECTACLE TIER (130-180 coins) ===
-    NAPALM: {
-        name: 'Napalm',
-        description: 'Lingering fire field - no knockback',
-        cost: 130,
-        tier: 'SPECTACLE',
-        damage: 15,
-        blastRadius: 120,
-        bounces: 1,
-        projectileRadius: 8,
-        projectileSpeed: 0.85,
-        color: '#ff4400',
-        behavior: 'napalm',
-        fieldDuration: 8,
-        fieldDamage: 10,
-        noKnockback: true   // Fire doesn't push tanks
-    },
+    // NAPALM: REMOVED from game
     CHAIN_LIGHTNING: {
         name: 'Chain Lightning',
         description: 'Overload - huge first hit, one jump',
-        cost: 150,
         tier: 'SPECTACLE',
         damage: 140,       // Huge damage on first target (Overload)
         blastRadius: 25,
@@ -254,7 +225,6 @@ export const WEAPONS = {
     NUKE: {
         name: 'Nuke',
         description: 'ORBITAL: Cinematic multi-stage detonation (2 shots)',
-        cost: 250,
         tier: 'ORBITAL',   // Moved to orbital tier - limited stock
         damage: 180,       // Massive damage
         blastRadius: 400,  // Huge blast
@@ -275,7 +245,6 @@ export const WEAPONS = {
     ORBITAL_BEACON: {
         name: 'Orbital Beacon',
         description: 'Call down devastating beam from capital ship (2.5s delay)',
-        cost: 300,
         tier: 'ORBITAL',
         damage: 75,
         blastRadius: 150,
@@ -289,8 +258,7 @@ export const WEAPONS = {
     STRAFING_RUN: {
         name: 'Strafing Run',
         description: 'DEVASTATING fighter strafe - 400px carpet bomb!',
-        cost: 200,
-        tier: 'ORBITAL',
+        tier: 'SPECTACLE',   // Changed from ORBITAL to SPECTACLE (Epic rarity)
         damagePerBullet: 45,   // Buffed damage per bullet
         damage: 45,            // For display (buffed)
         blastRadius: 400,      // Coverage width for display
@@ -309,7 +277,6 @@ export const WEAPONS = {
     DYING_STAR: {
         name: 'Dying Star',
         description: 'ULTIMATE WEAPON. Devastates everything.',
-        cost: 0,
         tier: 'SPECIAL',
         damage: 200,           // Massive base damage
         blastRadius: 250,      // Huge blast radius
@@ -334,9 +301,8 @@ export const WEAPONS = {
     PLASMA_BOLT: {
         name: 'Plasma Bolt',
         description: 'Hitscan beam - irradiates targets (20 dmg/turn for 2 turns)',
-        cost: 25,
         tier: 'CHEAP',
-        damage: 50,
+        damage: 25,        // Reduced from 50 - relies on radiation
         blastRadius: 25,
         bounces: 0,           // No bounces - terminates on first hit
         projectileRadius: 4,
@@ -347,27 +313,26 @@ export const WEAPONS = {
         radiationTurns: 2,    // Duration in turns
         beamWidth: 6
     },
-    SCATTER_SHELL: {
-        name: 'Scatter Shell',
-        description: '5 cone fragments on impact',
-        cost: 35,
+    BUCK_SHOT: {
+        name: 'Buck Shot',
+        description: '5 fast frags in tight 30° cone, 800px max range',
         tier: 'CHEAP',
         damage: 20,
         blastRadius: 35,
         bounces: 1,
         projectileRadius: 7,
-        projectileSpeed: 0.95,
+        projectileSpeed: 2.6,    // Very fast fragments (doubled)
         color: '#ffdd00',
         behavior: 'scatterCone',
         fragmentCount: 5,
-        coneAngle: 60  // degrees
+        coneAngle: 30,           // Tighter cone (was 60)
+        maxRange: 800            // Fragments expire after 800px (doubled)
     },
 
     // === MID TIER (40-70 coins) ===
     GRAVITY_MORTAR: {
         name: 'Gravity Mortar',
         description: '4 bomblets drop at apex of flight',
-        cost: 50,
         tier: 'MID',
         damage: 50,        // Buffed damage per bomblet
         blastRadius: 50,
@@ -380,27 +345,26 @@ export const WEAPONS = {
     },
     VOID_SPLITTER: {
         name: 'Void Splitter',
-        description: '3 homing fragments when near enemy',
-        cost: 65,
+        description: 'Land → pause → 3 void fragments float up and home to targets',
         tier: 'MID',
-        damage: 50,
-        blastRadius: 50,
-        bounces: 2,
+        damage: 60,           // Each fragment deals 60 (2x)
+        blastRadius: 120,     // Large blast radius (3x)
+        bounces: 0,           // Explodes on first terrain contact
         projectileRadius: 7,
         projectileSpeed: 0.9,
         color: '#aa00ff',
-        behavior: 'proximitySplit',
+        behavior: 'voidSplitterLand',
         splitCount: 3,
-        proximityRadius: 400,
-        homingStrength: 0.12
+        pauseDuration: 1.0,   // Pause 1 second before fragments emerge
+        homingStrength: 0.15
     },
     BOUNCING_BETTY: {
         name: 'Bouncing Betty',
-        description: 'Pinball mayhem! +20 dmg/bounce (20→220)',
-        cost: 55,
+        description: 'Pinball mayhem! +20 dmg/bounce, radius scales (55→125)',
         tier: 'MID',
         damage: 20,           // Starting damage
-        blastRadius: 55,
+        blastRadius: 55,      // Starting radius, scales up to 125 with bounces
+        maxBlastRadius: 125,  // Maximum blast radius at max bounces
         bounces: 10,          // Max 10 bounces
         projectileRadius: 6,
         projectileSpeed: 0.95,
@@ -409,27 +373,12 @@ export const WEAPONS = {
         bounceDamageModifier: 20,  // +20 damage per bounce
         explodesOnEnemyContact: true
     },
-    FISSURE_CHARGE: {
-        name: 'Fissure Charge',
-        description: '600px terrain crack',
-        cost: 55,
-        tier: 'MID',
-        damage: 80,
-        blastRadius: 50,
-        bounces: 1,
-        projectileRadius: 7,
-        projectileSpeed: 0.9,
-        color: '#996633',
-        behavior: 'fissure',
-        fissureLength: 600,   // Buffed length
-        fissureDepth: 120     // Buffed depth
-    },
+    // FISSURE_CHARGE: REMOVED from game
 
     // === PREMIUM TIER (80-120 coins) ===
     SOLAR_FLARE: {
         name: 'Solar Flare',
         description: 'Rains fire along trajectory, napalm on impact',
-        cost: 110,
         tier: 'PREMIUM',
         damage: 50,              // Main shell explosion damage
         blastRadius: 50,         // Main shell explosion radius
@@ -446,10 +395,9 @@ export const WEAPONS = {
         napalmDuration: 4,       // Napalm field duration
         napalmDamage: 8          // Napalm damage per second
     },
-    SINGULARITY_DRILL: {
-        name: 'Singularity Drill',
+    VOID_DRILL: {
+        name: 'Void Drill',
         description: 'Burrow → seek → erupt from below',
-        cost: 100,
         tier: 'PREMIUM',
         damage: 90,
         blastRadius: 70,
@@ -466,7 +414,6 @@ export const WEAPONS = {
     METEOR_SHOWER: {
         name: 'Meteor Shower',
         description: 'Fire upward - 6 meteors rain across the map!',
-        cost: 140,
         tier: 'SPECTACLE',
         damage: 0,              // Signal flare does no damage
         meteorDamage: 80,       // Each meteor deals 80 damage
@@ -483,7 +430,6 @@ export const WEAPONS = {
     BLACK_HOLE_GRENADE: {
         name: 'Black Hole Grenade',
         description: 'Powerful gravity well - drags tanks into explosion',
-        cost: 150,
         tier: 'SPECTACLE',
         damage: 100,
         blastRadius: 150,
@@ -501,7 +447,6 @@ export const WEAPONS = {
     VOID_CANNON: {
         name: 'Void Cannon',
         description: 'Orbital beam cuts to the void with gravity pull',
-        cost: 180,
         tier: 'SPECTACLE',
         damage: 120,
         blastRadius: 100,
@@ -515,7 +460,7 @@ export const WEAPONS = {
         cutsToVoid: true,        // Destroys terrain down to void
         hasPullEffect: true,     // Black hole-like pull
         pullRadius: 120,         // Pull range beyond beam
-        pullStrength: 0.5        // Moderate pull strength
+        pullStrength: 0.75       // Strong pull strength (buffed from 0.5)
     },
 };
 

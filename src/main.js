@@ -1146,6 +1146,10 @@ function fireScatterShell(player, weapon, angleRad) {
             weaponKey: null,  // Prevent special behaviors on impact
             isCluster: true,
             isFragment: true,
+            isBuckShot: true,  // Track as buckshot for range limit
+            startX: player.x,  // Track origin for max range
+            startY: player.y - 20,
+            maxRange: weapon.maxRange || 400,  // 400px max range
             firedByPlayer: state.currentPlayer,
             buffedDamageMultiplier: damageMultiplier,
             buffedBlastBonus: blastBonus,
@@ -1422,43 +1426,39 @@ function updateProjectile(dt) {
         }
     }
 
-    // APEX CLUSTER behavior (GRAVITY_MORTAR) - spawn cluster at apex
+    // APEX CLUSTER behavior (GRAVITY_MORTAR) - drop straight down from apex with scaling damage
     if (weapon && weapon.behavior === 'apexCluster' && !proj.isRolling && !proj.hasTriggeredApex) {
         proj.flightTime = (proj.flightTime || 0) + dt;
+        // Track highest point reached
+        if (!proj.apexY || proj.y < proj.apexY) {
+            proj.apexY = proj.y;
+        }
         // Detect apex (when vertical velocity changes from negative to positive)
         if (proj.vy >= 0 && proj.flightTime > 0.1) {
             proj.hasTriggeredApex = true;
-            // Spawn cluster bomblets falling down
-            const clusterCount = weapon.clusterCount || 4;
-            spawnApexClusterBombs(proj, clusterCount, true);  // true = gravity mortar style (fall down)
-            // Remove parent projectile
-            state.projectile = null;
+            // Switch to dropping straight down - zero horizontal velocity
+            proj.vx = 0;
+            proj.vy = 2;  // Start falling slowly, gravity will accelerate
+            proj.isGravityDrop = true;  // Mark for scaling damage on impact
+            // Don't remove projectile - it continues falling as single bomb
             return;
         }
     }
 
-    // PROXIMITY SPLIT behavior (VOID_SPLITTER) - split when near enemy
-    if (weapon && weapon.behavior === 'proximitySplit' && !proj.isRolling && !proj.hasSplitProximity) {
-        const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-        const proximityRadius = weapon.proximityRadius || 200;
-
-        // Check distance to nearest enemy
-        for (let i = 0; i < state.players.length; i++) {
-            if (i === firingPlayer) continue;
-            const player = state.players[i];
-            if (player.health <= 0) continue;
-
-            const dist = distance(proj.x, proj.y, player.x, player.y);
-            if (dist < proximityRadius) {
-                proj.hasSplitProximity = true;
-                // Spawn homing fragments toward this enemy
-                const splitCount = weapon.splitCount || 3;
-                spawnProximityHomingFragments(proj, player, splitCount, weapon.homingStrength || 0.08);
-                // Remove parent projectile
-                state.projectile = null;
-                return;
-            }
+    // VOID_SPLITTER landing pause behavior - countdown then spawn rising fragments
+    if (proj.isVoidLanded && proj.voidPauseTimer > 0) {
+        proj.voidPauseTimer -= dt;
+        // Pulsing effect while waiting
+        if (Math.random() < 0.3) {
+            particles.sparks(proj.x, proj.y, 3, '#aa00ff');
         }
+        if (proj.voidPauseTimer <= 0) {
+            // Timer complete - spawn rising homing fragments
+            spawnVoidSplitterFragments(proj);
+            state.projectile = null;
+            return;
+        }
+        return; // Stay in place during pause
     }
 
     // UNDERGROUND SEEKER behavior - burrow then seek
@@ -1608,16 +1608,25 @@ function updateProjectile(dt) {
         }
     }
 
-    // ROLLER behavior - roll along terrain surface
+    // ROLLER behavior - roll along terrain surface with boulder momentum physics
     if (proj.isRolling) {
-        // Apply friction
-        proj.vx *= 0.98;
+        // Heavy boulder friction - very slow to lose speed
+        proj.vx *= 0.995;
 
-        // Follow terrain slope
+        // Follow terrain slope with momentum physics
         const terrainY = terrain.getHeightAt(proj.x);
-        const slopeAhead = terrain.getHeightAt(proj.x + Math.sign(proj.vx || 1) * 5);
+        const slopeAhead = terrain.getHeightAt(proj.x + Math.sign(proj.vx || 1) * 10);
         const slopeDiff = slopeAhead - terrainY;
-        proj.vx += slopeDiff * 0.1; // Roll downhill
+
+        // Momentum physics: accelerate downhill, decelerate uphill
+        // Downhill (slopeDiff < 0): strong acceleration
+        // Uphill (slopeDiff > 0): strong deceleration
+        const slopeForce = -slopeDiff * 0.25;  // Stronger slope effect
+        proj.vx += slopeForce;
+
+        // Cap max speed to prevent runaway
+        const maxRollerSpeed = 15;
+        proj.vx = Math.max(-maxRollerSpeed, Math.min(maxRollerSpeed, proj.vx));
 
         // Actually move the roller!
         proj.x += proj.vx;
@@ -1671,10 +1680,10 @@ function updateProjectile(dt) {
             }
         }
 
-        // Stop rolling if slow enough
-        if (Math.abs(proj.vx) < 0.5) {
+        // Stop rolling if slow enough (explodes a bit earlier for snappier gameplay)
+        if (Math.abs(proj.vx) < 1.5) {
             proj.rollTimer = (proj.rollTimer || 0) + dt;
-            if (proj.rollTimer > 0.5) {
+            if (proj.rollTimer > 0.3) {
                 onExplode(proj);
                 state.projectile = null;
                 return;
@@ -1683,8 +1692,14 @@ function updateProjectile(dt) {
             proj.rollTimer = 0;
         }
 
-        // === ENFORCE WORLD BOUNDARIES WHILE ROLLING ===
-        enforceProjectileBounds(proj);
+        // === ROLLER FALLS OFF EDGES - no bounce, just disappear ===
+        if (proj.x < WORLD_LEFT || proj.x > WORLD_RIGHT) {
+            // Roller rolled off the edge - end turn without explosion
+            particles.sparks(proj.x, proj.y, 10, proj.color);
+            state.projectile = null;
+            tryEndTurn();
+            return;
+        }
 
         return; // Skip normal physics while rolling
     }
@@ -1810,6 +1825,22 @@ function updateProjectile(dt) {
             return;
         }
 
+        // VOID_SPLITTER landing behavior - land, pause, then spawn rising homing fragments
+        if (projWeapon && projWeapon.behavior === 'voidSplitterLand' && !proj.isVoidLanded) {
+            proj.isVoidLanded = true;
+            proj.voidPauseTimer = projWeapon.pauseDuration || 1.0;
+            proj.vx = 0;
+            proj.vy = 0;
+            // Place on surface
+            proj.y = terrain.getHeightAt(proj.x) - proj.radius;
+            // Visual feedback - ominous landing
+            particles.explosion(proj.x, proj.y, 30, '#aa00ff', 40);
+            particles.sparks(proj.x, proj.y, 15, '#660088');
+            renderer.addScreenShake(8);
+            audio.playBounce();
+            return;
+        }
+
         // BOUNCER behavior - bounce off terrain like a pinball
         if (projWeapon && projWeapon.behavior === 'bouncer') {
             // Calculate terrain slope for reflection
@@ -1853,20 +1884,22 @@ function updateProjectile(dt) {
             return;
         }
 
-        // DRILL behavior - pierce through terrain, carving a tunnel
+        // DRILL behavior - carve 40px circular tunnel along arc, pass through terrain
         if (projWeapon && projWeapon.behavior === 'drill') {
-            // Track that we're in terrain
+            // Track that we're in terrain and how long we've been drilling
             proj.inTerrain = true;
+            proj.drillTime = (proj.drillTime || 0) + 0.016;  // Approx 1 frame at 60fps
 
-            // Carve tunnel while drilling - continuous terrain destruction
-            const tunnelWidth = projWeapon.tunnelWidth || 40;
-            terrain.destroy(proj.x, proj.y, tunnelWidth * 0.5);
+            // Carve circular tunnel along the drill's path (40px diameter)
+            const tunnelRadius = (projWeapon.tunnelWidth || 40) / 2;
+            // Use destroy to carve a circular hole at current position
+            terrain.destroy(proj.x, proj.y, tunnelRadius);
 
-            // Slow down slightly while drilling
+            // Maintain momentum while drilling (passes through with slight friction)
             proj.vx *= 0.995;
             proj.vy *= 0.995;
 
-            // Spawn drill particles (more dramatic)
+            // Spawn drill particles
             if (Math.random() < 0.6) {
                 particles.sparks(proj.x, proj.y, 5, '#886644');
                 particles.sparks(proj.x, proj.y, 3, '#aa8866');
@@ -1891,7 +1924,7 @@ function updateProjectile(dt) {
                     return;
                 }
             }
-            return; // Don't explode, keep drilling
+            return; // Don't explode, keep drilling through
         }
 
         // UNDERGROUND SEEKER behavior - start burrowing
@@ -2049,9 +2082,10 @@ function updateProjectile(dt) {
         return;
     } else {
         // DRILL behavior - explode when exiting terrain into open air
+        // Only trigger if drill has been inside terrain long enough (prevents immediate exit due to terrain.destroy)
         const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-        if (projWeapon && projWeapon.behavior === 'drill' && proj.inTerrain) {
-            // Just exited terrain - explode
+        if (projWeapon && projWeapon.behavior === 'drill' && proj.inTerrain && proj.drillTime > 0.1) {
+            // Just exited terrain after drilling - explode
             onExplode(proj);
             state.projectile = null;
             return;
@@ -2340,10 +2374,35 @@ function onExplode(proj) {
     const buffDamageMultiplier = proj.buffedDamageMultiplier || 1;
     const archetypeDamageMultiplier = getArchetypeDamageMultiplier(firingPlayerForDamage);
     const blastBonus = proj.buffedBlastBonus || 0;
-    const effectiveBlastRadius = weapon.blastRadius + blastBonus;
+    // BOUNCING_BETTY: Scale blast radius with bounces (55 → 125 max)
+    let baseBlastRadius = weapon.blastRadius;
+    if (weapon.behavior === 'bouncingBetty' && proj.accumulatedDamageBonus) {
+        const bouncesMade = proj.accumulatedDamageBonus / (weapon.bounceDamageModifier || 20);
+        const maxBounces = weapon.bounces || 10;
+        const maxRadius = weapon.maxBlastRadius || 125;
+        const radiusGain = (maxRadius - weapon.blastRadius) * (bouncesMade / maxBounces);
+        baseBlastRadius = Math.min(maxRadius, weapon.blastRadius + radiusGain);
+    }
+
+    // GRAVITY_MORTAR: Scale damage/radius based on fall height (50 → 150)
+    let gravityScaleMultiplier = 1;
+    if (proj.isGravityDrop && proj.apexY) {
+        const fallDistance = proj.y - proj.apexY;  // How far it fell
+        const maxFallForScale = 400;  // Full scaling at 400px fall
+        const scaleProgress = Math.min(1, fallDistance / maxFallForScale);
+        // Scale from 1x (at apex) to 3x (at max fall) for both damage and radius
+        gravityScaleMultiplier = 1 + scaleProgress * 2;  // 1x to 3x
+        baseBlastRadius = weapon.blastRadius * gravityScaleMultiplier;
+    }
+
+    const effectiveBlastRadius = baseBlastRadius + blastBonus;
     // Add accumulated damage bonus for bouncing betty (20 base + bounces * 20)
     const bounceDamageBonus = proj.accumulatedDamageBonus || 0;
-    const effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier * archetypeDamageMultiplier;
+    let effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier * archetypeDamageMultiplier;
+    // Apply gravity drop scaling to damage as well
+    if (proj.isGravityDrop) {
+        effectiveDamage *= gravityScaleMultiplier;
+    }
 
     // Sync space battle to big explosions (blastRadius > 60)
     if (effectiveBlastRadius > 60) {
@@ -2609,37 +2668,46 @@ function onExplode(proj) {
             });
         }
 
-        // === CARVE TERRAIN FISSURE ===
-        const fissurePoints = terrain.carveFissure(proj.x, proj.y, trenchLength, trenchDepth);
+        // === CARVE RADIAL TERRAIN FISSURES (3-5 cracks like broken glass) ===
+        const numCracks = 3 + Math.floor(Math.random() * 3);  // 3-5 radial cracks
+        const baseAngle = Math.random() * Math.PI * 2;  // Random starting angle
 
-        // Create visual crack effects along fissure
-        if (fissurePoints && fissurePoints.length > 0) {
-            // Dust bursts along the fissure
-            for (let i = 0; i < fissurePoints.length; i++) {
-                const fp = fissurePoints[i];
-                const delay = i * 20; // Staggered for crack-spreading effect
+        for (let crack = 0; crack < numCracks; crack++) {
+            // Evenly distribute cracks around epicenter with slight randomness
+            const crackAngle = baseAngle + (crack / numCracks) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+            const crackLength = trenchLength * (0.6 + Math.random() * 0.4);  // Vary lengths
 
-                setTimeout(() => {
-                    // Small dust burst at each fissure point
-                    particles.sparks(fp.x, fp.y, 8, '#aa8866');
+            // Calculate end point of this crack
+            const endX = proj.x + Math.cos(crackAngle) * crackLength;
 
-                    // Rock debris particles
-                    for (let j = 0; j < 4; j++) {
-                        const debrisAngle = -Math.PI/2 + (Math.random() - 0.5) * 1.2; // Mostly upward
-                        const debrisSpeed = 3 + Math.random() * 3;
-                        particles.spawn(fp.x + (Math.random() - 0.5) * 10, fp.y, {
-                            angle: debrisAngle,
-                            speed: debrisSpeed,
-                            life: 0.4 + Math.random() * 0.3,
-                            color: '#665544',
-                            radius: 2 + Math.random() * 3,
-                            gravity: 0.25
-                        });
-                    }
+            // Carve fissure in this direction
+            const fissurePoints = terrain.carveFissure(proj.x, proj.y, crackLength, trenchDepth, crackAngle);
 
-                    // Mini screen shake for crack propagation
-                    renderer.addScreenShake(3);
-                }, delay);
+            // Create visual crack effects along fissure
+            if (fissurePoints && fissurePoints.length > 0) {
+                for (let i = 0; i < fissurePoints.length; i++) {
+                    const fp = fissurePoints[i];
+                    const delay = crack * 50 + i * 15; // Staggered for spreading effect
+
+                    setTimeout(() => {
+                        particles.sparks(fp.x, fp.y, 6, '#aa8866');
+
+                        // Rock debris
+                        for (let j = 0; j < 3; j++) {
+                            const debrisAngle = -Math.PI/2 + (Math.random() - 0.5) * 1.2;
+                            const debrisSpeed = 2 + Math.random() * 3;
+                            particles.spawn(fp.x + (Math.random() - 0.5) * 10, fp.y, {
+                                angle: debrisAngle,
+                                speed: debrisSpeed,
+                                life: 0.3 + Math.random() * 0.3,
+                                color: '#665544',
+                                radius: 2 + Math.random() * 2,
+                                gravity: 0.25
+                            });
+                        }
+                        renderer.addScreenShake(2);
+                    }, delay);
+                }
             }
         }
 
@@ -3123,18 +3191,23 @@ function spawnClusterBombs(proj) {
     // Clear main projectile
     state.projectile = null;
 
-    // Spawn bomblets in a spread pattern
+    // Spawn bomblets in a spread pattern with 2x height for better coverage
     for (let i = 0; i < count; i++) {
         const spreadAngle = ((i / (count - 1)) - 0.5) * Math.PI * 0.6;  // Spread 60 degrees
         const baseAngle = Math.atan2(proj.vy, proj.vx);
         const angle = baseAngle + spreadAngle;
         const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.7;
+        // Calculate velocity components with 2x upward boost for higher arc
+        const baseVx = Math.cos(angle) * speed + (Math.random() - 0.5) * 2;
+        const baseVy = Math.sin(angle) * speed + (Math.random() - 0.5) * 2;
+        // Boost upward velocity (more negative = higher) by 2x
+        const boostedVy = baseVy < 0 ? baseVy * 2 : baseVy - 8;  // Extra upward kick
 
         state.projectiles.push({
             x: proj.x,
             y: proj.y,
-            vx: Math.cos(angle) * speed + (Math.random() - 0.5) * 2,
-            vy: Math.sin(angle) * speed + (Math.random() - 0.5) * 2,
+            vx: baseVx,
+            vy: boostedVy,
             radius: 4,
             color: proj.color,
             bounces: 0,
@@ -3168,18 +3241,26 @@ function spawnSplitProjectiles(proj, count) {
     // Clear main projectile
     state.projectile = null;
 
-    // Spawn split projectiles in a spread pattern
+    // Spawn split projectiles inheriting parent momentum
+    // Store parent velocity to add to each fragment
+    const parentSpeed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy);
+    const inheritFactor = 0.6;  // How much parent momentum to inherit
+
     for (let i = 0; i < count; i++) {
         const spreadAngle = ((i / (count - 1)) - 0.5) * Math.PI * 0.5;  // Spread 45 degrees
         const baseAngle = Math.atan2(proj.vy, proj.vx);
         const angle = baseAngle + spreadAngle;
-        const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) * 0.85;
+        const spreadSpeed = parentSpeed * 0.5;  // Spread velocity
+
+        // Inherit parent momentum + add spread
+        const vx = proj.vx * inheritFactor + Math.cos(angle) * spreadSpeed;
+        const vy = proj.vy * inheritFactor + Math.sin(angle) * spreadSpeed;
 
         state.projectiles.push({
             x: proj.x,
             y: proj.y,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
+            vx: vx,
+            vy: vy,
             radius: proj.radius * 0.8,
             color: proj.color,
             bounces: 1,  // Already bounced once
@@ -3295,7 +3376,58 @@ function spawnApexClusterBombs(proj, count, gravityStyle = false) {
 }
 
 /**
- * Spawn proximity-triggered homing fragments (VOID_SPLITTER)
+ * Spawn rising homing fragments for VOID_SPLITTER (new land behavior)
+ * Fragments float up dramatically, then home to nearest enemies
+ */
+function spawnVoidSplitterFragments(proj) {
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    const count = weapon?.splitCount || 3;
+    const homingStrength = weapon?.homingStrength || 0.15;
+    const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+
+    // Dramatic emergence effect
+    particles.explosion(proj.x, proj.y, 60, '#aa00ff', 80);
+    particles.explosion(proj.x, proj.y, 40, '#ffffff', 50);
+    particles.sparks(proj.x, proj.y, 30, '#660088');
+    renderer.addScreenShake(15);
+    audio.playExplosion(0.6);
+
+    // Find living enemy targets
+    const targets = state.players.filter((p, i) => i !== firingPlayer && p.health > 0);
+
+    for (let i = 0; i < count; i++) {
+        const spreadX = (i - (count - 1) / 2) * 30;  // Spread horizontally
+        // Assign target (cycle through available enemies)
+        const target = targets.length > 0 ? targets[i % targets.length] : null;
+
+        state.projectiles.push({
+            x: proj.x + spreadX,
+            y: proj.y,
+            vx: spreadX * 0.1,  // Slight horizontal spread
+            vy: -8,  // Strong upward float
+            radius: 6,
+            color: '#aa00ff',
+            bounces: 0,
+            maxBounces: 0,
+            trail: [],
+            weaponKey: proj.weaponKey,
+            isCluster: true,
+            isVoidFragment: true,
+            voidFloatPhase: true,  // Initially floating up
+            voidFloatTimer: 0.5,   // Float up for 0.5s before homing
+            homingTarget: target,
+            homingStrength: homingStrength,
+            firedByPlayer: firingPlayer,
+            buffedDamageMultiplier: proj.buffedDamageMultiplier || 1,
+            buffedBlastBonus: proj.buffedBlastBonus || 0,
+            fragmentDamage: weapon?.damage || 30,
+            fragmentBlastRadius: weapon?.blastRadius || 40
+        });
+    }
+}
+
+/**
+ * Spawn proximity-triggered homing fragments (VOID_SPLITTER - OLD BEHAVIOR, kept for reference)
  * @param {Object} proj - Parent projectile
  * @param {Object} target - Target player to home toward
  * @param {number} count - Number of fragments
@@ -3754,6 +3886,17 @@ function rollCardExcluding(excludeKeys) {
  * Pity system ensures rare+ every 5 turns - NO DUPLICATES
  */
 function generateLotteryCards() {
+    // DYING_STAR OVERRIDE: When player has dying star active, ALL 5 cards become Dying Star
+    if (state.dyingStarTurns[state.currentPlayer] > 0) {
+        const dyingStarCards = [];
+        for (let i = 0; i < 5; i++) {
+            const card = createCard('DYING_STAR', 'legendary');
+            card.guaranteed = true;
+            dyingStarCards.push(card);
+        }
+        return dyingStarCards;
+    }
+
     const cards = [];
     const usedWeapons = ['MORTAR', 'TELEPORTER'];  // Exclude guaranteed weapons from random pool
 
@@ -5084,9 +5227,15 @@ function update(dt) {
             updateAI(dt);
         } else {
             // Human controls
-            // Aim with arrow keys
-            if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
-            if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
+            // METEOR_SHOWER: Lock turret to fire straight up
+            const weapon = WEAPONS[player.weapon];
+            if (weapon && weapon.behavior === 'meteorShowerUp') {
+                player.angle = 90;  // Lock straight up
+            } else {
+                // Aim with arrow keys
+                if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
+                if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
+            }
 
             // Charge with space (oscillates up and down for skill-based timing)
             if (input.space && !state.projectile && state.projectiles.length === 0) {
@@ -6260,6 +6409,92 @@ function updateClusterBomblet(proj, dt) {
             onExplode(proj);  // Force explosion
             return;
         }
+    }
+
+    // BUCK_SHOT: Check max range - expire if traveled too far
+    if (proj.isBuckShot && proj.maxRange) {
+        const dx = proj.x - proj.startX;
+        const dy = proj.y - proj.startY;
+        const distTraveled = Math.sqrt(dx * dx + dy * dy);
+        if (distTraveled >= proj.maxRange) {
+            // Expire without full explosion - just fizzle out
+            particles.sparks(proj.x, proj.y, 8, proj.color);
+            const idx = state.projectiles.indexOf(proj);
+            if (idx > -1) state.projectiles.splice(idx, 1);
+            if (state.projectiles.length === 0) tryEndTurn();
+            return;
+        }
+    }
+
+    // VOID_SPLITTER fragments: Float up phase then aggressive homing
+    if (proj.isVoidFragment) {
+        if (proj.voidFloatPhase) {
+            // Floating up phase - reduced gravity, dramatic rise
+            proj.vy += state.gravity * 0.3;  // Very light gravity during float
+            proj.voidFloatTimer -= dt;
+            // Particle trail while floating
+            if (Math.random() < 0.5) {
+                particles.trail(proj.x, proj.y, '#aa00ff');
+            }
+            // Transition to homing phase
+            if (proj.voidFloatTimer <= 0) {
+                proj.voidFloatPhase = false;
+                proj.vy = 0;  // Reset velocity for homing
+                proj.vx = 0;
+            }
+        } else if (proj.homingTarget && proj.homingTarget.health > 0) {
+            // Aggressive homing phase
+            const target = proj.homingTarget;
+            const dx = target.x - proj.x;
+            const dy = target.y - proj.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 0) {
+                const strength = proj.homingStrength || 0.15;
+                proj.vx += (dx / dist) * strength * 2;  // Strong homing
+                proj.vy += (dy / dist) * strength * 2;
+                // Cap speed
+                const speed = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy);
+                if (speed > 12) {
+                    proj.vx = (proj.vx / speed) * 12;
+                    proj.vy = (proj.vy / speed) * 12;
+                }
+            }
+            // Purple homing trail
+            if (Math.random() < 0.6) {
+                particles.trail(proj.x, proj.y, '#aa00ff');
+            }
+        } else {
+            // No target or target dead - just fall
+            proj.vy += state.gravity;
+        }
+        // Move
+        proj.x += proj.vx;
+        proj.y += proj.vy;
+        // Store trail
+        proj.trail.push({ x: proj.x, y: proj.y, age: 0 });
+        if (proj.trail.length > 10) proj.trail.shift();
+
+        // Collision detection for void fragments
+        // Check player collision (homing fragments should explode on contact)
+        for (const player of state.players) {
+            if (player.health <= 0) continue;
+            const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
+            if (dist < proj.radius + TANK_RADIUS) {
+                // Hit player - explode
+                onExplode(proj);
+                return;
+            }
+        }
+
+        // Check terrain/void collision
+        if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
+            terrain.isPointInCeiling(proj.x, proj.y) ||
+            proj.y > state.voidY) {
+            onExplode(proj);
+            return;
+        }
+
+        return;  // Skip normal physics
     }
 
     // Store trail position
