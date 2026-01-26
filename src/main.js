@@ -5273,35 +5273,108 @@ function update(dt) {
         return;
     }
 
-    // Tank archetype selection (dynamic for 1-4 players)
+    // Tank selection (dynamic for 1-4 players) - 2x4 grid
     if (state.phase === 'archetype_select') {
         const selectingPlayer = state.players[state.selectingPlayerIndex];
+        const availableIndices = getAvailableTankIndices();
+        const gridCols = 4;
 
-        // If current selecting player is AI, auto-select and advance
+        // If current selecting player is AI, auto-select random available tank
         if (selectingPlayer.isAI) {
-            const aiChoice = ARCHETYPE_KEYS[Math.floor(Math.random() * ARCHETYPE_KEYS.length)];
-            selectingPlayer.archetype = aiChoice;
+            const randomAvailableIdx = availableIndices[Math.floor(Math.random() * availableIndices.length)];
+            const selectedTank = TANKS[randomAvailableIdx];
+            selectingPlayer.tankId = selectedTank.id;
+            selectingPlayer.color = selectedTank.color;
             advanceArchetypeSelection();
             input.endFrame();
             return;
         }
 
-        // Navigate with up/down or left/right
-        if (input.wasPressed('ArrowUp') || input.wasPressed('ArrowLeft')) {
-            state.selectIndex = (state.selectIndex - 1 + ARCHETYPE_KEYS.length) % ARCHETYPE_KEYS.length;
-            audio.playSelect();
+        // Ensure current selection is valid (not taken)
+        if (isTankTaken(TANKS[state.selectIndex].id)) {
+            // Move to first available tank
+            state.selectIndex = availableIndices[0] || 0;
         }
-        if (input.wasPressed('ArrowDown') || input.wasPressed('ArrowRight')) {
-            state.selectIndex = (state.selectIndex + 1) % ARCHETYPE_KEYS.length;
-            audio.playSelect();
+
+        // Helper to find next available index in a direction
+        const findNextAvailable = (startIdx, direction, wrap = true) => {
+            let idx = startIdx;
+            const totalTanks = TANKS.length;
+            for (let i = 0; i < totalTanks; i++) {
+                idx = wrap ? (idx + direction + totalTanks) % totalTanks : Math.max(0, Math.min(totalTanks - 1, idx + direction));
+                if (availableIndices.includes(idx)) return idx;
+            }
+            return startIdx;
+        };
+
+        // 2D grid navigation with arrow keys
+        if (input.wasPressed('ArrowLeft')) {
+            const newIdx = findNextAvailable(state.selectIndex, -1);
+            if (newIdx !== state.selectIndex) {
+                state.selectIndex = newIdx;
+                audio.playSelect();
+            }
+        }
+        if (input.wasPressed('ArrowRight')) {
+            const newIdx = findNextAvailable(state.selectIndex, 1);
+            if (newIdx !== state.selectIndex) {
+                state.selectIndex = newIdx;
+                audio.playSelect();
+            }
+        }
+        if (input.wasPressed('ArrowUp')) {
+            // Move up one row (subtract gridCols)
+            let targetIdx = state.selectIndex - gridCols;
+            if (targetIdx < 0) targetIdx += TANKS.length;  // Wrap to bottom row
+            // Find nearest available in that direction
+            if (availableIndices.includes(targetIdx)) {
+                state.selectIndex = targetIdx;
+                audio.playSelect();
+            } else {
+                const newIdx = findNextAvailable(targetIdx, -1);
+                if (newIdx !== state.selectIndex) {
+                    state.selectIndex = newIdx;
+                    audio.playSelect();
+                }
+            }
+        }
+        if (input.wasPressed('ArrowDown')) {
+            // Move down one row (add gridCols)
+            let targetIdx = state.selectIndex + gridCols;
+            if (targetIdx >= TANKS.length) targetIdx -= TANKS.length;  // Wrap to top row
+            // Find nearest available in that direction
+            if (availableIndices.includes(targetIdx)) {
+                state.selectIndex = targetIdx;
+                audio.playSelect();
+            } else {
+                const newIdx = findNextAvailable(targetIdx, 1);
+                if (newIdx !== state.selectIndex) {
+                    state.selectIndex = newIdx;
+                    audio.playSelect();
+                }
+            }
+        }
+
+        // Number keys 1-8 for direct selection
+        for (let i = 1; i <= 8; i++) {
+            if (input.wasPressed(`Digit${i}`) || input.wasPressed(`Numpad${i}`)) {
+                const tankIdx = i - 1;
+                if (tankIdx < TANKS.length && availableIndices.includes(tankIdx)) {
+                    state.selectIndex = tankIdx;
+                    audio.playSelect();
+                }
+            }
         }
 
         // Confirm selection with Space or Enter
         if (input.spaceReleased || input.enter) {
-            const selectedArchetype = ARCHETYPE_KEYS[state.selectIndex];
-            audio.playConfirm();
-            selectingPlayer.archetype = selectedArchetype;
-            advanceArchetypeSelection();
+            const selectedTank = TANKS[state.selectIndex];
+            if (!isTankTaken(selectedTank.id)) {
+                audio.playConfirm();
+                selectingPlayer.tankId = selectedTank.id;
+                selectingPlayer.color = selectedTank.color;
+                advanceArchetypeSelection();
+            }
         }
 
         input.endFrame();
@@ -8564,6 +8637,101 @@ function renderModeSelect() {
     renderer.drawText('↑↓ to select, SPACE to confirm', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
 }
 
+// Helper function to draw a star shape
+function drawStar(ctx, x, y, radius, points, color, glow = true) {
+    const innerRadius = radius * 0.5;
+    const rotation = -Math.PI / 2;  // Point upward
+
+    if (glow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+    }
+
+    ctx.beginPath();
+    for (let i = 0; i < points * 2; i++) {
+        const r = i % 2 === 0 ? radius : innerRadius;
+        const angle = rotation + (i * Math.PI / points);
+        const px = x + r * Math.cos(angle);
+        const py = y + r * Math.sin(angle);
+        if (i === 0) {
+            ctx.moveTo(px, py);
+        } else {
+            ctx.lineTo(px, py);
+        }
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (glow) {
+        ctx.shadowBlur = 0;
+    }
+}
+
+// Helper function to draw a tank shape for the selection UI
+function drawTankShape(tank, x, y, size, isSelected, isTaken) {
+    const ctx = renderer.ctx;
+    const color = isTaken ? '#333333' : (isSelected ? tank.color : '#666666');
+    const glow = isSelected && !isTaken;
+
+    switch (tank.shape) {
+        case 'triangle':
+            renderer.drawRegularPolygon(x, y, size, 3, -Math.PI / 2, color, glow);
+            break;
+        case 'square':
+            renderer.drawRegularPolygon(x, y, size, 4, Math.PI / 4, color, glow);
+            break;
+        case 'pentagon':
+            renderer.drawRegularPolygon(x, y, size, 5, -Math.PI / 2, color, glow);
+            break;
+        case 'hexagon':
+            renderer.drawRegularPolygon(x, y, size, 6, 0, color, glow);
+            break;
+        case 'diamond':
+            renderer.drawRegularPolygon(x, y, size, 4, 0, color, glow);  // Square at 0 rotation = diamond
+            break;
+        case 'star':
+            drawStar(ctx, x, y, size, 5, color, glow);
+            break;
+        case 'circle':
+            renderer.drawCircle(x, y, size, color, glow);
+            break;
+        case 'octagon':
+            renderer.drawRegularPolygon(x, y, size, 8, Math.PI / 8, color, glow);
+            break;
+        default:
+            renderer.drawCircle(x, y, size, color, glow);
+    }
+}
+
+// Helper to get list of tank IDs already taken by previous players
+function getTakenTankIds() {
+    const taken = [];
+    for (let i = 0; i < state.selectingPlayerIndex; i++) {
+        if (state.players[i].tankId) {
+            taken.push(state.players[i].tankId);
+        }
+    }
+    return taken;
+}
+
+// Helper to check if a tank is taken
+function isTankTaken(tankId) {
+    return getTakenTankIds().includes(tankId);
+}
+
+// Helper to get available tank indices (not taken)
+function getAvailableTankIndices() {
+    const takenIds = getTakenTankIds();
+    const available = [];
+    for (let i = 0; i < TANKS.length; i++) {
+        if (!takenIds.includes(TANKS[i].id)) {
+            available.push(i);
+        }
+    }
+    return available;
+}
+
 function renderTankSelect() {
     const playerIdx = state.selectingPlayerIndex;
     const selectingPlayer = state.players[playerIdx];
@@ -8592,65 +8760,65 @@ function renderTankSelect() {
     const subtitle = isAISelecting ? 'AI IS CHOOSING...' : `PLAYER ${playerNum} - SELECT YOUR TANK`;
     renderer.drawText(subtitle, CANVAS_WIDTH / 2, 90, playerColor, 20, 'center', true);
 
-    // Calculate adaptive layout based on number of archetypes
-    const headerHeight = 120;  // Space for title + subtitle
-    const footerHeight = 50;   // Space for controls hint
-    const availableHeight = CANVAS_HEIGHT - headerHeight - footerHeight;
-    const archetypeCount = ARCHETYPE_KEYS.length;
+    // 2x4 grid layout for 8 tanks
+    const gridCols = 4;
+    const gridRows = 2;
+    const cellWidth = 280;
+    const cellHeight = 200;
+    const gridWidth = gridCols * cellWidth;
+    const gridHeight = gridRows * cellHeight;
+    const startX = (CANVAS_WIDTH - gridWidth) / 2 + cellWidth / 2;
+    const startY = 180;
 
-    // Calculate spacing to fit all archetypes
-    const maxSpacing = 90;
-    const minSpacing = 65;
-    const calculatedSpacing = Math.min(maxSpacing, Math.max(minSpacing, availableHeight / archetypeCount));
+    const takenIds = getTakenTankIds();
 
-    // Center the list vertically in available space
-    const totalListHeight = (archetypeCount - 1) * calculatedSpacing;
-    const startY = headerHeight + (availableHeight - totalListHeight) / 2;
-
-    for (let i = 0; i < archetypeCount; i++) {
-        const key = ARCHETYPE_KEYS[i];
-        const archetype = TANK_ARCHETYPES[key];
-        const y = startY + i * calculatedSpacing;
+    for (let i = 0; i < TANKS.length; i++) {
+        const tank = TANKS[i];
+        const col = i % gridCols;
+        const row = Math.floor(i / gridCols);
+        const x = startX + col * cellWidth;
+        const y = startY + row * cellHeight;
         const isSelected = i === state.selectIndex;
+        const taken = takenIds.includes(tank.id);
 
-        // Selection highlight box with archetype color
-        const boxColor = isSelected ? archetype.palette.glow : '#333333';
-        if (isSelected) {
-            renderer.drawRectOutline(CANVAS_WIDTH / 2 - 320, y - 30, 640, 60, boxColor, 2, true);
+        // Selection box
+        const boxWidth = cellWidth - 20;
+        const boxHeight = cellHeight - 20;
+        const boxX = x - boxWidth / 2;
+        const boxY = y - 40;
+
+        if (isSelected && !taken) {
+            // Glowing selection box
+            renderer.drawRectOutline(boxX, boxY, boxWidth, boxHeight, tank.glowColor, 3, true);
+        } else if (taken) {
+            // Dim box for taken tanks
+            renderer.drawRectOutline(boxX, boxY, boxWidth, boxHeight, '#222222', 1, false);
+        } else {
+            // Normal box
+            renderer.drawRectOutline(boxX, boxY, boxWidth, boxHeight, '#333333', 1, false);
         }
 
-        // Tank preview shape with unique archetype visuals
-        const previewX = CANVAS_WIDTH / 2 - 260;
-        const previewColor = isSelected ? archetype.palette.base : '#444444';
-        const previewSize = isSelected ? 26 : 22;
-        renderer.drawRegularPolygon(previewX, y, previewSize, archetype.chassisShape, 0, previewColor, isSelected);
+        // Tank shape preview
+        const shapeY = y + 20;
+        const shapeSize = isSelected && !taken ? 45 : 35;
+        drawTankShape(tank, x, shapeY, shapeSize, isSelected, taken);
 
-        // Draw turret/barrel
-        const turretAngle = Math.PI / 4;  // 45 degrees
-        const turretLength = archetype.turretLength * (isSelected ? 0.8 : 0.6);
-        const turretEndX = previewX + Math.cos(turretAngle) * turretLength;
-        const turretEndY = y - Math.sin(turretAngle) * turretLength;
-        renderer.drawLine(previewX, y, turretEndX, turretEndY, previewColor, archetype.turretWidth * (isSelected ? 1 : 0.8), isSelected);
+        // Tank name
+        const nameColor = taken ? '#444444' : (isSelected ? COLORS.white : '#888888');
+        renderer.drawText(tank.name.toUpperCase(), x, shapeY + 60, nameColor, isSelected && !taken ? 18 : 14, 'center', isSelected && !taken);
 
-        // Archetype name
-        const textColor = isSelected ? COLORS.white : '#666666';
-        const nameX = CANVAS_WIDTH / 2 - 180;
-        renderer.drawText(archetype.name, nameX, y - 10, textColor, isSelected ? 18 : 16, 'left', isSelected);
+        // Number key hint
+        const hintColor = taken ? '#333333' : (isSelected ? tank.glowColor : '#555555');
+        renderer.drawText(`[${i + 1}]`, x, boxY + 15, hintColor, 12, 'center', false);
 
-        // Archetype description
-        const descColor = isSelected ? '#888888' : '#444444';
-        renderer.drawText(archetype.description, nameX, y + 8, descColor, 11, 'left', false);
-
-        // Ability name and description (right side)
-        const abilityX = CANVAS_WIDTH / 2 + 50;
-        const abilityColor = isSelected ? archetype.palette.glow : '#555555';
-        renderer.drawText(archetype.abilityName, abilityX, y - 10, abilityColor, isSelected ? 14 : 12, 'left', isSelected);
-        const abilityDescColor = isSelected ? '#aaaaaa' : '#444444';
-        renderer.drawText(archetype.abilityDesc, abilityX, y + 8, abilityDescColor, 10, 'left', false);
+        // "TAKEN" label for unavailable tanks
+        if (taken) {
+            renderer.drawText('TAKEN', x, shapeY - 25, '#FF4444', 12, 'center', true);
+        }
     }
 
-    // Controls hint (at bottom with padding)
-    renderer.drawText('↑↓ SELECT   SPACE CONFIRM', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 25, '#555555', 12, 'center', false);
+    // Controls hint (at bottom)
+    renderer.drawText('ARROWS: Navigate   1-8: Quick Select   SPACE/ENTER: Confirm', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40, '#555555', 12, 'center', false);
 }
 
 function renderLottery() {
