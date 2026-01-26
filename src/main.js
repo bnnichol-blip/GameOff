@@ -411,11 +411,19 @@ function applyBlastKnockback(epicenterX, epicenterY, blastRadius, maxForce, excl
 function triggerDeathExplosion(player, isVoidDeath = false) {
     const x = player.x;
     const y = player.y;
-    const color = player.color;
+
+    // Get tank data for shape-specific death effects
+    const tank = player.tankId ? getTankById(player.tankId) : null;
+    const color = tank?.color || player.color;
+    const shape = tank?.shape || 'hexagon';
+    const sides = tank?.sides || 6;
 
     // MASSIVE TERRAIN DESTRUCTION (2-3x bigger)
     const deathBlastRadius = isVoidDeath ? 150 : 200;
     terrain.destroy(x, y, deathBlastRadius);
+
+    // Shape-specific directional particle burst
+    particles.tankDeathBurst(x, y, shape, color, sides);
 
     // SPECTACULAR MULTI-STAGE EXPLOSION (3x particles)
     if (isVoidDeath) {
