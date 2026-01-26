@@ -1399,6 +1399,243 @@ export function destroy(cx, cy, radius) {
 }
 
 // ============================================================================
+// Shape-Based Terrain Destruction (for tank death craters)
+// ============================================================================
+
+/**
+ * Get the depth (half-height) at a given x offset for a regular polygon
+ * @param {number} dx - X distance from center
+ * @param {number} radius - Outer radius of polygon
+ * @param {number} sides - Number of sides (3=triangle, 4=square, 5=pentagon, etc.)
+ * @param {number} rotation - Rotation in radians (0 = point up for odd sides)
+ * @returns {number} - The depth at this x position, or 0 if outside shape
+ */
+function getPolygonDepth(dx, radius, sides, rotation = 0) {
+    const absDx = Math.abs(dx);
+    if (absDx > radius) return 0;
+
+    // For a regular polygon, we approximate the shape by finding
+    // which "slice" of the polygon this x position falls into
+    // and calculating the y extent at that slice
+
+    // Calculate the angle step between vertices
+    const angleStep = (Math.PI * 2) / sides;
+
+    // For each slice of the polygon, find the edges
+    let maxDepth = 0;
+
+    for (let i = 0; i < sides; i++) {
+        // Get angles of two adjacent vertices
+        const angle1 = rotation + i * angleStep - Math.PI / 2;
+        const angle2 = rotation + (i + 1) * angleStep - Math.PI / 2;
+
+        // Get vertex positions
+        const x1 = Math.cos(angle1) * radius;
+        const y1 = Math.sin(angle1) * radius;
+        const x2 = Math.cos(angle2) * radius;
+        const y2 = Math.sin(angle2) * radius;
+
+        // Check if our dx is between these two x values
+        const minX = Math.min(x1, x2);
+        const maxX = Math.max(x1, x2);
+
+        if (dx >= minX && dx <= maxX && maxX !== minX) {
+            // Interpolate to find y at this x
+            const t = (dx - x1) / (x2 - x1);
+            const yAtX = y1 + t * (y2 - y1);
+            maxDepth = Math.max(maxDepth, Math.abs(yAtX));
+        }
+    }
+
+    // Also check the simple approximation using inscribed circle
+    // This helps fill in any gaps from the edge calculation
+    const inscribedRadius = radius * Math.cos(Math.PI / sides);
+    if (absDx <= inscribedRadius) {
+        const circleDepth = Math.sqrt(inscribedRadius * inscribedRadius - dx * dx);
+        maxDepth = Math.max(maxDepth, circleDepth * 0.9);
+    }
+
+    return maxDepth;
+}
+
+/**
+ * Get the depth at a given x offset for a 5-pointed star shape
+ * @param {number} dx - X distance from center
+ * @param {number} radius - Outer radius of star (to tips)
+ * @returns {number} - The depth at this x position, or 0 if outside shape
+ */
+function getStarDepth(dx, radius) {
+    const absDx = Math.abs(dx);
+    if (absDx > radius) return 0;
+
+    // Inner radius is about 38% of outer for a classic 5-pointed star
+    const innerRadius = radius * 0.38;
+
+    // Star has 5 outer points and 5 inner points
+    // We'll approximate by checking the envelope
+    const outerAngle = Math.PI * 2 / 5;  // 72 degrees between points
+
+    let maxDepth = 0;
+
+    // Check each of the 10 segments (5 outer edges + 5 inner edges)
+    for (let i = 0; i < 5; i++) {
+        // Outer point angle (starting from top, going clockwise)
+        const outerAng = -Math.PI / 2 + i * outerAngle;
+        // Inner point angles (between outer points)
+        const innerAng1 = outerAng + outerAngle / 2;
+        const innerAng2 = outerAng - outerAngle / 2;
+
+        // Outer point position
+        const ox = Math.cos(outerAng) * radius;
+        const oy = Math.sin(outerAng) * radius;
+
+        // Inner point positions
+        const ix1 = Math.cos(innerAng1) * innerRadius;
+        const iy1 = Math.sin(innerAng1) * innerRadius;
+        const ix2 = Math.cos(innerAng2) * innerRadius;
+        const iy2 = Math.sin(innerAng2) * innerRadius;
+
+        // Check edge from inner point to outer point
+        const checkEdge = (x1, y1, x2, y2) => {
+            const minX = Math.min(x1, x2);
+            const maxX = Math.max(x1, x2);
+            if (dx >= minX && dx <= maxX && maxX !== minX) {
+                const t = (dx - x1) / (x2 - x1);
+                const yAtX = y1 + t * (y2 - y1);
+                return Math.abs(yAtX);
+            }
+            return 0;
+        };
+
+        maxDepth = Math.max(maxDepth, checkEdge(ix2, iy2, ox, oy));  // Leading edge
+        maxDepth = Math.max(maxDepth, checkEdge(ox, oy, ix1, iy1));  // Trailing edge
+    }
+
+    // Ensure the center area is filled (inner pentagon)
+    if (absDx <= innerRadius * 0.8) {
+        const centerDepth = Math.sqrt(innerRadius * innerRadius * 0.64 - dx * dx);
+        maxDepth = Math.max(maxDepth, centerDepth);
+    }
+
+    return maxDepth;
+}
+
+/**
+ * Get the depth at a given x offset for a diamond shape
+ * @param {number} dx - X distance from center
+ * @param {number} radius - Radius to the tips of the diamond
+ * @returns {number} - The depth at this x position, or 0 if outside shape
+ */
+function getDiamondDepth(dx, radius) {
+    const absDx = Math.abs(dx);
+    if (absDx > radius) return 0;
+
+    // Diamond is a rhombus - linear slope from center to edge
+    // Depth at center = radius, depth at edge = 0
+    return radius - absDx;
+}
+
+/**
+ * Destroy terrain in a specific shape (for tank death craters)
+ * @param {number} cx - Center X of destruction
+ * @param {number} cy - Center Y of destruction
+ * @param {number} radius - Radius of the shape
+ * @param {string} shape - Shape type: 'circle', 'triangle', 'star', 'diamond', 'polygon', 'hexagon'
+ * @param {number} sides - Number of sides for polygon shapes (default 6)
+ */
+export function destroyShape(cx, cy, radius, shape = 'circle', sides = 6) {
+    if (!heights) return;
+
+    const startX = Math.max(0, Math.floor(cx - radius));
+    const endX = Math.min(width - 1, Math.ceil(cx + radius));
+
+    for (let x = startX; x <= endX; x++) {
+        const dx = x - cx;
+        let depth = 0;
+
+        // Calculate depth based on shape type
+        switch (shape) {
+            case 'circle':
+                // Standard circular crater (same as destroy())
+                if (Math.abs(dx) <= radius) {
+                    depth = Math.sqrt(radius * radius - dx * dx);
+                }
+                break;
+
+            case 'triangle':
+                // Equilateral triangle pointing up
+                depth = getPolygonDepth(dx, radius, 3, 0);
+                break;
+
+            case 'star':
+                // 5-pointed star
+                depth = getStarDepth(dx, radius);
+                break;
+
+            case 'diamond':
+                // Diamond/rhombus shape
+                depth = getDiamondDepth(dx, radius);
+                break;
+
+            case 'polygon':
+                // Regular polygon with specified sides
+                depth = getPolygonDepth(dx, radius, sides, 0);
+                break;
+
+            case 'hexagon':
+                // Hexagon (6-sided polygon, flat top)
+                depth = getPolygonDepth(dx, radius, 6, Math.PI / 6);
+                break;
+
+            case 'square':
+                // Square crater
+                depth = getPolygonDepth(dx, radius * 0.9, 4, Math.PI / 4);
+                break;
+
+            default:
+                // Fallback to circle
+                if (Math.abs(dx) <= radius) {
+                    depth = Math.sqrt(radius * radius - dx * dx);
+                }
+        }
+
+        if (depth <= 0) continue;
+
+        const craterBottom = cy + depth;
+        const craterTop = cy - depth;
+
+        const floorY = heights[x];
+        const hasCeiling = ceilingHeights && ceilingHeights[x] > 0;
+        const ceilingY = hasCeiling ? ceilingHeights[x] : null;
+
+        // Determine which layer is closer to the explosion center
+        const distToFloor = Math.abs(cy - floorY);
+        const distToCeiling = hasCeiling ? Math.abs(cy - ceilingY) : Infinity;
+
+        // Affect whichever layer is closer
+        if (!hasCeiling || distToFloor <= distToCeiling) {
+            // FLOOR DESTRUCTION
+            if (craterBottom > heights[x]) {
+                heights[x] = craterBottom;
+            }
+        } else {
+            // CEILING DESTRUCTION
+            if (craterTop < ceilingHeights[x]) {
+                ceilingHeights[x] = craterTop;
+            }
+        }
+    }
+
+    // Track crater for hot glow effect
+    if (craters.length < 50) {
+        craters.push({ x: cx, y: cy, radius: radius, heat: 1.0 });
+    }
+
+    // Sync ceiling state
+    syncCeilingState();
+}
+
+// ============================================================================
 // Terrain Addition (for Dirt/Sand weapon)
 // ============================================================================
 
@@ -2672,6 +2909,7 @@ export const terrain = {
     getTerrainStyleName,
     burn,
     destroy,
+    destroyShape,
     raise,
     raiseJagged,
     digJagged,
