@@ -2158,9 +2158,14 @@ function drawStainStar(ctx, cx, cy, radius) {
  * @param {string} color - Stain color
  */
 export function createGooStain(cx, cy, radius, shape, sides, color) {
+    // Snap stain to terrain surface (inside the crater that was just created)
+    const terrainY = getHeightAt(Math.floor(cx));
+    // Position stain slightly above terrain surface so it sits in the crater
+    const stainY = terrainY - radius * 0.3;
+
     gooStains.push({
         x: cx,
-        y: cy,
+        y: stainY,
         radius: radius,
         shape: shape,
         sides: sides,

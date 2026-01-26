@@ -423,8 +423,8 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     // Create shaped crater matching the tank that died
     terrain.destroyShape(x, y, deathBlastRadius * 0.8, shape, sides);
 
-    // Create permanent goo stain in the crater
-    terrain.createGooStain(x, y, deathBlastRadius * 0.6, shape, sides, color);
+    // Create permanent goo stain in the crater (smaller puddle that sits in crater)
+    terrain.createGooStain(x, y, deathBlastRadius * 0.25, shape, sides, color);
 
     // Shape-specific directional particle burst
     if (typeof particles.tankDeathBurst === 'function') {
