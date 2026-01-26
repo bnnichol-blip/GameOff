@@ -138,11 +138,67 @@ class Particle {
                 renderer.clearGlow();
                 break;
 
+            case 'shape':
+                // Draw mini tank shape particle
+                if (this.shape) {
+                    renderer.setGlow(this.color, 15 * this.glowIntensity);
+                    renderer.ctx.fillStyle = this.color;
+                    this.drawShape(renderer, this.shape, this.sides || 6);
+                    renderer.clearGlow();
+                }
+                break;
+
             default:  // 'circle'
                 renderer.drawCircle(this.x, this.y, r, this.color, this.glowIntensity > 0.5);
         }
 
         renderer.ctx.globalAlpha = 1;
+    }
+
+    // Draw a mini shape particle
+    drawShape(renderer, shape, sides) {
+        const ctx = renderer.ctx;
+        const size = this.radius * this.scale;
+
+        if (shape === 'circle') {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, size, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (shape === 'star') {
+            this.drawStarShape(ctx, size, 5);
+        } else if (shape === 'diamond') {
+            this.drawPolygon(ctx, size, 4, Math.PI / 4);
+        } else {
+            this.drawPolygon(ctx, size, sides, 0);
+        }
+    }
+
+    drawPolygon(ctx, size, sides, rotation) {
+        ctx.beginPath();
+        for (let i = 0; i < sides; i++) {
+            const angle = (i / sides) * Math.PI * 2 + rotation - Math.PI / 2;
+            const x = this.x + Math.cos(angle) * size;
+            const y = this.y + Math.sin(angle) * size;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    drawStarShape(ctx, size, points) {
+        const innerRadius = size * 0.4;
+        ctx.beginPath();
+        for (let i = 0; i < points * 2; i++) {
+            const r = i % 2 === 0 ? size : innerRadius;
+            const angle = (i * Math.PI / points) - Math.PI / 2;
+            const x = this.x + Math.cos(angle) * r;
+            const y = this.y + Math.sin(angle) * r;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
     }
 }
 
@@ -528,6 +584,99 @@ export class ParticleSystem {
             lineWidth: 3,
             life: 0.3
         });
+    }
+
+    // ========================================================================
+    // Tank Death Burst - Shape-specific directional explosions
+    // ========================================================================
+    tankDeathBurst(x, y, tankShape, tankColor, sides = 6) {
+        // Determine number of directional bursts based on tank shape
+        let burstAngles;
+        switch (tankShape) {
+            case 'triangle':
+                burstAngles = 3;
+                break;
+            case 'square':
+            case 'diamond':
+                burstAngles = 4;
+                break;
+            case 'pentagon':
+            case 'star':
+                burstAngles = 5;
+                break;
+            case 'hexagon':
+                burstAngles = 6;
+                break;
+            case 'octagon':
+                burstAngles = 8;
+                break;
+            case 'circle':
+                burstAngles = 12;
+                break;
+            default:
+                burstAngles = sides;
+        }
+
+        // Create directional bursts of mini shapes
+        for (let i = 0; i < burstAngles; i++) {
+            const baseAngle = (i / burstAngles) * Math.PI * 2 - Math.PI / 2;
+
+            // Multiple particles per burst direction
+            for (let j = 0; j < 5; j++) {
+                const spreadAngle = baseAngle + randomRange(-0.2, 0.2);
+                const speed = randomRange(8, 20);
+
+                this.spawn(x, y, {
+                    type: 'shape',
+                    shape: tankShape,
+                    sides: sides,
+                    color: tankColor,
+                    angle: spreadAngle,
+                    speed: speed,
+                    radius: randomRange(4, 10),
+                    life: randomRange(0.6, 1.2),
+                    gravity: randomRange(0.1, 0.25),
+                    friction: randomRange(0.94, 0.98),
+                    rotationSpeed: randomRange(-8, 8),
+                    glowIntensity: randomRange(1.0, 1.5)
+                });
+            }
+        }
+
+        // Add additional scattered mini shapes
+        const scatterCount = 20;
+        for (let i = 0; i < scatterCount; i++) {
+            this.spawn(x, y, {
+                type: 'shape',
+                shape: tankShape,
+                sides: sides,
+                color: tankColor,
+                speed: randomRange(3, 12),
+                radius: randomRange(2, 6),
+                life: randomRange(0.4, 1.0),
+                gravity: randomRange(0.15, 0.35),
+                friction: randomRange(0.92, 0.97),
+                rotationSpeed: randomRange(-12, 12),
+                glowIntensity: randomRange(0.8, 1.2)
+            });
+        }
+
+        // Add some white hot core particles for variety
+        for (let i = 0; i < 10; i++) {
+            this.spawn(x, y, {
+                type: 'shape',
+                shape: tankShape,
+                sides: sides,
+                color: COLORS.white,
+                speed: randomRange(5, 15),
+                radius: randomRange(3, 7),
+                life: randomRange(0.2, 0.5),
+                gravity: 0.1,
+                friction: 0.95,
+                rotationSpeed: randomRange(-6, 6),
+                glowIntensity: 2
+            });
+        }
     }
 
     // ========================================================================
