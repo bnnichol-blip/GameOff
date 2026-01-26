@@ -1595,6 +1595,16 @@ export function destroyShape(cx, cy, radius, shape = 'circle', sides = 6) {
                 depth = getPolygonDepth(dx, radius * 0.9, 4, Math.PI / 4);
                 break;
 
+            case 'pentagon':
+                // Pentagon (5-sided polygon, point up)
+                depth = getPolygonDepth(dx, radius, 5, 0);
+                break;
+
+            case 'octagon':
+                // Octagon (8-sided polygon)
+                depth = getPolygonDepth(dx, radius, 8, Math.PI / 8);
+                break;
+
             default:
                 // Fallback to circle
                 if (Math.abs(dx) <= radius) {

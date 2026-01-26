@@ -75,7 +75,7 @@ Players select a tank at game start. All tanks have identical stats - just uniqu
 **Death Signatures:**
 - Particles burst outward as mini versions of the tank's shape
 - Crater carved in the shape of the tank
-- Permanent "goo" stain remains in the crater (30% opacity)
+- Permanent "goo" stain remains in the crater (40% opacity)
 
 ---
 
