@@ -4,3 +4,6 @@ push.bat
 # OS files
 .DS_Store
 Thumbs.db
+
+# Worktrees
+.worktrees/
