@@ -223,7 +223,8 @@ const state = {
         selectedIndex: 0,       // Currently highlighted card (0-2)
         animationPhase: 'none', // 'descending' | 'revealing' | 'selecting' | 'dismissing'
         animationTimer: 0,
-        pityCounter: 0          // Turns since rare+ shown (for pity system)
+        pityCounter: 0,         // Turns since rare+ shown (for pity system)
+        showingBattlefield: false  // Toggle to show battlefield view during lottery
     },
     // AI pick notifications for lottery
     lotteryNotifications: [],  // { text, color, x, y, timer, rarity }
@@ -313,7 +314,11 @@ const state = {
 
     // Death notifications for kill celebrations
     deathNotifications: [],  // { text, x, y, color, timer }
-    terrainStyleNotification: null  // { text, timer }
+    terrainStyleNotification: null,  // { text, timer }
+
+    // Pause menu state
+    paused: false,
+    pauseMenuIndex: 0  // 0 = Resume, 1 = Restart Match, 2 = Main Menu
 };
 
 // Tank type keys for selection
@@ -532,6 +537,16 @@ function resetToTitle() {
     state.gameMode = null;
     state.selectIndex = 0;
     state.humanPlayerCount = 2;  // Reset to default
+    state.paused = false;
+    state.lottery.showingBattlefield = false;
+}
+
+function resetToModeSelect() {
+    state.phase = 'mode_select';
+    state.selectIndex = state.humanPlayerCount - 1;  // Pre-select current player count
+    state.gameMode = null;
+    state.paused = false;
+    state.lottery.showingBattlefield = false;
 }
 
 function resetGame() {
@@ -1730,29 +1745,77 @@ function updateProjectile(dt) {
 
     // ROLLER behavior - roll along terrain surface with boulder momentum physics
     if (proj.isRolling) {
-        // Heavy boulder friction - very slow to lose speed
-        proj.vx *= 0.995;
+        // Initialize roller tracking variables
+        if (proj.rollerLifetime === undefined) {
+            proj.rollerLifetime = 0;
+            proj.lastDirection = Math.sign(proj.vx || 1);
+            proj.directionChanges = 0;
+            proj.directionChangeTimer = 0;
+        }
+
+        // Track lifetime - max 4 seconds before forced explosion
+        proj.rollerLifetime += dt;
+        if (proj.rollerLifetime > 4.0) {
+            onExplode(proj);
+            state.projectile = null;
+            return;
+        }
+
+        // Friction - slightly stronger to prevent endless rolling
+        proj.vx *= 0.99;
 
         // Follow terrain slope with momentum physics
+        // Use terrain averaging: sample 3 points ahead for smoother slope detection
+        const direction = Math.sign(proj.vx || 1);
         const terrainY = terrain.getHeightAt(proj.x);
-        const slopeAhead = terrain.getHeightAt(proj.x + Math.sign(proj.vx || 1) * 10);
-        const slopeDiff = slopeAhead - terrainY;
+        const y1 = terrain.getHeightAt(proj.x + direction * 10);
+        const y2 = terrain.getHeightAt(proj.x + direction * 25);
+        const y3 = terrain.getHeightAt(proj.x + direction * 40);
+
+        // Weighted average: closer samples matter more
+        const avgSlopeAhead = (y1 * 0.5 + y2 * 0.3 + y3 * 0.2);
+        const slopeDiff = avgSlopeAhead - terrainY;
+
+        // Bump tolerance: ignore small bumps when moving fast
+        const speed = Math.abs(proj.vx);
+        const bumpTolerance = speed > 5 ? 12 : (speed > 2 ? 6 : 0);  // Increased tolerance
+        const effectiveSlopeDiff = Math.abs(slopeDiff) < bumpTolerance ? 0 : slopeDiff;
 
         // Momentum physics: accelerate downhill, decelerate uphill
-        // Downhill (slopeDiff < 0): strong acceleration
-        // Uphill (slopeDiff > 0): strong deceleration
-        const slopeForce = -slopeDiff * 0.25;  // Stronger slope effect
+        const slopeForce = -effectiveSlopeDiff * 0.15;  // Gentler slope effect
         proj.vx += slopeForce;
 
         // Cap max speed to prevent runaway
-        const maxRollerSpeed = 15;
+        const maxRollerSpeed = 12;  // Slightly slower max
         proj.vx = Math.max(-maxRollerSpeed, Math.min(maxRollerSpeed, proj.vx));
+
+        // === OSCILLATION DETECTION ===
+        // Track direction changes - if oscillating, explode early
+        const currentDirection = Math.sign(proj.vx);
+        if (currentDirection !== 0 && currentDirection !== proj.lastDirection) {
+            proj.directionChanges++;
+            proj.lastDirection = currentDirection;
+            proj.directionChangeTimer = 0;  // Reset timer on direction change
+        }
+        proj.directionChangeTimer += dt;
+
+        // If 3+ direction changes in 1.5 seconds, it's stuck oscillating - explode
+        if (proj.directionChanges >= 3 && proj.directionChangeTimer < 1.5) {
+            onExplode(proj);
+            state.projectile = null;
+            return;
+        }
+        // Reset direction change count if it's been stable for a while
+        if (proj.directionChangeTimer > 1.5) {
+            proj.directionChanges = 0;
+        }
 
         // Actually move the roller!
         proj.x += proj.vx;
 
-        // Keep on terrain surface
-        proj.y = terrain.getHeightAt(proj.x) - proj.radius;
+        // Keep on terrain surface with smoothing
+        const targetY = terrain.getHeightAt(proj.x) - proj.radius;
+        proj.y = proj.y * 0.3 + targetY * 0.7;
         proj.vy = 0;
 
         // === ROLLER SHOCKWAVES ===
@@ -1800,10 +1863,10 @@ function updateProjectile(dt) {
             }
         }
 
-        // Stop rolling if slow enough (explodes a bit earlier for snappier gameplay)
-        if (Math.abs(proj.vx) < 1.5) {
+        // Stop rolling if slow enough
+        if (Math.abs(proj.vx) < 2.0) {  // Slightly higher threshold
             proj.rollTimer = (proj.rollTimer || 0) + dt;
-            if (proj.rollTimer > 0.3) {
+            if (proj.rollTimer > 0.25) {  // Faster explosion when slow
                 onExplode(proj);
                 state.projectile = null;
                 return;
@@ -4118,15 +4181,53 @@ function selectLotteryCard(index) {
     // Assign weapon for this turn
     player.weapon = card.weaponKey;
 
+    // Calculate card position for particle burst
+    const cardWidth = 140;
+    const cardSpacing = 20;
+    const totalWidth = cardWidth * 5 + cardSpacing * 4;
+    const startX = (CANVAS_WIDTH - totalWidth) / 2;
+    const cardY = CANVAS_HEIGHT / 2;
+    const cardCenterX = startX + index * (cardWidth + cardSpacing) + cardWidth / 2;
+
+    // Scale to virtual coordinates for particles
+    const particleX = cardCenterX / WORLD_SCALE;
+    const particleY = cardY / WORLD_SCALE;
+
+    // === SELECTION CONFIRMATION PARTICLE BURST ===
+    const rarityColors = {
+        common: '#888888',
+        rare: '#00aaff',
+        epic: '#cc44ff',
+        legendary: '#ffaa00'
+    };
+    const burstColor = rarityColors[card.rarity] || '#ffffff';
+    const burstCount = card.rarity === 'legendary' ? 40 : (card.rarity === 'epic' ? 25 : (card.rarity === 'rare' ? 15 : 8));
+
+    // Spawn particles at card location
+    particles.sparks(particleX, particleY, burstCount, burstColor);
+
+    // Extra sparkle for high rarity
+    if (card.rarity === 'legendary') {
+        particles.explosion(particleX, particleY, 80, '#ffdd00', 30);
+        particles.sparks(particleX, particleY, 20, '#ffffff');
+    } else if (card.rarity === 'epic') {
+        particles.sparks(particleX, particleY, 15, '#aa00ff');
+    }
+
     // Play sound based on rarity
     if (card.rarity === 'legendary') {
         audio.playExplosion();  // Big fanfare
-        renderer.addScreenShake(10);
+        renderer.addScreenShake(15);
+        triggerChromatic(2);  // Chromatic aberration for legendary
     } else if (card.rarity === 'epic') {
         audio.playConfirm();
+        renderer.addScreenShake(5);
     } else {
         audio.playSelect();
     }
+
+    // Reset battlefield view when selecting
+    state.lottery.showingBattlefield = false;
 
     // Begin dismiss animation
     state.lottery.animationPhase = 'dismissing';
@@ -4141,6 +4242,12 @@ function handleLotteryInput() {
     if (state.lottery.animationPhase !== 'selecting') return;
 
     const player = getCurrentPlayer();
+
+    // TAB or B to toggle battlefield view
+    if (input.wasPressed('Tab') || input.wasPressed('KeyB')) {
+        state.lottery.showingBattlefield = !state.lottery.showingBattlefield;
+        audio.playSelect();
+    }
 
     // Number keys for direct selection (1-5 for 5 cards)
     if (input.wasPressed('Digit1') || input.wasPressed('Numpad1')) {
@@ -5237,6 +5344,51 @@ function update(dt) {
         return;
     }
 
+    // === PAUSE MENU HANDLING ===
+    // ESC toggles pause during gameplay phases (aiming, firing, lottery)
+    const pausablePhases = ['aiming', 'firing', 'lottery', 'resolving'];
+    if (pausablePhases.includes(state.phase)) {
+        if (input.wasPressed('Escape')) {
+            state.paused = !state.paused;
+            state.pauseMenuIndex = 0;
+            audio.playSelect();
+        }
+    }
+
+    // Handle pause menu input when paused
+    if (state.paused) {
+        const menuOptions = 3;  // Resume, Restart Match, Main Menu
+
+        if (input.wasPressed('ArrowUp')) {
+            state.pauseMenuIndex = (state.pauseMenuIndex - 1 + menuOptions) % menuOptions;
+            audio.playSelect();
+        }
+        if (input.wasPressed('ArrowDown')) {
+            state.pauseMenuIndex = (state.pauseMenuIndex + 1) % menuOptions;
+            audio.playSelect();
+        }
+
+        if (input.spaceReleased || input.enter) {
+            audio.playConfirm();
+            switch (state.pauseMenuIndex) {
+                case 0:  // Resume Game
+                    state.paused = false;
+                    break;
+                case 1:  // Restart Match
+                    state.paused = false;
+                    resetToModeSelect();
+                    break;
+                case 2:  // Main Menu
+                    state.paused = false;
+                    resetToTitle();
+                    break;
+            }
+        }
+
+        input.endFrame();
+        return;  // Skip all other updates while paused
+    }
+
     // Mode selection (1P-4P)
     if (state.phase === 'mode_select') {
         const numModes = 4;
@@ -5436,18 +5588,24 @@ function update(dt) {
 
     // Game over: Enter for rematch, Escape for title
     if (state.phase === 'gameover') {
-        if (input.enter) {
-            resetGame();  // Rematch with same mode
+        if (input.wasPressed('Enter')) {
+            console.log('[DEBUG] Enter pressed in gameover - going to mode select');
+            resetToModeSelect();  // Return to mode select for player count choice
+            input.endFrame();
+            return;
         }
-        // Check both press and release for more reliable detection
-        if (input.escape || input.escapeReleased) {
+        if (input.wasPressed('Escape')) {
             console.log('[DEBUG] Escape pressed in gameover - returning to title');
             resetToTitle();  // Back to title
+            input.endFrame();
+            return;
         }
         // Also allow Space to return to title for convenience
         if (input.spaceReleased) {
             console.log('[DEBUG] Space released in gameover - returning to title');
             resetToTitle();
+            input.endFrame();
+            return;
         }
     }
 
@@ -5491,7 +5649,9 @@ function update(dt) {
     }
 
     // Check win conditions continuously (for void/falling deaths)
-    if (state.phase !== 'gameover' && state.phase !== 'tank_select') {
+    // Only check during active gameplay phases
+    const activeGameplayPhases = ['aiming', 'firing', 'resolving', 'lottery', 'awaiting_next_turn'];
+    if (activeGameplayPhases.includes(state.phase)) {
         const winResult = checkWinCondition();
         if (winResult) {
             state.winner = winResult.winner;
@@ -7079,6 +7239,15 @@ function render() {
                 case 'octagon':
                     renderer.drawRegularPolygon(player.x, player.y, tankSize, 8, Math.PI / 8, tankColor, isActive);
                     break;
+                case 'crescent':
+                    drawCrescent(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    break;
+                case 'parallelogram':
+                    drawParallelogram(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    break;
+                case 'kite':
+                    drawKite(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    break;
                 default:
                     renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, tankColor, isActive);
             }
@@ -7443,6 +7612,11 @@ function render() {
         renderer.clearGlow();
 
         renderer.ctx.globalAlpha = 1;
+    }
+
+    // Render pause menu overlay if paused
+    if (state.paused) {
+        renderPauseMenu();
     }
 
     // Apply post-processing effects (bloom, vignette, chromatic aberration)
@@ -8594,21 +8768,108 @@ function renderTitle() {
     ctx.restore();
 
     // UI elements at 1:1 scale
+    const centerX = CANVAS_WIDTH / 2;
+    const centerY = CANVAS_HEIGHT / 2;
+
+    // Draw 4 orbiting tank shapes around the title
+    const orbitRadius = 180;
+    const orbitSpeed = 0.5;
+    const orbitTanks = [
+        { shape: 'triangle', color: '#00FFFF', offset: 0 },
+        { shape: 'hexagon', color: '#FFD700', offset: Math.PI / 2 },
+        { shape: 'star', color: '#FFFFFF', offset: Math.PI },
+        { shape: 'pentagon', color: '#FF00FF', offset: Math.PI * 1.5 }
+    ];
+
+    for (const tank of orbitTanks) {
+        const angle = state.time * orbitSpeed + tank.offset;
+        const tankX = centerX + Math.cos(angle) * orbitRadius;
+        const tankY = centerY - 40 + Math.sin(angle) * (orbitRadius * 0.4);  // Elliptical orbit
+        const tankSize = 20 + Math.sin(state.time * 3 + tank.offset) * 3;  // Pulsing size
+
+        ctx.save();
+        renderer.setGlow(tank.color, 10);
+
+        switch (tank.shape) {
+            case 'triangle':
+                renderer.drawRegularPolygon(tankX, tankY, tankSize, 3, -Math.PI / 2, tank.color, true);
+                break;
+            case 'hexagon':
+                renderer.drawRegularPolygon(tankX, tankY, tankSize, 6, 0, tank.color, true);
+                break;
+            case 'star':
+                drawStar(ctx, tankX, tankY, tankSize, 5, tank.color, true);
+                break;
+            case 'pentagon':
+                renderer.drawRegularPolygon(tankX, tankY, tankSize, 5, -Math.PI / 2, tank.color, true);
+                break;
+        }
+
+        renderer.clearGlow();
+        ctx.restore();
+    }
+
     // Main title with glow
-    renderer.drawText('VOID', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 80, COLORS.magenta, 72, 'center', true);
-    renderer.drawText('ARTILLERY', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, COLORS.cyan, 72, 'center', true);
+    renderer.drawText('VOID', centerX, centerY - 80, COLORS.magenta, 72, 'center', true);
+    renderer.drawText('ARTILLERY', centerX, centerY, COLORS.cyan, 72, 'center', true);
 
     // Tagline
-    renderer.drawText('One Button Away From Victory', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 60, '#888888', 16, 'center', false);
+    renderer.drawText('One Button Away From Victory', centerX, centerY + 60, '#888888', 16, 'center', false);
+
+    // Controls reference
+    renderer.drawText('Arrow Keys = Aim  |  HOLD Space = Charge  |  RELEASE = Fire', centerX, centerY + 100, '#666666', 14, 'center', false);
 
     // Animated prompt
     const alpha = 0.5 + Math.sin(state.time * 4) * 0.5;
     ctx.globalAlpha = alpha;
-    renderer.drawText('PRESS SPACE TO START', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 140, COLORS.white, 20, 'center', true);
+    renderer.drawText('PRESS SPACE TO START', centerX, centerY + 150, COLORS.white, 20, 'center', true);
     ctx.globalAlpha = 1;
 
+    // Gameplay hint
+    renderer.drawText('Bounce shots off walls, destroy terrain, survive the rising void!', centerX, CANVAS_HEIGHT - 70, '#555555', 12, 'center', false);
+
     // Credits
-    renderer.drawText('Game Off 2026 Jam Entry', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 40, '#444444', 12, 'center', false);
+    renderer.drawText('Game Off 2026 Jam Entry', centerX, CANVAS_HEIGHT - 40, '#444444', 12, 'center', false);
+}
+
+/**
+ * Render the pause menu overlay
+ */
+function renderPauseMenu() {
+    const ctx = renderer.ctx;
+
+    // Semi-transparent dark overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Title
+    renderer.setGlow(COLORS.cyan, 20);
+    renderer.drawText('PAUSED', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 120, COLORS.cyan, 48, 'center', true);
+    renderer.clearGlow();
+
+    // Menu options
+    const options = ['Resume Game', 'Restart Match', 'Main Menu'];
+    const startY = CANVAS_HEIGHT / 2 - 30;
+    const spacing = 60;
+
+    for (let i = 0; i < options.length; i++) {
+        const y = startY + i * spacing;
+        const isSelected = i === state.pauseMenuIndex;
+
+        if (isSelected) {
+            // Selection indicator
+            renderer.setGlow(COLORS.magenta, 15);
+            renderer.drawText('>', CANVAS_WIDTH / 2 - 120, y, COLORS.magenta, 28, 'center', true);
+            renderer.drawText('<', CANVAS_WIDTH / 2 + 120, y, COLORS.magenta, 28, 'center', true);
+            renderer.drawText(options[i], CANVAS_WIDTH / 2, y, COLORS.white, 28, 'center', true);
+            renderer.clearGlow();
+        } else {
+            renderer.drawText(options[i], CANVAS_WIDTH / 2, y, '#666666', 24, 'center', false);
+        }
+    }
+
+    // Controls hint
+    renderer.drawText('Arrow Keys: Navigate  |  Space/Enter: Select  |  ESC: Resume', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 60, '#555555', 14, 'center', false);
 }
 
 function renderModeSelect() {
@@ -8696,6 +8957,77 @@ function drawStar(ctx, x, y, radius, points, color, glow = true) {
     }
 }
 
+// Helper function to draw a crescent moon shape (Luna)
+function drawCrescent(ctx, x, y, radius, color, glow = true) {
+    if (glow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+    }
+
+    ctx.beginPath();
+    // Outer arc (full moon edge)
+    ctx.arc(x, y, radius, -Math.PI * 0.7, Math.PI * 0.7, false);
+    // Inner arc (bite out of moon) - offset and smaller
+    ctx.arc(x + radius * 0.4, y, radius * 0.75, Math.PI * 0.65, -Math.PI * 0.65, true);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (glow) {
+        ctx.shadowBlur = 0;
+    }
+}
+
+// Helper function to draw a parallelogram shape (Phantom)
+function drawParallelogram(ctx, x, y, radius, color, glow = true) {
+    if (glow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+    }
+
+    const width = radius * 1.4;
+    const height = radius * 0.9;
+    const skew = radius * 0.4;  // How much to skew
+
+    ctx.beginPath();
+    ctx.moveTo(x - width / 2 + skew, y - height / 2);  // Top left
+    ctx.lineTo(x + width / 2 + skew, y - height / 2);  // Top right
+    ctx.lineTo(x + width / 2 - skew, y + height / 2);  // Bottom right
+    ctx.lineTo(x - width / 2 - skew, y + height / 2);  // Bottom left
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (glow) {
+        ctx.shadowBlur = 0;
+    }
+}
+
+// Helper function to draw a kite shape (Razor)
+function drawKite(ctx, x, y, radius, color, glow = true) {
+    if (glow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+    }
+
+    const topLength = radius * 1.3;   // Elongated top
+    const bottomLength = radius * 0.6; // Shorter bottom
+    const width = radius * 0.7;        // Width at widest point
+
+    ctx.beginPath();
+    ctx.moveTo(x, y - topLength);      // Top point
+    ctx.lineTo(x + width, y);          // Right point
+    ctx.lineTo(x, y + bottomLength);   // Bottom point
+    ctx.lineTo(x - width, y);          // Left point
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (glow) {
+        ctx.shadowBlur = 0;
+    }
+}
+
 // Helper function to draw a tank shape for the selection UI
 function drawTankShape(tank, x, y, size, isSelected, isTaken) {
     const ctx = renderer.ctx;
@@ -8726,6 +9058,15 @@ function drawTankShape(tank, x, y, size, isSelected, isTaken) {
             break;
         case 'octagon':
             renderer.drawRegularPolygon(x, y, size, 8, Math.PI / 8, color, glow);
+            break;
+        case 'crescent':
+            drawCrescent(ctx, x, y, size, color, glow);
+            break;
+        case 'parallelogram':
+            drawParallelogram(ctx, x, y, size, color, glow);
+            break;
+        case 'kite':
+            drawKite(ctx, x, y, size, color, glow);
             break;
         default:
             renderer.drawCircle(x, y, size, color, glow);
@@ -8851,7 +9192,16 @@ function renderTankSelect() {
 
 function renderLottery() {
     const ctx = renderer.ctx;
+    const player = getCurrentPlayer();
+    const playerIndex = state.currentPlayer;
 
+    // Battlefield view mode - show world with compact lottery at bottom
+    if (state.lottery.showingBattlefield) {
+        renderLotteryBattlefieldView();
+        return;
+    }
+
+    // Standard lottery view
     // World elements at scaled coordinates (background)
     ctx.save();
     ctx.scale(WORLD_SCALE, WORLD_SCALE);
@@ -8870,9 +9220,6 @@ function renderLottery() {
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // UI at 1:1 scale
-    const player = getCurrentPlayer();
-    const playerIndex = state.currentPlayer;
-
     // Header with glow
     renderer.setGlow(COLORS.cyan, 20);
     renderer.drawText('INCOMING SALVAGE', CANVAS_WIDTH / 2, 60, COLORS.cyan, 32, 'center', true);
@@ -8915,8 +9262,165 @@ function renderLottery() {
     const rerollColor = rerolls > 0 ? '#888888' : '#444444';
     renderer.drawText(rerollText, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 80, rerollColor, 16, 'center', false);
 
-    // Controls hint
-    renderer.drawText('Press 1-5 to select  |  ← → to highlight  |  SPACE to confirm  |  1 = Shoot  |  5 = Move', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+    // Controls hint with TAB toggle
+    renderer.drawText('1-5: Select  |  ← →: Highlight  |  SPACE: Confirm  |  TAB: View Battlefield', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 50, '#666666', 14, 'center', false);
+}
+
+/**
+ * Render lottery with battlefield view - full world visible, compact cards at bottom
+ */
+function renderLotteryBattlefieldView() {
+    const ctx = renderer.ctx;
+    const player = getCurrentPlayer();
+    const playerIndex = state.currentPlayer;
+
+    // Render world at full scale (same as normal gameplay)
+    ctx.save();
+    ctx.scale(WORLD_SCALE, WORLD_SCALE);
+
+    // Background grid
+    renderer.drawGrid(100, '#0a0a15');
+
+    // Draw ambient background
+    const ambient = getAmbient();
+    if (ambient) {
+        ambient.drawBackground(renderer);
+    }
+
+    // Draw terrain
+    terrain.draw(renderer, state.voidY);
+    terrain.drawProps(renderer);
+
+    // Draw void
+    renderer.drawVoid(state.voidY);
+
+    // Draw all tanks
+    for (let i = 0; i < state.players.length; i++) {
+        const p = state.players[i];
+        if (p.health <= 0) continue;
+
+        const tank = p.tankId ? getTankById(p.tankId) : null;
+        const tankColor = tank ? tank.color : p.color;
+        const tankSize = 30;
+        const isActive = i === state.currentPlayer;
+
+        if (tank) {
+            switch (tank.shape) {
+                case 'triangle':
+                    renderer.drawRegularPolygon(p.x, p.y, tankSize, 3, -Math.PI / 2, tankColor, isActive);
+                    break;
+                case 'square':
+                    renderer.drawRegularPolygon(p.x, p.y, tankSize, 4, Math.PI / 4, tankColor, isActive);
+                    break;
+                case 'hexagon':
+                    renderer.drawRegularPolygon(p.x, p.y, tankSize, 6, 0, tankColor, isActive);
+                    break;
+                case 'star':
+                    drawStar(renderer.ctx, p.x, p.y, tankSize, 5, tankColor, isActive);
+                    break;
+                case 'circle':
+                    renderer.drawCircle(p.x, p.y, tankSize, tankColor, isActive);
+                    break;
+                case 'crescent':
+                    drawCrescent(renderer.ctx, p.x, p.y, tankSize, tankColor, isActive);
+                    break;
+                case 'parallelogram':
+                    drawParallelogram(renderer.ctx, p.x, p.y, tankSize, tankColor, isActive);
+                    break;
+                case 'kite':
+                    drawKite(renderer.ctx, p.x, p.y, tankSize, tankColor, isActive);
+                    break;
+                default:
+                    renderer.drawRegularPolygon(p.x, p.y, tankSize, 6, 0, tankColor, isActive);
+            }
+        } else {
+            renderer.drawRegularPolygon(p.x, p.y, tankSize, 6, 0, p.color, isActive);
+        }
+
+        // Turret
+        const turretLength = 40;
+        const angleRad = (180 - p.angle) * Math.PI / 180;
+        const turretX = p.x + Math.cos(angleRad) * turretLength;
+        const turretY = p.y - Math.sin(angleRad) * turretLength;
+        renderer.drawLine(p.x, p.y, turretX, turretY, tankColor, 6, isActive);
+        renderer.drawCircle(turretX, turretY, 4, tankColor, isActive);
+
+        // Health bar
+        const healthBarWidth = 50;
+        const healthBarX = p.x - healthBarWidth / 2;
+        const healthBarY = p.y - 50;
+        renderer.drawRectOutline(healthBarX, healthBarY, healthBarWidth, 6, '#333333', 1, false);
+        const healthColor = p.health > 60 ? '#00ff00' : (p.health > 30 ? '#ffaa00' : '#ff4444');
+        renderer.drawRect(healthBarX + 1, healthBarY + 1, (healthBarWidth - 2) * (p.health / 100), 4, healthColor, true);
+    }
+
+    // Draw ambient foreground
+    if (ambient) {
+        ambient.drawForeground(renderer);
+    }
+
+    ctx.restore();
+
+    // Compact lottery UI at bottom
+    const panelHeight = 120;
+    const panelY = CANVAS_HEIGHT - panelHeight;
+
+    // Semi-transparent panel background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, panelY, CANVAS_WIDTH, panelHeight);
+
+    // Top border
+    renderer.drawLine(0, panelY, CANVAS_WIDTH, panelY, COLORS.cyan, 2, true);
+
+    // Player indicator
+    renderer.drawText(`P${playerIndex + 1} WEAPON SELECT`, 80, panelY + 25, player.color, 14, 'center', true);
+
+    // Compact cards
+    const cardWidth = 100;
+    const cardHeight = 70;
+    const cardSpacing = 15;
+    const totalWidth = cardWidth * 5 + cardSpacing * 4;
+    const startX = (CANVAS_WIDTH - totalWidth) / 2;
+    const cardY = panelY + 35;
+
+    const revealed = state.lottery.animationPhase !== 'descending';
+    for (let i = 0; i < 5; i++) {
+        const card = state.lottery.cards[i];
+        if (!card) continue;
+
+        const x = startX + i * (cardWidth + cardSpacing);
+        const isSelected = i === state.lottery.selectedIndex;
+        const colors = revealed ? LOTTERY_RARITY_COLORS[card.rarity] : LOTTERY_RARITY_COLORS.common;
+
+        // Card background
+        ctx.fillStyle = isSelected ? colors.bg : '#111111';
+        ctx.fillRect(x, cardY, cardWidth, cardHeight);
+
+        // Border
+        const borderColor = isSelected ? colors.glow : (revealed ? colors.border : '#333333');
+        if (isSelected) renderer.setGlow(colors.glow, 15);
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = isSelected ? 3 : 1;
+        ctx.strokeRect(x, cardY, cardWidth, cardHeight);
+        if (isSelected) renderer.clearGlow();
+
+        if (revealed) {
+            // Weapon name
+            renderer.drawText(card.name, x + cardWidth / 2, cardY + 25, isSelected ? '#ffffff' : '#aaaaaa', 12, 'center', isSelected);
+            // Damage
+            renderer.drawText(`DMG: ${card.damage}`, x + cardWidth / 2, cardY + 45, '#888888', 10, 'center', false);
+            // Rarity indicator
+            renderer.drawText(card.rarity.toUpperCase(), x + cardWidth / 2, cardY + 60, colors.border, 9, 'center', false);
+        } else {
+            renderer.drawText('?', x + cardWidth / 2, cardY + 35, '#444444', 32, 'center', false);
+        }
+
+        // Number hint below card
+        renderer.drawText(`[${i + 1}]`, x + cardWidth / 2, cardY + cardHeight + 12, isSelected ? '#ffffff' : '#555555', 12, 'center', false);
+    }
+
+    // Controls hint on right side
+    renderer.drawText('TAB: Full View  |  1-5: Select  |  SPACE: Confirm', CANVAS_WIDTH - 200, panelY + 25, '#666666', 11, 'center', false);
 }
 
 /**
@@ -8944,39 +9448,98 @@ function wrapText(text, maxChars) {
 }
 
 /**
- * Render a single lottery card
+ * Render a single lottery card with juice effects
  */
 function renderLotteryCard(card, x, y, width, height, isSelected, number, revealed) {
+    const ctx = renderer.ctx;
     const colors = revealed ? LOTTERY_RARITY_COLORS[card.rarity] : LOTTERY_RARITY_COLORS.common;
 
+    // === HOVER PULSE ANIMATION ===
+    // Selected cards have a subtle scale pulse
+    let scale = 1.0;
+    let offsetX = 0, offsetY = 0;
+    if (isSelected && revealed) {
+        scale = 1.0 + Math.sin(state.time * 4) * 0.02;  // Gentle breathing
+        offsetX = width * (1 - scale) / 2;
+        offsetY = height * (1 - scale) / 2;
+    }
+
+    ctx.save();
+    if (scale !== 1.0) {
+        ctx.translate(x + width / 2, y + height / 2);
+        ctx.scale(scale, scale);
+        ctx.translate(-(x + width / 2), -(y + height / 2));
+    }
+
     // Card background
-    renderer.ctx.fillStyle = colors.bg;
-    renderer.ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(x, y, width, height);
+
+    // === SHINE SWEEP EFFECT for rare/epic/legendary ===
+    if (revealed && (card.rarity === 'rare' || card.rarity === 'epic' || card.rarity === 'legendary')) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.clip();
+
+        // Continuous sweep - moves forever in one direction
+        const speed = card.rarity === 'legendary' ? 80 : (card.rarity === 'epic' ? 60 : 45);  // pixels per second
+        const sweepWidth = 50;
+        const totalTravel = width + sweepWidth * 2;
+
+        // Seamless loop: when shine exits right, it's already entering from left
+        const sweepX = x - sweepWidth + ((state.time * speed) % totalTravel);
+
+        // Diagonal gradient for metallic sheen
+        const gradient = ctx.createLinearGradient(
+            sweepX, y + height,
+            sweepX + sweepWidth, y
+        );
+
+        const shineColor = card.rarity === 'legendary' ? 'rgba(255,215,0,' :
+                          (card.rarity === 'epic' ? 'rgba(200,130,255,' : 'rgba(100,180,255,');
+
+        gradient.addColorStop(0, shineColor + '0)');
+        gradient.addColorStop(0.4, shineColor + '0.25)');
+        gradient.addColorStop(0.5, shineColor + '0.4)');
+        gradient.addColorStop(0.6, shineColor + '0.25)');
+        gradient.addColorStop(1, shineColor + '0)');
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x, y, width, height);
+        ctx.restore();
+    }
 
     // Selection glow and border
     if (isSelected && revealed) {
-        renderer.setGlow(colors.glow, 25);
+        renderer.setGlow(colors.glow, 25 + Math.sin(state.time * 6) * 5);  // Pulsing glow
     }
 
     // Border
     const borderWidth = isSelected ? 4 : 2;
-    renderer.ctx.strokeStyle = revealed ? colors.border : '#444444';
-    renderer.ctx.lineWidth = borderWidth;
-    renderer.ctx.strokeRect(x, y, width, height);
+    ctx.strokeStyle = revealed ? colors.border : '#444444';
+    ctx.lineWidth = borderWidth;
+    ctx.strokeRect(x, y, width, height);
     renderer.clearGlow();
 
     // Card back (unrevealed)
     if (!revealed) {
         renderer.drawText('?', x + width / 2, y + height / 2 + 15, '#444444', 64, 'center', false);
         renderer.drawText(`[${number}]`, x + width / 2, y + height - 30, '#333333', 18, 'center', false);
+        ctx.restore();
         return;
     }
 
     // === REVEALED CARD ===
 
-    // Rarity label at top
+    // Rarity label at top with pulsing for high rarity
     const rarityLabel = card.rarity.toUpperCase();
+    if (card.rarity === 'legendary' || card.rarity === 'epic') {
+        const rarityPulse = 0.7 + Math.sin(state.time * 5) * 0.3;
+        ctx.globalAlpha = rarityPulse;
+    }
     renderer.drawText(rarityLabel, x + width / 2, y + 20, colors.border, 11, 'center', false);
+    ctx.globalAlpha = 1;
 
     // Show "SAFE PICK" for guaranteed Mortar card
     if (card.guaranteed) {
@@ -8988,7 +9551,7 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
     renderer.drawText(card.name, x + width / 2, y + 55, '#ffffff', 16, 'center', true);
     renderer.clearGlow();
 
-    // Animated projectile preview
+    // Animated projectile preview with enhanced bounce
     const weapon = WEAPONS[card.weaponKey];
     if (weapon) {
         const previewY = y + 85;
@@ -8996,7 +9559,7 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
         const pulse = 0.8 + Math.sin(state.time * 5) * 0.2;
         const previewRadius = (weapon.projectileRadius || 6) * pulse * 1.3;
 
-        renderer.setGlow(weapon.color || colors.glow, 15);
+        renderer.setGlow(weapon.color || colors.glow, 15 + (isSelected ? 10 : 0));
         renderer.drawCircle(x + width / 2, previewY + bounce, previewRadius, weapon.color || '#ffffff', true);
         renderer.clearGlow();
 
@@ -9004,10 +9567,10 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
         for (let t = 1; t <= 3; t++) {
             const trailX = x + width / 2 - t * 8;
             const alpha = 0.4 - t * 0.1;
-            renderer.ctx.globalAlpha = alpha;
+            ctx.globalAlpha = alpha;
             renderer.drawCircle(trailX, previewY + bounce, previewRadius * (1 - t * 0.2), weapon.color || '#ffffff', true);
         }
-        renderer.ctx.globalAlpha = 1;
+        ctx.globalAlpha = 1;
     }
 
     // Stats
@@ -9025,32 +9588,59 @@ function renderLotteryCard(card, x, y, width, height, isSelected, number, reveal
         renderer.drawText(descLines[i], x + width / 2, descStartY + i * lineHeight, '#888888', 10, 'center', false);
     }
 
-    // Selection number below card (outside)
+    ctx.restore();  // Restore from scale transform
+
+    // Selection number below card (outside of card transform)
     const numColor = isSelected ? '#ffffff' : '#555555';
     renderer.drawText(`[${number}]`, x + width / 2, y + height + 25, numColor, 18, 'center', isSelected);
 
-    // Rarity-specific visual effects
-    if (card.rarity === 'legendary' && isSelected) {
-        // Golden particles around the card
-        const particleCount = 3;
+    // Rarity-specific visual effects (outside card)
+    if (card.rarity === 'legendary') {
+        // Golden particles around the card (always visible for legendary, more when selected)
+        const particleCount = isSelected ? 5 : 2;
         for (let i = 0; i < particleCount; i++) {
             const angle = state.time * 2 + (i * Math.PI * 2 / particleCount);
-            const px = x + width / 2 + Math.cos(angle) * (width / 2 + 10);
-            const py = y + height / 2 + Math.sin(angle) * (height / 2 + 10);
-            renderer.setGlow('#ffdd00', 10);
-            renderer.drawCircle(px, py, 3, '#ffaa00', true);
+            const orbitRadius = isSelected ? (width / 2 + 15) : (width / 2 + 5);
+            const px = x + width / 2 + Math.cos(angle) * orbitRadius;
+            const py = y + height / 2 + Math.sin(angle) * (height / 2 + (isSelected ? 15 : 5));
+            const particleSize = isSelected ? 4 : 2;
+            renderer.setGlow('#ffdd00', isSelected ? 15 : 8);
+            renderer.drawCircle(px, py, particleSize, '#ffaa00', true);
             renderer.clearGlow();
         }
-    } else if (card.rarity === 'epic' && isSelected) {
-        // Purple lightning effect at corners
-        renderer.ctx.strokeStyle = '#cc44ff';
-        renderer.ctx.lineWidth = 1;
-        renderer.ctx.globalAlpha = 0.5 + Math.sin(state.time * 10) * 0.3;
-        renderer.ctx.beginPath();
-        renderer.ctx.moveTo(x, y);
-        renderer.ctx.lineTo(x + 15 + Math.random() * 5, y + 15 + Math.random() * 5);
-        renderer.ctx.stroke();
-        renderer.ctx.globalAlpha = 1;
+    } else if (card.rarity === 'epic') {
+        // Purple lightning effect at corners (always visible, more intense when selected)
+        const intensity = isSelected ? 0.7 : 0.3;
+        ctx.strokeStyle = '#cc44ff';
+        ctx.lineWidth = isSelected ? 2 : 1;
+        ctx.globalAlpha = intensity + Math.sin(state.time * 10) * 0.2;
+
+        // Top-left corner lightning
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 15 + Math.random() * 5, y + 15 + Math.random() * 5);
+        ctx.stroke();
+
+        // Bottom-right corner lightning
+        ctx.beginPath();
+        ctx.moveTo(x + width, y + height);
+        ctx.lineTo(x + width - 15 - Math.random() * 5, y + height - 15 - Math.random() * 5);
+        ctx.stroke();
+
+        ctx.globalAlpha = 1;
+    } else if (card.rarity === 'rare' && isSelected) {
+        // Blue sparkle effect for selected rare cards
+        const sparkleCount = 2;
+        for (let i = 0; i < sparkleCount; i++) {
+            const sx = x + Math.random() * width;
+            const sy = y + Math.random() * height;
+            const sparkleAlpha = 0.3 + Math.random() * 0.4;
+            ctx.globalAlpha = sparkleAlpha;
+            renderer.setGlow('#00aaff', 8);
+            renderer.drawCircle(sx, sy, 2, '#00ccff', true);
+            renderer.clearGlow();
+        }
+        ctx.globalAlpha = 1;
     }
 }
 

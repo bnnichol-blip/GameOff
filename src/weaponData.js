@@ -57,7 +57,7 @@ export const WEAPONS = {
     ROLLER: {
         name: 'Roller',
         description: 'Roll Out! Make lots of Explosions! Finish with a BANG!',
-        tier: 'CHEAP',
+        tier: 'MID',
         damage: 80,        // Final explosion damage
         blastRadius: 75,
         bounces: 1,
@@ -605,8 +605,8 @@ export const TANKS = [
     {
         id: 'PHANTOM',
         name: 'Phantom',
-        shape: 'pentagon',
-        sides: 5,
+        shape: 'parallelogram',
+        sides: 4,  // Skewed rectangle
         color: '#FF00FF',
         glowColor: '#FF66FF'
     },
@@ -621,8 +621,8 @@ export const TANKS = [
     {
         id: 'RAZOR',
         name: 'Razor',
-        shape: 'diamond',
-        sides: 4,  // Rotated 45 degrees
+        shape: 'kite',
+        sides: 4,  // Kite shape - elongated top
         color: '#FF3333',
         glowColor: '#FF6666'
     },
@@ -643,10 +643,10 @@ export const TANKS = [
         glowColor: '#66FF66'
     },
     {
-        id: 'TITAN',
-        name: 'Titan',
-        shape: 'octagon',
-        sides: 8,
+        id: 'LUNA',
+        name: 'Luna',
+        shape: 'crescent',
+        sides: 0,  // Crescent moon shape
         color: '#AA00FF',
         glowColor: '#CC66FF'
     }
