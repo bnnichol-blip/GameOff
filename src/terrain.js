@@ -29,8 +29,15 @@ let currentBiomeColors = {
 // Crater tracking for hot glow effect
 let craters = [];  // { x, y, radius, heat: 1.0 }
 
-// Goo stains from tank deaths (permanent colored marks)
-let gooStains = [];  // { x, y, radius, shape, sides, color, alpha, glowTimer }
+// Death zones from tank deaths (areas where terrain edge glows in tank's color)
+let deathZones = [];  // { x, radius, color, r, g, b } - areas where terrain edge glows differently
+
+// Cached edge segments for performance (rebuilt when zones change)
+let edgeSegments = null;  // [{startX, endX, color}] or null if no zones
+let edgeSegmentsDirty = false;
+
+// Cached biome edge color RGB
+let cachedEdgeRGB = { r: 0, g: 255, b: 255 };  // Default cyan
 
 // Ceiling system for cavern overhangs
 let ceilingHeights = null;  // Second heightmap for ceiling, null = no ceiling
@@ -1975,13 +1982,12 @@ function generateCircuitBoard() {
     }
 
     // Generate contour lines (layered depth effect)
-    for (let i = 1; i <= 3; i++) {
-        contourLines.push({
-            offset: i * 25,
-            alpha: 0.15 - i * 0.04,
-            color: i === 1 ? COLORS.cyan : COLORS.magenta
-        });
-    }
+    // Reduced from 3 to 1 for performance (saves ~5000 lineTo calls/frame)
+    contourLines.push({
+        offset: 25,
+        alpha: 0.11,
+        color: COLORS.cyan
+    });
 
     // Initialize a few animated pulses
     for (let i = 0; i < 3; i++) {
@@ -2075,6 +2081,15 @@ export function setBiomeColors(biome) {
         currentBiomeColors.terrain = biome.terrain || '#050510';
         currentBiomeColors.edge = biome.edge || '#00ffff';
         currentBiomeColors.voidColor = biome.voidColor || '#ff00ff';
+
+        // Cache edge color RGB for fast blending
+        const edgeHex = currentBiomeColors.edge;
+        cachedEdgeRGB.r = parseInt(edgeHex.slice(1, 3), 16);
+        cachedEdgeRGB.g = parseInt(edgeHex.slice(3, 5), 16);
+        cachedEdgeRGB.b = parseInt(edgeHex.slice(5, 7), 16);
+
+        // Invalidate edge segments cache
+        edgeSegmentsDirty = true;
     }
 }
 
@@ -2096,165 +2111,126 @@ export function updateCraters(dt) {
 // ============================================================================
 
 /**
- * Helper: Draw a polygon shape for goo stain
- * @param {CanvasRenderingContext2D} ctx - Canvas context
- * @param {number} cx - Center X
- * @param {number} cy - Center Y
- * @param {number} radius - Stain radius
- * @param {number} sides - Number of sides
- * @param {number} rotation - Rotation angle in radians
- */
-function drawStainPolygon(ctx, cx, cy, radius, sides, rotation) {
-    ctx.beginPath();
-    for (let i = 0; i < sides; i++) {
-        const angle = rotation + (i / sides) * Math.PI * 2 - Math.PI / 2;
-        // Add organic waviness to edges
-        const waveRadius = radius * (0.9 + Math.sin(i * 3.7) * 0.15);
-        const x = cx + Math.cos(angle) * waveRadius;
-        const y = cy + Math.sin(angle) * waveRadius;
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    }
-    ctx.closePath();
-}
-
-/**
- * Helper: Draw a star shape for goo stain
- * @param {CanvasRenderingContext2D} ctx - Canvas context
- * @param {number} cx - Center X
- * @param {number} cy - Center Y
- * @param {number} radius - Stain radius
- */
-function drawStainStar(ctx, cx, cy, radius) {
-    const points = 5;
-    const innerRadius = radius * 0.4;
-    ctx.beginPath();
-    for (let i = 0; i < points * 2; i++) {
-        const angle = (i / (points * 2)) * Math.PI * 2 - Math.PI / 2;
-        const r = i % 2 === 0 ? radius : innerRadius;
-        // Add organic waviness
-        const waveR = r * (0.9 + Math.sin(i * 2.3) * 0.12);
-        const x = cx + Math.cos(angle) * waveR;
-        const y = cy + Math.sin(angle) * waveR;
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    }
-    ctx.closePath();
-}
-
-/**
- * Create a permanent goo stain at a death location
+ * Create a permanent glowing goo stain at a death location
  * @param {number} cx - Center X position
  * @param {number} cy - Center Y position
  * @param {number} radius - Stain radius
- * @param {string} shape - Shape type ('circle', 'triangle', 'square', 'pentagon', 'hexagon', 'star', 'diamond')
- * @param {number} sides - Number of sides for polygon shapes
- * @param {string} color - Stain color
+ * @param {string} color - Stain color (tank's color)
  */
-export function createGooStain(cx, cy, radius, shape, sides, color) {
-    // Snap stain to terrain surface (inside the crater that was just created)
-    const terrainY = getHeightAt(Math.floor(cx));
-    // Position stain slightly above terrain surface so it sits in the crater
-    const stainY = terrainY - radius * 0.3;
-
-    gooStains.push({
-        x: cx,
-        y: stainY,
-        radius: radius,
-        shape: shape,
-        sides: sides,
-        color: color,
-        alpha: 0.4,      // Permanent alpha (30-40% visibility)
-        glowTimer: 5.0,  // 5 seconds of bright glow that fades
-        rotation: Math.random() * Math.PI * 2  // Random rotation for variety
-    });
+/**
+ * Parse hex color to RGB object
+ */
+function parseHexColor(hex) {
+    return {
+        r: parseInt(hex.slice(1, 3), 16),
+        g: parseInt(hex.slice(3, 5), 16),
+        b: parseInt(hex.slice(5, 7), 16)
+    };
 }
 
 /**
- * Update goo stain glow timers
+ * Add a death zone where terrain edge glows in the tank's color
+ * @param {number} cx - Center X position of death
+ * @param {number} radius - Radius of effect on terrain edge
+ * @param {string} color - Tank's color (hex)
+ */
+export function addDeathZone(cx, radius, color) {
+    const rgb = parseHexColor(color);
+    deathZones.push({
+        x: cx,
+        radius: radius,
+        color: color,
+        r: rgb.r,
+        g: rgb.g,
+        b: rgb.b
+    });
+    edgeSegmentsDirty = true;
+}
+
+/**
+ * Update death zones (no-op, effect is permanent)
  * @param {number} dt - Delta time in seconds
  */
-export function updateGooStains(dt) {
-    for (const stain of gooStains) {
-        if (stain.glowTimer > 0) {
-            stain.glowTimer -= dt;
-            if (stain.glowTimer < 0) stain.glowTimer = 0;
-        }
-    }
+export function updateDeathZones(dt) {
+    // No updates needed - effect is permanent
 }
 
 /**
- * Render all goo stains
+ * Render death zones (no-op - death zones affect edge color, not rendered separately)
+ * Kept for backwards compatibility with render loop
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  */
 export function renderGooStains(ctx) {
-    for (const stain of gooStains) {
-        // Calculate current alpha: base alpha + glow bonus
-        const glowBonus = (stain.glowTimer / 5.0) * 0.4;  // Up to 0.4 extra alpha during glow
-        const currentAlpha = stain.alpha + glowBonus;
-
-        // Calculate glow intensity for shadow effect
-        const glowIntensity = (stain.glowTimer / 5.0) * 30;  // Up to 30px glow
-
-        ctx.save();
-        ctx.globalAlpha = currentAlpha;
-        ctx.fillStyle = stain.color;
-
-        // Add glow effect during initial bright phase
-        if (glowIntensity > 0) {
-            ctx.shadowBlur = glowIntensity;
-            ctx.shadowColor = stain.color;
-        }
-
-        // Draw shape-specific stain
-        switch (stain.shape) {
-            case 'circle':
-                ctx.beginPath();
-                ctx.arc(stain.x, stain.y, stain.radius, 0, Math.PI * 2);
-                ctx.fill();
-                break;
-            case 'star':
-                drawStainStar(ctx, stain.x, stain.y, stain.radius);
-                ctx.fill();
-                break;
-            case 'diamond':
-                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 4, Math.PI / 4 + stain.rotation);
-                ctx.fill();
-                break;
-            case 'triangle':
-                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 3, stain.rotation);
-                ctx.fill();
-                break;
-            case 'square':
-                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 4, stain.rotation);
-                ctx.fill();
-                break;
-            case 'pentagon':
-                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, 5, stain.rotation);
-                ctx.fill();
-                break;
-            case 'hexagon':
-            default:
-                drawStainPolygon(ctx, stain.x, stain.y, stain.radius, stain.sides || 6, stain.rotation);
-                ctx.fill();
-                break;
-        }
-
-        ctx.restore();
-    }
+    // Death zones are now rendered as part of terrain edge coloring
+    // No separate rendering needed
 }
 
 /**
- * Clear all goo stains (for game reset)
+ * Clear all death zones (for game reset)
  */
-export function clearGooStains() {
-    gooStains = [];
+export function clearDeathZones() {
+    deathZones = [];
+    edgeSegments = null;
+    edgeSegmentsDirty = false;
+}
+
+/**
+ * Rebuild edge segments cache - called when death zones change
+ * Uses coarse stepping (every 10px) for performance
+ */
+function rebuildEdgeSegments() {
+    if (deathZones.length === 0) {
+        edgeSegments = null;
+        edgeSegmentsDirty = false;
+        return;
+    }
+
+    const STEP = 10;  // Check every 10 pixels
+    edgeSegments = [];
+
+    let currentColor = null;
+    let segmentStart = 0;
+
+    for (let x = 0; x <= width; x += STEP) {
+        const color = getEdgeColorAtFast(x);
+        if (currentColor === null) {
+            currentColor = color;
+            segmentStart = 0;
+        } else if (color !== currentColor) {
+            edgeSegments.push({ startX: segmentStart, endX: x, color: currentColor });
+            currentColor = color;
+            segmentStart = x;
+        }
+    }
+    // Final segment
+    if (segmentStart < width) {
+        edgeSegments.push({ startX: segmentStart, endX: width, color: currentColor });
+    }
+
+    edgeSegmentsDirty = false;
+}
+
+/**
+ * Fast edge color lookup using pre-parsed RGB values
+ * @param {number} x - X position
+ * @returns {string} - Hex color for edge at this position
+ */
+function getEdgeColorAtFast(x) {
+    const baseR = cachedEdgeRGB.r;
+    const baseG = cachedEdgeRGB.g;
+    const baseB = cachedEdgeRGB.b;
+
+    for (const zone of deathZones) {
+        const dist = Math.abs(x - zone.x);
+        if (dist < zone.radius) {
+            const t = (1 - dist / zone.radius) * 0.8;
+            const r = Math.round(baseR + (zone.r - baseR) * t);
+            const g = Math.round(baseG + (zone.g - baseG) * t);
+            const b = Math.round(baseB + (zone.b - baseB) * t);
+            return `rgb(${r},${g},${b})`;
+        }
+    }
+    return currentBiomeColors.edge;
 }
 
 /**
@@ -2304,33 +2280,105 @@ export function draw(renderer, voidY = 9999) {
     // Draw ceiling overhangs if present
     drawCeiling(renderer);
 
-    // Glowing edge line (biome-aware)
-    const edgeColor = currentBiomeColors.edge;
-    renderer.setGlow(edgeColor, 20);
-    ctx.beginPath();
-    ctx.moveTo(0, heights[0]);
-    for (let x = 1; x < width; x++) {
-        ctx.lineTo(x, heights[x]);
-    }
-    ctx.strokeStyle = edgeColor;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    renderer.clearGlow();
+    // =========================================
+    // DEATH ZONE BLEED EFFECT (drawn first, underneath edge)
+    // Uses gradients instead of shadowBlur - much faster!
+    // =========================================
+    if (deathZones.length > 0) {
+        const BLEED_DEPTH = 60;  // How far the color bleeds into terrain
 
-    // Secondary edge glow (void color, slightly offset)
-    const secondaryColor = currentBiomeColors.voidColor;
-    ctx.globalAlpha = 0.3;
-    renderer.setGlow(secondaryColor, 10);
-    ctx.beginPath();
-    ctx.moveTo(0, heights[0] + 3);
-    for (let x = 1; x < width; x++) {
-        ctx.lineTo(x, heights[x] + 3);
+        for (const zone of deathZones) {
+            const startX = Math.max(0, Math.floor(zone.x - zone.radius));
+            const endX = Math.min(width - 1, Math.ceil(zone.x + zone.radius));
+
+            // Create vertical gradient for bleed effect
+            const gradient = ctx.createLinearGradient(0, 0, 0, BLEED_DEPTH);
+            gradient.addColorStop(0, zone.color);  // Bright at surface
+            gradient.addColorStop(0.3, zone.color + 'aa');  // Fade
+            gradient.addColorStop(1, 'transparent');  // Fully transparent
+
+            ctx.fillStyle = gradient;
+            ctx.globalAlpha = 0.7;
+
+            // Draw bleed as a filled path following terrain
+            ctx.beginPath();
+            ctx.moveTo(startX, heights[startX]);
+            for (let x = startX + 1; x <= endX; x++) {
+                ctx.lineTo(x, heights[x]);
+            }
+            // Close path down into terrain
+            for (let x = endX; x >= startX; x--) {
+                ctx.lineTo(x, heights[x] + BLEED_DEPTH);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
     }
-    ctx.strokeStyle = secondaryColor;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    renderer.clearGlow();
-    ctx.globalAlpha = 1;
+
+    // =========================================
+    // TERRAIN EDGE LINE
+    // Reduced glow (15 instead of 40) - bleed does the heavy lifting
+    // =========================================
+    const EDGE_GLOW = 15;  // Reduced from 40 - bleed effect handles visibility
+    const edgeColor = currentBiomeColors.edge;
+
+    if (deathZones.length === 0) {
+        // No death zones - draw single stroke (fast path)
+        renderer.setGlow(edgeColor, EDGE_GLOW);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, heights[0]);
+        for (let x = 1; x < width; x++) {
+            ctx.lineTo(x, heights[x]);
+        }
+        ctx.strokeStyle = edgeColor;
+        ctx.stroke();
+        renderer.clearGlow();
+    } else {
+        // Rebuild segments cache if dirty
+        if (edgeSegmentsDirty || !edgeSegments) {
+            rebuildEdgeSegments();
+        }
+
+        // Draw normal edge first (thin, with glow)
+        renderer.setGlow(edgeColor, EDGE_GLOW);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = edgeColor;
+        ctx.beginPath();
+        ctx.moveTo(0, heights[0]);
+        for (let x = 1; x < width; x++) {
+            ctx.lineTo(x, heights[x]);
+        }
+        ctx.stroke();
+        renderer.clearGlow();
+
+        // Draw death zone edges on top (thicker, brighter, colored)
+        // Group by color to batch setGlow calls
+        const deathSegmentsByColor = {};
+        for (const seg of edgeSegments) {
+            if (seg.color !== edgeColor) {
+                if (!deathSegmentsByColor[seg.color]) deathSegmentsByColor[seg.color] = [];
+                deathSegmentsByColor[seg.color].push(seg);
+            }
+        }
+
+        // Draw each color group with single setGlow
+        ctx.lineWidth = 4;  // Thicker line for death zones
+        for (const [color, segs] of Object.entries(deathSegmentsByColor)) {
+            renderer.setGlow(color, 20);
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            for (const seg of segs) {
+                ctx.moveTo(seg.startX, heights[seg.startX] || heights[0]);
+                for (let x = seg.startX + 1; x <= seg.endX && x < width; x++) {
+                    ctx.lineTo(x, heights[x]);
+                }
+            }
+            ctx.stroke();
+        }
+        renderer.clearGlow();
+    }
 }
 
 /**
@@ -2642,68 +2690,93 @@ function drawContourLayers(renderer) {
 
 /**
  * Draw circuit traces (thin neon lines)
+ * Optimized: Batched by color with single setGlow per group
  */
 function drawCircuitTraces(renderer) {
     const ctx = renderer.ctx;
 
+    // Filter visible lines and group by color
+    const linesByColor = {};
     for (const line of circuitLines) {
         // Check if line is still within terrain bounds
         const terrainY1 = getHeightAt(line.x1);
         const terrainY2 = getHeightAt(line.x2);
         if (line.y1 < terrainY1 || line.y2 < terrainY2) continue;
 
-        ctx.globalAlpha = line.alpha;
-        renderer.setGlow(line.color, 6);
-        ctx.strokeStyle = line.color;
-        ctx.lineWidth = line.lineWidth;
-        ctx.beginPath();
-        ctx.moveTo(line.x1, line.y1);
-        ctx.lineTo(line.x2, line.y2);
-        ctx.stroke();
-        renderer.clearGlow();
+        if (!linesByColor[line.color]) linesByColor[line.color] = [];
+        linesByColor[line.color].push(line);
     }
+
+    // Draw each color group with single glow
+    for (const [color, lines] of Object.entries(linesByColor)) {
+        renderer.setGlow(color, 6);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lines[0].lineWidth;
+        ctx.globalAlpha = lines[0].alpha;
+        ctx.beginPath();
+        for (const line of lines) {
+            ctx.moveTo(line.x1, line.y1);
+            ctx.lineTo(line.x2, line.y2);
+        }
+        ctx.stroke();
+    }
+    renderer.clearGlow();
     ctx.globalAlpha = 1;
 }
 
 /**
  * Draw circuit nodes (junction points)
+ * Optimized: Batched by color with single setGlow per group
  */
 function drawCircuitNodes(renderer) {
     const ctx = renderer.ctx;
 
+    // Filter visible nodes and group by color
+    const nodesByColor = {};
     for (const node of circuitNodes) {
         // Check if node is still within terrain
         const terrainY = getHeightAt(node.x);
         if (node.y < terrainY) continue;
 
-        ctx.globalAlpha = node.alpha;
-        renderer.setGlow(node.color, 8);
-        ctx.fillStyle = node.color;
-
-        if (node.type === 'circle') {
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-            ctx.fill();
-        } else {
-            // Square node
-            ctx.fillRect(
-                node.x - node.radius,
-                node.y - node.radius,
-                node.radius * 2,
-                node.radius * 2
-            );
-        }
-        renderer.clearGlow();
+        if (!nodesByColor[node.color]) nodesByColor[node.color] = [];
+        nodesByColor[node.color].push(node);
     }
+
+    // Draw each color group with single glow
+    for (const [color, nodes] of Object.entries(nodesByColor)) {
+        renderer.setGlow(color, 8);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = nodes[0].alpha;
+
+        for (const node of nodes) {
+            if (node.type === 'circle') {
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                // Square node
+                ctx.fillRect(
+                    node.x - node.radius,
+                    node.y - node.radius,
+                    node.radius * 2,
+                    node.radius * 2
+                );
+            }
+        }
+    }
+    renderer.clearGlow();
     ctx.globalAlpha = 1;
 }
 
 /**
  * Draw animated pulses traveling along circuit lines
+ * Optimized: Batched by color with single setGlow per group
  */
 function drawCircuitPulses(renderer) {
     const ctx = renderer.ctx;
 
+    // Collect visible pulses and group by color
+    const pulsesByColor = {};
     for (const pulse of circuitPulses) {
         if (pulse.lineIndex >= circuitLines.length) continue;
 
@@ -2715,15 +2788,22 @@ function drawCircuitPulses(renderer) {
         const px = line.x1 + (line.x2 - line.x1) * pulse.progress;
         const py = line.y1 + (line.y2 - line.y1) * pulse.progress;
 
-        // Draw pulse glow
-        ctx.globalAlpha = 0.8;
-        renderer.setGlow(pulse.color, 15);
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(px, py, 3, 0, Math.PI * 2);
-        ctx.fill();
-        renderer.clearGlow();
+        if (!pulsesByColor[pulse.color]) pulsesByColor[pulse.color] = [];
+        pulsesByColor[pulse.color].push({ x: px, y: py });
     }
+
+    // Draw each color group with single glow
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = '#ffffff';
+    for (const [color, pulses] of Object.entries(pulsesByColor)) {
+        renderer.setGlow(color, 15);
+        for (const p of pulses) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    renderer.clearGlow();
     ctx.globalAlpha = 1;
 }
 
@@ -3100,10 +3180,10 @@ export const terrain = {
     updateCircuitPulses,
     setBiomeColors,
     updateCraters,
-    createGooStain,
-    updateGooStains,
-    renderGooStains,
-    clearGooStains,
+    addDeathZone,
+    updateDeathZones,
+    renderGooStains,  // Kept for compatibility, now a no-op
+    clearDeathZones,
     setDebugMode,
     debugDraw
 };

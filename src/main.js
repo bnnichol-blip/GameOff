@@ -416,15 +416,16 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
     const shape = tank?.shape || 'hexagon';
     const sides = tank?.sides || 6;
 
-    // MASSIVE TERRAIN DESTRUCTION (2-3x bigger)
-    const deathBlastRadius = isVoidDeath ? 150 : 200;
-    terrain.destroy(x, y, deathBlastRadius);
+    // Terrain destruction (reduced by 75%)
+    const explosionRadius = isVoidDeath ? 75 : 100;
+    terrain.destroy(x, y, explosionRadius);
 
     // Create shaped crater matching the tank that died
-    terrain.destroyShape(x, y, deathBlastRadius * 0.8, shape, sides);
+    terrain.destroyShape(x, y, explosionRadius * 0.8, shape, sides);
 
-    // Create permanent goo stain in the crater (smaller puddle that sits in crater)
-    terrain.createGooStain(x, y, deathBlastRadius * 0.25, shape, sides, color);
+    // Death zone glow radius (kept large for dramatic effect)
+    const deathGlowRadius = isVoidDeath ? 300 : 400;
+    terrain.addDeathZone(x, deathGlowRadius, color);
 
     // Shape-specific directional particle burst
     if (typeof particles.tankDeathBurst === 'function') {
@@ -523,7 +524,7 @@ function resetGame() {
     // Generate terrain with spawn positions for balancing (use virtual dimensions)
     terrain.generate(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, spawnXs, 250);  // Large edge margin to push terrain down at walls
     terrain.generateProps();  // Add stylized props (trees, buildings, pylons)
-    terrain.clearGooStains();  // Clear any goo stains from previous game
+    terrain.clearDeathZones();  // Clear death zones from previous game
 
     // Position tanks on terrain
     state.players.forEach(p => {
@@ -4994,7 +4995,7 @@ function update(dt) {
     terrain.updateCraters(dt);
 
     // Update goo stain glow timers
-    terrain.updateGooStains(dt);
+    terrain.updateDeathZones(dt);
 
     // Update lottery notifications (floating text from AI picks)
     updateLotteryNotifications(dt);
@@ -6884,11 +6885,8 @@ function render() {
         ambient.drawBackground(renderer);
     }
 
-    // Draw terrain
+    // Draw terrain (death zones are rendered as part of terrain edge coloring)
     terrain.draw(renderer, state.voidY);
-
-    // Draw goo stains from tank deaths (permanent marks in craters)
-    terrain.renderGooStains(ctx);
 
     // Draw terrain debug overlay if enabled
     terrain.debugDraw(renderer);
@@ -6896,25 +6894,8 @@ function render() {
     // Draw terrain props (trees, buildings, pylons, rocks)
     terrain.drawProps(renderer);
 
-    // === DRAW VISIBLE WORLD BOUNDARIES (bright for debugging) ===
-    ctx.strokeStyle = '#ffff00';  // Bright yellow - very visible
-    ctx.lineWidth = 6;
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = '#ffff00';
-    // Left wall
-    ctx.beginPath();
-    ctx.moveTo(WORLD_LEFT, WORLD_TOP);
-    ctx.lineTo(WORLD_LEFT, WORLD_BOTTOM);
-    ctx.stroke();
-    // Right wall
-    ctx.beginPath();
-    ctx.moveTo(WORLD_RIGHT, WORLD_TOP);
-    ctx.lineTo(WORLD_RIGHT, WORLD_BOTTOM);
-    ctx.stroke();
-    // NO ceiling line - projectiles can arc above the screen
-    // (Removed ceiling boundary for skillful high-arc shots)
-    // Clear glow
-    ctx.shadowBlur = 0;
+    // Debug boundary lines removed for performance
+    // (Yellow walls with glow were causing unnecessary draw calls)
 
     // Draw ambient midground (near clouds - after terrain for depth)
     if (ambient) {
@@ -9001,7 +8982,19 @@ let renderer;
 let lastTime = 0;
 let fpsCounter = { frames: 0, lastCheck: 0, fps: 60 };
 
+// 60 FPS cap
+const TARGET_FRAME_TIME = 1000 / 60;  // ~16.67ms
+let lastFrameTime = 0;
+
 function gameLoop(currentTime) {
+    // Skip frame if we're running faster than 60 FPS
+    const elapsed = currentTime - lastFrameTime;
+    if (elapsed < TARGET_FRAME_TIME) {
+        requestAnimationFrame(gameLoop);
+        return;
+    }
+    lastFrameTime = currentTime;
+
     const now = performance.now();
     let dt = Math.min((currentTime - lastTime) / 1000, 0.1);
     lastTime = currentTime;
