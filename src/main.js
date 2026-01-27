@@ -19,6 +19,33 @@ import { WEAPON_TIERS, WEAPONS, WEAPON_KEYS, ORBITAL_WEAPON_KEYS, TANK_TYPES, TA
          LOTTERY_RARITY_RATES, LOTTERY_RARITY_COLORS, WEAPONS_BY_RARITY, WEAPON_RARITY_MAP } from './weaponData.js';
 
 // ============================================================================
+// Timer Management (prevents timer queue buildup during effects)
+// ============================================================================
+
+const timerManager = {
+    timers: [],
+
+    schedule(callback, delay) {
+        const id = setTimeout(() => {
+            callback();
+            this.remove(id);
+        }, delay);
+        this.timers.push(id);
+        return id;
+    },
+
+    remove(id) {
+        const idx = this.timers.indexOf(id);
+        if (idx !== -1) this.timers.splice(idx, 1);
+    },
+
+    clearAll() {
+        this.timers.forEach(clearTimeout);
+        this.timers = [];
+    }
+};
+
+// ============================================================================
 // Biome Color Themes
 // ============================================================================
 
@@ -508,6 +535,9 @@ function resetToTitle() {
 }
 
 function resetGame() {
+    // Clear all pending timers from previous game (prevents memory buildup)
+    timerManager.clearAll();
+
     const humanCount = state.humanPlayerCount || 1;
 
     // Create players and get spawn positions
@@ -1220,6 +1250,181 @@ function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
     return Math.sqrt(dx * dx + dy * dy);
 }
 
+/**
+ * Trigger a strafing run from the targeting projectile.
+ * This is the centralized handler for when a STRAFING_RUN projectile lands
+ * (whether on floor or ceiling). It spawns fighters and sets up the run.
+ * @param {Object} proj - The targeting projectile
+ */
+function triggerStrafingRun(proj) {
+    const weapon = WEAPONS.STRAFING_RUN;
+    const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    const direction = Math.random() < 0.5 ? 1 : -1;
+    const fighterCount = weapon.fighterCount || 4;
+    const fighters = [];
+
+    // Spawn fighters off-screen
+    for (let i = 0; i < fighterCount; i++) {
+        fighters.push({
+            x: direction === 1 ? -100 - i * 60 : VIRTUAL_WIDTH + 100 + i * 60,
+            y: VIRTUAL_HEIGHT * 0.12 + (Math.random() - 0.5) * 50,
+            shotsFired: 0
+        });
+    }
+
+    state.strafingRuns.push({
+        targetX: proj.x,
+        phase: 'warning',
+        timer: 0,
+        direction: direction,
+        fighters: fighters,
+        firedByPlayer: firingPlayer,
+        weaponKey: proj.weaponKey,
+        color: proj.color,
+        coverageWidth: weapon.coverageWidth || 400,
+        pendingTurnEnd: true  // Turn ends when strafing run completes
+    });
+
+    // Restore previous weapon (orbital weapons are one-time use)
+    const player = state.players[firingPlayer];
+    if (state.storedWeapons[firingPlayer]) {
+        player.weapon = state.storedWeapons[firingPlayer];
+        state.storedWeapons[firingPlayer] = null;
+    } else {
+        player.weapon = 'MORTAR';  // Fallback
+    }
+
+    // Visual feedback - marker lands
+    particles.sparks(proj.x, proj.y, 20, '#ffff00');
+    renderer.addScreenShake(8);
+    audio.playBounce();
+
+    // Clear projectile and stay in firing phase
+    state.projectile = null;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();  // For safety timeout
+}
+
+/**
+ * Handle ceiling collision for a projectile.
+ * @param {Object} proj - The projectile to check
+ * @returns {string|null} 'bounced', 'landed', 'final_bounce', 'explode', or null (no ceiling hit)
+ */
+function handleCeilingCollision(proj) {
+    if (!terrain.isPointInCeiling(proj.x, proj.y)) {
+        return null;  // No ceiling collision
+    }
+
+    const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
+    const ceilingY = terrain.getCeilingAt(proj.x);
+
+    // Strafing bullets always explode (coming from above)
+    if (proj.isStrafeBullet) return 'explode';
+
+    // BOUNCER behavior - bounce off ceiling like pinball
+    if (weapon && weapon.behavior === 'bouncer') {
+        // Calculate ceiling slope for reflection
+        const slope = terrain.getCeilingSlopeAt(proj.x);
+
+        // Calculate ceiling normal (perpendicular to surface, pointing DOWN)
+        const normalLen = Math.sqrt(slope * slope + 1);
+        const nx = -slope / normalLen;
+        const ny = 1 / normalLen;  // Positive because normal points DOWN from ceiling
+
+        // Reflect velocity: v' = v - 2(v·n)n
+        const dot = proj.vx * nx + proj.vy * ny;
+        proj.vx = (proj.vx - 2 * dot * nx) * 0.85;  // Energy loss on bounce
+        proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
+
+        // Ensure minimum DOWNWARD velocity so it doesn't get stuck in ceiling
+        if (proj.vy < 3) proj.vy = 3;
+
+        // Move projectile below ceiling surface
+        if (ceilingY !== null) {
+            proj.y = ceilingY + proj.radius + 2;
+        }
+
+        // Trigger bounce effects
+        onBounce(proj);
+        particles.sparks(proj.x, proj.y, 20, proj.color);
+        particles.sparks(proj.x, proj.y, 10, '#ffffff');
+        audio.playBounce();
+
+        // Check if out of bounces
+        return proj.bounces >= proj.maxBounces ? 'final_bounce' : 'bounced';
+    }
+
+    // VOID_SPLITTER landing behavior - land on ceiling, pause, then spawn rising homing fragments
+    if (weapon && weapon.behavior === 'voidSplitterLand' && !proj.isVoidLanded) {
+        proj.isVoidLanded = true;
+        proj.voidPauseTimer = weapon.pauseDuration || 1.0;
+        proj.vx = 0;
+        proj.vy = 0;
+        // Place on ceiling surface (just below it)
+        if (ceilingY !== null) {
+            proj.y = ceilingY + proj.radius;
+        }
+        // Visual feedback - ominous landing
+        particles.explosion(proj.x, proj.y, 30, '#aa00ff', 40);
+        particles.sparks(proj.x, proj.y, 15, '#660088');
+        renderer.addScreenShake(8);
+        audio.playBounce();
+        return 'landed';
+    }
+
+    // BOUNCING BETTY / BOUNCE DAMAGE UP behavior - bounces off ceiling with increasing damage
+    if (weapon && (weapon.behavior === 'bounceDamageUp' || weapon.behavior === 'bouncingBetty')) {
+        // Calculate ceiling slope for reflection
+        const slope = terrain.getCeilingSlopeAt(proj.x);
+        const normalLen = Math.sqrt(slope * slope + 1);
+        const nx = -slope / normalLen;
+        const ny = 1 / normalLen;  // Points DOWN from ceiling
+
+        const dot = proj.vx * nx + proj.vy * ny;
+        proj.vx = (proj.vx - 2 * dot * nx) * 0.9;
+        proj.vy = (proj.vy - 2 * dot * ny) * 0.9;
+
+        // Ensure good bounce - push DOWNWARD
+        if (proj.vy < 4) proj.vy = 4;
+
+        // Position below ceiling
+        if (ceilingY !== null) {
+            proj.y = ceilingY + proj.radius + 2;
+        }
+
+        // Track damage modifier
+        proj.accumulatedDamageBonus = (proj.accumulatedDamageBonus || 0) + (weapon.bounceDamageModifier || 0);
+
+        onBounce(proj);
+        particles.sparks(proj.x, proj.y, 15, proj.color);
+        audio.playBounce();
+
+        return proj.bounces >= proj.maxBounces ? 'final_bounce' : 'bounced';
+    }
+
+    // ROLLER behavior - hits ceiling, falls off immediately
+    if (weapon && weapon.behavior === 'roller' && !proj.isRolling) {
+        // Don't start rolling mode - just bounce off and fall
+        if (ceilingY !== null) {
+            proj.y = ceilingY + proj.radius + 2;
+        }
+        // Reverse/dampen vertical velocity, keep horizontal
+        proj.vy = Math.abs(proj.vy) * 0.5;  // Now moving downward
+        // Visual feedback
+        particles.sparks(proj.x, proj.y, 15, proj.color);
+        audio.playBounce();
+        return 'bounced';
+    }
+
+    // STRAFING RUN behavior - trigger the strafing run on ceiling hit (same as floor)
+    if (weapon && weapon.behavior === 'strafingRun') {
+        return 'trigger_strafing';
+    }
+
+    // Default: Ceiling hit - explode
+    return 'explode';
+}
+
 function updateProjectile(dt) {
     const proj = state.projectile;
     if (!proj) return;
@@ -1245,8 +1450,11 @@ function updateProjectile(dt) {
     for (const hole of state.blackHoles) {
         const dx = hole.x - proj.x;
         const dy = hole.y - proj.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < hole.pullRadius && dist > 10) {
+        const distSq = dx * dx + dy * dy;
+        const pullRadiusSq = hole.pullRadius * hole.pullRadius;
+        // Only compute sqrt when within pull radius (avoids expensive sqrt in hot path)
+        if (distSq < pullRadiusSq && distSq > 100) {
+            const dist = Math.sqrt(distSq);
             const force = hole.pullStrength * (1 - dist / hole.pullRadius);
             proj.vx += (dx / dist) * force;
             proj.vy += (dy / dist) * force;
@@ -1713,120 +1921,22 @@ function updateProjectile(dt) {
 
     // Check projectile termination conditions (Codex suggestion)
     // When moving downward, check ceiling FIRST - the "roof" should be hit before the floor
-    if (terrain.isPointInCeiling(proj.x, proj.y)) {
-        const projWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-        const ceilingY = terrain.getCeilingAt(proj.x);
-
-        // BOUNCER behavior - bounce off ceiling like pinball
-        if (projWeapon && projWeapon.behavior === 'bouncer') {
-            // Calculate ceiling slope for reflection
-            const slope = terrain.getCeilingSlopeAt(proj.x);
-
-            // Calculate ceiling normal (perpendicular to surface, pointing DOWN)
-            // For ceiling, normal points into the room (opposite of ground)
-            const normalLen = Math.sqrt(slope * slope + 1);
-            const nx = -slope / normalLen;
-            const ny = 1 / normalLen;  // Positive because normal points DOWN from ceiling
-
-            // Reflect velocity: v' = v - 2(v·n)n
-            const dot = proj.vx * nx + proj.vy * ny;
-            proj.vx = (proj.vx - 2 * dot * nx) * 0.85;  // Energy loss on bounce
-            proj.vy = (proj.vy - 2 * dot * ny) * 0.85;
-
-            // Ensure minimum DOWNWARD velocity so it doesn't get stuck in ceiling
-            if (proj.vy < 3) proj.vy = 3;
-
-            // Move projectile below ceiling surface
-            if (ceilingY !== null) {
-                proj.y = ceilingY + proj.radius + 2;
-            }
-
-            // Trigger bounce effects
-            onBounce(proj);
-            particles.sparks(proj.x, proj.y, 20, proj.color);
-            particles.sparks(proj.x, proj.y, 10, '#ffffff');
-            audio.playBounce();
-
-            // Check if out of bounces
-            if (proj.bounces >= proj.maxBounces) {
-                proj.isFinalBounce = true;
-                onExplode(proj);
-                state.projectile = null;
-            }
-            return;
-        }
-
-        // VOID_SPLITTER landing behavior - land on ceiling, pause, then spawn rising homing fragments
-        if (projWeapon && projWeapon.behavior === 'voidSplitterLand' && !proj.isVoidLanded) {
-            proj.isVoidLanded = true;
-            proj.voidPauseTimer = projWeapon.pauseDuration || 1.0;
-            proj.vx = 0;
-            proj.vy = 0;
-            // Place on ceiling surface (just below it)
-            if (ceilingY !== null) {
-                proj.y = ceilingY + proj.radius;
-            }
-            // Visual feedback - ominous landing
-            particles.explosion(proj.x, proj.y, 30, '#aa00ff', 40);
-            particles.sparks(proj.x, proj.y, 15, '#660088');
-            renderer.addScreenShake(8);
-            audio.playBounce();
-            return;
-        }
-
-        // BOUNCING BETTY / BOUNCE DAMAGE UP behavior - bounces off ceiling with increasing damage
-        if (projWeapon && (projWeapon.behavior === 'bounceDamageUp' || projWeapon.behavior === 'bouncingBetty')) {
-            // Calculate ceiling slope for reflection
-            const slope = terrain.getCeilingSlopeAt(proj.x);
-            const normalLen = Math.sqrt(slope * slope + 1);
-            const nx = -slope / normalLen;
-            const ny = 1 / normalLen;  // Points DOWN from ceiling
-
-            const dot = proj.vx * nx + proj.vy * ny;
-            proj.vx = (proj.vx - 2 * dot * nx) * 0.9;
-            proj.vy = (proj.vy - 2 * dot * ny) * 0.9;
-
-            // Ensure good bounce - push DOWNWARD
-            if (proj.vy < 4) proj.vy = 4;
-
-            // Position below ceiling
-            if (ceilingY !== null) {
-                proj.y = ceilingY + proj.radius + 2;
-            }
-
-            // Track damage modifier
-            proj.accumulatedDamageBonus = (proj.accumulatedDamageBonus || 0) + (projWeapon.bounceDamageModifier || 0);
-
-            onBounce(proj);
-            particles.sparks(proj.x, proj.y, 15, proj.color);
-            audio.playBounce();
-
-            if (proj.bounces >= proj.maxBounces) {
-                proj.isFinalBounce = true;
-                onExplode(proj);
-                state.projectile = null;
-            }
-            return;
-        }
-
-        // ROLLER behavior - hits ceiling, falls off immediately
-        if (projWeapon && projWeapon.behavior === 'roller' && !proj.isRolling) {
-            // Don't start rolling mode - just bounce off and fall
-            // Position below ceiling surface
-            if (ceilingY !== null) {
-                proj.y = ceilingY + proj.radius + 2;
-            }
-            // Reverse/dampen vertical velocity, keep horizontal
-            proj.vy = Math.abs(proj.vy) * 0.5;  // Now moving downward
-            // Visual feedback
-            particles.sparks(proj.x, proj.y, 15, proj.color);
-            audio.playBounce();
-            return; // Continue falling, will start rolling when it hits ground
-        }
-
-        // Default: Ceiling hit - explode
+    const ceilingResult = handleCeilingCollision(proj);
+    if (ceilingResult === 'bounced' || ceilingResult === 'landed') return;
+    if (ceilingResult === 'final_bounce') {
+        proj.isFinalBounce = true;
         onExplode(proj);
         state.projectile = null;
+        return;
+    }
+    if (ceilingResult === 'explode') {
+        onExplode(proj);
+        state.projectile = null;
+        return;
+    }
+    // STRAFING RUN hit ceiling - trigger the strafing run
+    if (ceilingResult === 'trigger_strafing') {
+        triggerStrafingRun(proj);
         return;
     }
 
@@ -2013,46 +2123,7 @@ function updateProjectile(dt) {
 
         // STRAFING RUN behavior - mark target area and start warning
         if (projWeapon && projWeapon.behavior === 'strafingRun') {
-            const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-            const direction = Math.random() < 0.5 ? 1 : -1;
-            const fighterCount = projWeapon.fighterCount || 4;
-            const fighters = [];
-            // Spawn fighters off-screen
-            for (let i = 0; i < fighterCount; i++) {
-                fighters.push({
-                    x: direction === 1 ? -100 - i * 60 : VIRTUAL_WIDTH + 100 + i * 60,
-                    y: VIRTUAL_HEIGHT * 0.12 + (Math.random() - 0.5) * 50,
-                    shotsFired: 0
-                });
-            }
-            state.strafingRuns.push({
-                targetX: proj.x,
-                phase: 'warning',
-                timer: 0,
-                direction: direction,
-                fighters: fighters,
-                firedByPlayer: firingPlayer,
-                weaponKey: proj.weaponKey,
-                color: proj.color,
-                coverageWidth: projWeapon.coverageWidth || 400,
-                pendingTurnEnd: true  // Turn ends when strafing run completes
-            });
-            // Restore previous weapon (orbital weapons are one-time use)
-            const player = state.players[firingPlayer];
-            if (state.storedWeapons[firingPlayer]) {
-                player.weapon = state.storedWeapons[firingPlayer];
-                state.storedWeapons[firingPlayer] = null;
-            } else {
-                player.weapon = 'MORTAR';  // Fallback
-            }
-            // Visual feedback - marker lands
-            particles.sparks(proj.x, proj.y, 20, '#ffff00');
-            renderer.addScreenShake(8);
-            audio.playBounce();
-            state.projectile = null;
-            // Stay in firing phase - turn ends when strafing run completes
-            state.phase = 'firing';
-            state.firingStartTime = performance.now();  // For safety timeout
+            triggerStrafingRun(proj);
             return;
         }
 
@@ -2108,6 +2179,12 @@ function updateProjectile(dt) {
                 onExplode(proj);
                 state.projectile = null;
             }
+            return;
+        }
+
+        // STRAFING RUN - trigger the strafing run on ceiling hit (fallback check)
+        if (projWeapon && projWeapon.behavior === 'strafingRun') {
+            triggerStrafingRun(proj);
             return;
         }
 
@@ -2295,6 +2372,14 @@ function onExplode(proj) {
         if (idx > -1) state.projectiles.splice(idx, 1);
 
         return;  // Done - don't fall through to normal weapon handling
+    }
+
+    // === STRAFING RUN MAIN PROJECTILE - Trigger the run, don't explode ===
+    // This is the CRITICAL catch-all: if a STRAFING_RUN projectile reaches onExplode,
+    // trigger the strafing run instead of exploding with 400px blast radius
+    if (proj.weaponKey === 'STRAFING_RUN' && !proj.isStrafeBullet) {
+        triggerStrafingRun(proj);
+        return;  // Don't explode - strafing run triggered
     }
 
     // Handle fragments (sub-projectiles without weaponKey) - simple explosion
@@ -4972,6 +5057,9 @@ function update(dt) {
         ambient.update(dt, state.voidY, state.players, state.wind, isWindBlast);
     }
 
+    // Flush batched terrain syncs (processes all terrain changes since last frame)
+    terrain.flushTerrainSync();
+
     // Update terrain circuit pulse animations
     terrain.updateCircuitPulses(dt);
 
@@ -5512,7 +5600,10 @@ function update(dt) {
 /**
  * Update fire fields (Napalm) - tick damage and expire
  */
+const MAX_FIRE_PARTICLES_PER_FRAME = 15;  // Cap fire particles to prevent unbounded growth
 function updateFields(dt) {
+    let fireParticlesThisFrame = 0;
+
     for (let i = state.fields.length - 1; i >= 0; i--) {
         const field = state.fields[i];
 
@@ -5525,14 +5616,15 @@ function updateFields(dt) {
             continue;
         }
 
-        // Spawn fire particles across the burn area (increased for visual polish)
-        // Multiple particles per frame to match the wider erosion area
-        const particleChance = 0.5;  // Higher spawn rate
-        for (let p = 0; p < 3; p++) {  // Up to 3 particles per frame
+        // Spawn fire particles across the burn area (capped per frame)
+        const particleChance = 0.5;
+        for (let p = 0; p < 3; p++) {
+            if (fireParticlesThisFrame >= MAX_FIRE_PARTICLES_PER_FRAME) break;
             if (Math.random() < particleChance) {
                 const px = field.x + (Math.random() - 0.5) * field.radius * 2;
                 const py = terrain.getHeightAt(px) - Math.random() * 25;
                 particles.trail(px, py, Math.random() < 0.5 ? '#ff4400' : '#ffaa00');
+                fireParticlesThisFrame++;
             }
         }
 
@@ -5627,12 +5719,16 @@ function updateBlackHoles(dt) {
         // Increment timer
         hole.timer += dt;
 
+        // Precompute squared radius once per hole (avoids repeated multiplication)
+        const pullRadiusSq = hole.pullRadius * hole.pullRadius;
+
         // Pull projectiles toward center
         if (state.projectile) {
             const dx = hole.x - state.projectile.x;
             const dy = hole.y - state.projectile.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < hole.pullRadius && dist > 10) {
+            const distSq = dx * dx + dy * dy;
+            if (distSq < pullRadiusSq && distSq > 100) {
+                const dist = Math.sqrt(distSq);
                 const force = hole.pullStrength * (1 - dist / hole.pullRadius);
                 state.projectile.vx += (dx / dist) * force;
                 state.projectile.vy += (dy / dist) * force;
@@ -5641,8 +5737,9 @@ function updateBlackHoles(dt) {
         for (const proj of state.projectiles) {
             const dx = hole.x - proj.x;
             const dy = hole.y - proj.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < hole.pullRadius && dist > 10) {
+            const distSq = dx * dx + dy * dy;
+            if (distSq < pullRadiusSq && distSq > 100) {
+                const dist = Math.sqrt(distSq);
                 const force = hole.pullStrength * (1 - dist / hole.pullRadius);
                 proj.vx += (dx / dist) * force;
                 proj.vy += (dy / dist) * force;
@@ -5656,8 +5753,9 @@ function updateBlackHoles(dt) {
                 if (player.health <= 0) continue;
                 const dx = hole.x - player.x;
                 const dy = hole.y - player.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < hole.pullRadius && dist > 20) {
+                const distSq = dx * dx + dy * dy;
+                if (distSq < pullRadiusSq && distSq > 400) {
+                    const dist = Math.sqrt(distSq);
                     // Strong pull that increases as timer progresses
                     const timeScale = 1 + (hole.timer / hole.duration);
                     const force = hole.pullStrength * (1 - dist / hole.pullRadius) * tankMult * timeScale;
@@ -6099,9 +6197,12 @@ function updateStrafingRuns(dt) {
         }
 
         if (run.phase === 'done') {
-            // Check if all strafing bullets have resolved
-            const strafeBullets = state.projectiles.filter(p => p.isStrafeBullet);
-            if (strafeBullets.length === 0) {
+            // Check if all strafing bullets have resolved (early exit loop, no array allocation)
+            let hasStrafeBullets = false;
+            for (const p of state.projectiles) {
+                if (p.isStrafeBullet) { hasStrafeBullets = true; break; }
+            }
+            if (!hasStrafeBullets) {
                 state.strafingRuns.splice(i, 1);
                 // Let tryEndTurn check for other pending effects
                 if (run.pendingTurnEnd) {
@@ -6590,8 +6691,10 @@ function updateClusterBomblet(proj, dt) {
     for (const hole of state.blackHoles) {
         const dx = hole.x - proj.x;
         const dy = hole.y - proj.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < hole.pullRadius && dist > 10) {
+        const distSq = dx * dx + dy * dy;
+        const pullRadiusSq = hole.pullRadius * hole.pullRadius;
+        if (distSq < pullRadiusSq && distSq > 100) {
+            const dist = Math.sqrt(distSq);
             const force = hole.pullStrength * (1 - dist / hole.pullRadius);
             proj.vx += (dx / dist) * force;
             proj.vy += (dy / dist) * force;
@@ -6673,14 +6776,24 @@ function updateClusterBomblet(proj, dt) {
     // Check termination
     // FIX: Only check bounce limit if maxBounces > 0 (prevents meteors with maxBounces=0 from instant exploding)
     const hitBounceLimitCheck = proj.maxBounces > 0 && proj.bounces >= proj.maxBounces;
-    const movingDown = proj.vy > 0;  // Projectile falling
 
-    // When moving downward, check ceiling FIRST (roof hit before floor)
-    const hitCeiling = movingDown ?
-        (terrain.isPointInCeiling(proj.x, proj.y) || terrain.isPointBelowTerrain(proj.x, proj.y)) :
-        (terrain.isPointBelowTerrain(proj.x, proj.y) || terrain.isPointInCeiling(proj.x, proj.y));
+    // Check ceiling collision FIRST - use shared handler for consistent bounce behavior
+    const ceilingResult = handleCeilingCollision(proj);
+    if (ceilingResult === 'bounced' || ceilingResult === 'landed') {
+        return;  // Continue flying - handled by ceiling bounce logic
+    }
+    if (ceilingResult === 'final_bounce') {
+        proj.isFinalBounce = true;
+        onExplode(proj);
+        return;
+    }
+    if (ceilingResult === 'explode') {
+        onExplode(proj);
+        return;
+    }
 
-    if (hitCeiling ||
+    // Check floor collision and other termination conditions
+    if (terrain.isPointBelowTerrain(proj.x, proj.y) ||
         proj.y > state.voidY ||
         proj.y > VIRTUAL_HEIGHT + 100 ||
         hitBounceLimitCheck) {

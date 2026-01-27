@@ -30,6 +30,7 @@ let currentBiomeColors = {
 let craters = [];  // { x, y, radius, heat: 1.0 }
 
 // Death zones from tank deaths (areas where terrain edge glows in tank's color)
+const MAX_DEATH_ZONES = 8;  // Cap to prevent unbounded growth
 let deathZones = [];  // { x, radius, color, r, g, b } - areas where terrain edge glows differently
 
 // Cached edge segments for performance (rebuilt when zones change)
@@ -42,6 +43,11 @@ let cachedEdgeRGB = { r: 0, g: 255, b: 255 };  // Default cyan
 // Ceiling system for cavern overhangs
 let ceilingHeights = null;  // Second heightmap for ceiling, null = no ceiling
 let ceilingRegions = [];    // [{startX, endX}] for efficient queries
+
+// Batched terrain sync state (avoids O(width) sync on every destruction)
+let terrainSyncDirty = false;
+let dirtyMinX = Infinity;
+let dirtyMaxX = -Infinity;
 
 // Current terrain style (for display)
 let currentTerrainStyle = { base: 'ROLLING_HILLS', feature: null };
@@ -1110,7 +1116,7 @@ export function setHeightAt(x, newHeight) {
     if (!heights || x < 0 || x >= width) return;
     const xi = Math.floor(x);
     heights[xi] = newHeight;
-    syncCeilingState();
+    markTerrainDirty(xi, xi);
 }
 
 /**
@@ -1265,6 +1271,39 @@ function rebuildCeilingRegions() {
 }
 
 /**
+ * Clear orphaned ceiling heights - remove height data for X coordinates
+ * that are no longer part of any ceiling region.
+ * This prevents visual artifacts from destroyed ceiling sections.
+ */
+function clearOrphanedCeilingHeights() {
+    if (!ceilingHeights) return;
+
+    // If no ceiling regions exist, clear all ceiling heights
+    if (ceilingRegions.length === 0) {
+        ceilingHeights.fill(0);
+        return;
+    }
+
+    // For each X coordinate, check if it's within any region
+    for (let x = 0; x < width; x++) {
+        if (ceilingHeights[x] <= 0) continue;
+
+        let inRegion = false;
+        for (const region of ceilingRegions) {
+            if (x >= region.startX && x <= region.endX) {
+                inRegion = true;
+                break;
+            }
+        }
+
+        // If not in any region, clear this orphaned height
+        if (!inRegion) {
+            ceilingHeights[x] = 0;
+        }
+    }
+}
+
+/**
  * Synchronize ceiling state after terrain modifications.
  * Implements skylight logic: when floor destruction meets ceiling, clear the ceiling
  * to prevent visual artifacts from layer inversion.
@@ -1292,6 +1331,51 @@ function syncCeilingState() {
     }
 
     rebuildCeilingRegions();
+    clearOrphanedCeilingHeights();  // Clean up any orphaned height data
+}
+
+/**
+ * Mark a region as needing ceiling sync (batched for performance)
+ * Call flushTerrainSync() once per frame to apply all pending syncs
+ */
+function markTerrainDirty(minX, maxX) {
+    terrainSyncDirty = true;
+    dirtyMinX = Math.min(dirtyMinX, minX);
+    dirtyMaxX = Math.max(dirtyMaxX, maxX);
+}
+
+/**
+ * Flush all pending terrain syncs (call once per frame from main.js)
+ * This batches multiple destruction events into a single sync operation
+ */
+export function flushTerrainSync() {
+    if (!terrainSyncDirty) return;
+    if (!ceilingHeights || !heights) {
+        terrainSyncDirty = false;
+        return;
+    }
+
+    const minGap = 60;
+    const startX = Math.max(0, Math.floor(dirtyMinX));
+    const endX = Math.min(width - 1, Math.ceil(dirtyMaxX));
+
+    // Only process dirty range instead of full width
+    for (let x = startX; x <= endX; x++) {
+        if (ceilingHeights[x] > 0) {
+            const gap = heights[x] - ceilingHeights[x];
+            if (gap < minGap) {
+                ceilingHeights[x] = 0;
+            }
+        }
+    }
+
+    rebuildCeilingRegions();
+    clearOrphanedCeilingHeights();
+
+    // Reset dirty state
+    terrainSyncDirty = false;
+    dirtyMinX = Infinity;
+    dirtyMaxX = -Infinity;
 }
 
 /**
@@ -1345,8 +1429,8 @@ export function burn(cx, radius, amount) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 /**
@@ -1404,8 +1488,8 @@ export function destroy(cx, cy, radius) {
         craters.push({ x: cx, y: cy, radius: radius, heat: 1.0 });
     }
 
-    // Sync ceiling state - validates separation and rebuilds regions
-    syncCeilingState();
+    // Mark terrain dirty for batched sync (call flushTerrainSync once per frame)
+    markTerrainDirty(startX, endX);
 }
 
 // ============================================================================
@@ -1651,8 +1735,8 @@ export function destroyShape(cx, cy, radius, shape = 'circle', sides = 6) {
         craters.push({ x: cx, y: cy, radius: radius, heat: 1.0 });
     }
 
-    // Sync ceiling state
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 // ============================================================================
@@ -1694,8 +1778,8 @@ export function raise(cx, cy, radius) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 // ============================================================================
@@ -1771,8 +1855,8 @@ export function raiseJagged(cx, cy, radius, voidY = 9999) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 /**
@@ -1839,8 +1923,8 @@ export function digJagged(cx, cy, radius, voidY = 9999) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 // ============================================================================
@@ -1885,8 +1969,8 @@ export function carveToVoid(cx, beamWidth, voidY) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    markTerrainDirty(startX, endX);
 }
 
 // ============================================================================
@@ -1931,9 +2015,13 @@ export function carveFissure(cx, cy, length, depth, angle = 0) {
     }
 
     // Apply fissure to terrain (only affects heights where crack intersects)
+    let minX = Infinity, maxX = -Infinity;
     for (const fp of fissurePoints) {
         const x = Math.floor(fp.x);
         if (x < 0 || x >= width) continue;
+
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
 
         const terrainY = heights[x];
         const fissureBottom = terrainY + fp.depth;
@@ -1944,8 +2032,10 @@ export function carveFissure(cx, cy, length, depth, angle = 0) {
         }
     }
 
-    // Sync ceiling state after floor modification
-    syncCeilingState();
+    // Mark terrain dirty for batched sync
+    if (minX !== Infinity) {
+        markTerrainDirty(minX, maxX);
+    }
 
     // Return fissure points for visual effects
     return fissurePoints.map(p => ({
@@ -2135,6 +2225,10 @@ function parseHexColor(hex) {
  * @param {string} color - Tank's color (hex)
  */
 export function addDeathZone(cx, radius, color) {
+    // Remove oldest zone if at capacity (prevents unbounded growth)
+    if (deathZones.length >= MAX_DEATH_ZONES) {
+        deathZones.shift();
+    }
     const rgb = parseHexColor(color);
     deathZones.push({
         x: cx,
@@ -3185,5 +3279,6 @@ export const terrain = {
     renderGooStains,  // Kept for compatibility, now a no-op
     clearDeathZones,
     setDebugMode,
-    debugDraw
+    debugDraw,
+    flushTerrainSync
 };

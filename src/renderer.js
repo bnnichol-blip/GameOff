@@ -285,20 +285,27 @@ export class Renderer {
     // ========================================================================
     // Void (rising danger zone)
     // ========================================================================
-    
+
+    // Cached void gradient to avoid recreation every frame
+    _cachedVoidGradient = null;
+    _cachedVoidY = null;
+
     drawVoid(voidY, virtualWidth = null, virtualHeight = null) {
         // Use virtual dimensions if provided (for scaled world rendering)
         // Otherwise fall back to canvas dimensions
         const drawWidth = virtualWidth || this.width * 2;  // Default to 2x canvas for scaled contexts
         const drawHeight = virtualHeight || this.height * 2;
 
-        // Gradient from purple to black
-        const gradient = this.ctx.createLinearGradient(0, voidY - 50, 0, voidY + 100);
-        gradient.addColorStop(0, 'transparent');
-        gradient.addColorStop(0.3, COLORS.voidPurple);
-        gradient.addColorStop(1, '#0a0010');
+        // Cache gradient - only recreate when voidY changes
+        if (this._cachedVoidY !== voidY) {
+            this._cachedVoidGradient = this.ctx.createLinearGradient(0, voidY - 50, 0, voidY + 100);
+            this._cachedVoidGradient.addColorStop(0, 'transparent');
+            this._cachedVoidGradient.addColorStop(0.3, COLORS.voidPurple);
+            this._cachedVoidGradient.addColorStop(1, '#0a0010');
+            this._cachedVoidY = voidY;
+        }
 
-        this.ctx.fillStyle = gradient;
+        this.ctx.fillStyle = this._cachedVoidGradient;
         this.ctx.fillRect(0, voidY - 50, drawWidth, drawHeight - voidY + 50);
 
         // Glowing edge line
