@@ -14,7 +14,6 @@
 // ============================================================================
 
 import { state } from './state.js';
-// NOTE: Archetype functions removed - all tanks now have identical gameplay
 import { WEAPONS, TANK_TYPES } from './weaponData.js';
 import { particles } from './particles.js';
 import { terrain } from './terrain.js';
@@ -39,7 +38,7 @@ const WORLD_TOP = WALL_MARGIN;
 // ============================================================================
 
 /**
- * Check if a player is immune to knockback (placeholder for archetype ability)
+ * Check if a player is immune to knockback
  */
 function isKnockbackImmune(player) {
     return false;
@@ -791,8 +790,7 @@ function applyDyingLightEffects(proj, weapon, firingPlayerIdx, effectiveBlastRad
             if (dist < weapon.shockwaveRadius) {
                 const falloff = 1 - (dist / weapon.shockwaveRadius);
                 const shockDmg = weapon.shockwaveDamage * falloff;
-                // No archetype damage reduction - all tanks have identical gameplay
-                player.health = Math.max(0, player.health - shockDmg);
+                                player.health = Math.max(0, player.health - shockDmg);
 
                 // Shockwave hit visual
                 particles.sparks(player.x, player.y, 25, '#ffffff');
@@ -842,8 +840,7 @@ function applyDyingLightEffects(proj, weapon, firingPlayerIdx, effectiveBlastRad
                     if (dist < chainRadius) {
                         const falloff = 1 - (dist / chainRadius);
                         const dmg = chainDamage * falloff;
-                        // No archetype damage reduction - all tanks have identical gameplay
-                        player.health = Math.max(0, player.health - dmg);
+                                                player.health = Math.max(0, player.health - dmg);
                         particles.sparks(player.x, player.y, 20, '#ff6600');
 
                         if (player.health <= 0 && triggerDeathExplosionCallback) {

@@ -46,7 +46,6 @@ function createPlayers(count) {
             charging: false,
             color: colors[i],
             type: 'SIEGE',
-            archetype: null,
             isAI: i >= 2,  // Players beyond first 2 are AI by default
             coins: 0,
             kills: 0,
@@ -69,11 +68,11 @@ export const state = {
     currentPlayer: 0,
     turnCount: 0,
     round: 1,        // Stable round counter (incremented after all NUM_PLAYERS have taken a turn)
-    phase: 'title',  // 'title' | 'mode_select' | 'archetype_select' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
+    phase: 'title',  // 'title' | 'mode_select' | 'tank_select' | 'aiming' | 'firing' | 'resolving' | 'shop' | 'gameover'
     selectIndex: 0,  // Current selection in menus
     gameMode: null,  // '1p' | 'mp' (multiplayer)
     humanPlayerCount: 2,      // Number of human players (1-4)
-    selectingPlayerIndex: 0,  // Which player is currently selecting archetype (0-3)
+    selectingPlayerIndex: 0,  // Which player is currently selecting tank (0-3)
     shoppingPlayerIndex: 0,   // Which human player is currently shopping
     projectile: null,
     projectiles: [],  // For cluster bombs (multiple projectiles)
@@ -196,14 +195,3 @@ export function getCurrentPlayer() {
     return state.players[state.currentPlayer];
 }
 
-/**
- * NOTE: Archetype passive functions removed - all tanks now have identical gameplay
- * These functions are kept as stubs for backwards compatibility with existing imports
- */
-export function getArchetype(player) { return null; }
-export function getArchetypeDamageMultiplier(player) { return 1; }
-export function getArchetypeDamageReduction(player) { return 0; }
-export function getArchetypeHomingStrength(player) { return 0; }
-export function getArchetypeHoverHeight(player) { return 0; }
-export function getArchetypeBonusBounces(player) { return 0; }
-export function getArchetypeFallSpeedMult(player) { return 1; }

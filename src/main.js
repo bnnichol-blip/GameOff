@@ -157,7 +157,6 @@ function createPlayers(numPlayers, humanCount = numPlayers) {
             health: 100,
             color: PLAYER_COLORS[i % PLAYER_COLORS.length],
             tankId: null,         // Tank cosmetic ID (from TANKS array)
-            archetype: null,      // DEPRECATED: Tank archetype (ability) - kept for migration
             tankType: null,       // Legacy - kept for compatibility
             isAI: i >= humanCount,  // Players beyond human count are AI
             shield: 0,
@@ -183,11 +182,11 @@ const state = {
     currentPlayer: 0,
     turnCount: 0,
     round: 1,        // Stable round counter (incremented after all NUM_PLAYERS have taken a turn)
-    phase: 'title',  // 'title' | 'mode_select' | 'archetype_select' | 'lottery' | 'aiming' | 'firing' | 'resolving' | 'gameover'
+    phase: 'title',  // 'title' | 'mode_select' | 'tank_select' | 'lottery' | 'aiming' | 'firing' | 'resolving' | 'gameover'
     selectIndex: 0,  // Current selection in menus
     gameMode: null,  // '1p' | 'mp' (multiplayer)
     humanPlayerCount: 2,      // Number of human players (1-4)
-    selectingPlayerIndex: 0,  // Which player is currently selecting archetype (0-3)
+    selectingPlayerIndex: 0,  // Which player is currently selecting tank (0-3)
     projectile: null,
     projectiles: [],  // For cluster bombs (multiple projectiles)
     // Cosmic Lottery state
@@ -307,16 +306,11 @@ function getCurrentPlayer() {
     return state.players[state.currentPlayer];
 }
 
-// ============================================================================
-// Archetype Ability Helpers
-// ============================================================================
-
 /**
- * Apply turn-start abilities
- * NOTE: Archetype passives removed - all tanks are now cosmetic only
+ * Apply turn-start abilities (placeholder for future tank-specific effects)
  */
 function applyTurnStartAbilities(player) {
-    // No archetype bonuses - all tanks have identical gameplay
+    // All tanks have identical gameplay
 }
 
 /**
@@ -356,10 +350,7 @@ function applyRadiationDamage(playerIndex) {
     }
 }
 
-/**
- * Legacy functions kept for compatibility - return neutral values
- * NOTE: Archetype passives removed - all tanks now have identical gameplay
- */
+// Legacy utility functions - return neutral values
 function isKnockbackImmune(player) { return false; }
 function getVoidGracePeriod(player) { return 0; }
 
@@ -487,13 +478,15 @@ function triggerDeathExplosion(player, isVoidDeath = false) {
         ambient.triggerPlayerKillSync(x);
     }
 
-    // Death notification (ELIMINATED text rising from corpse)
-    state.deathNotifications.push({
-        text: 'ELIMINATED',
-        x: x,
-        y: y - 50,
+    // Death notification with tank name (uses lottery notification system for rarity glow)
+    const tankName = tank?.name || 'Tank';
+    state.lotteryNotifications.push({
+        text: `${tankName} ELIMINATED`,
         color: color,
-        timer: 1.5
+        x: x,
+        y: y - 60,
+        timer: 2.5,
+        rarity: 'legendary'  // Max glow for dramatic effect
     });
 
     // Audio
@@ -543,9 +536,9 @@ function resetGame() {
     state.currentPlayer = 0;
     state.turnCount = 0;
     state.round = 1;  // Reset stable round counter
-    state.phase = 'archetype_select';
+    state.phase = 'tank_select';
     state.selectIndex = 0;
-    state.selectingPlayerIndex = 0;  // Reset archetype selection index
+    state.selectingPlayerIndex = 0;  // Reset tank selection index
     state.projectile = null;
     state.projectiles = [];
     state.voidY = VIRTUAL_HEIGHT + 100;
@@ -618,9 +611,9 @@ function resetGame() {
 }
 
 /**
- * Advance to next player in archetype selection, or start game if all done
+ * Advance to next player in tank selection, or start game if all done
  */
-function advanceArchetypeSelection() {
+function advanceTankSelection() {
     state.selectingPlayerIndex++;
     state.selectIndex = 0;  // Reset menu selection for next player
 
@@ -628,12 +621,11 @@ function advanceArchetypeSelection() {
     if (state.selectingPlayerIndex >= NUM_PLAYERS) {
         startGame();
     }
-    // Otherwise, stay in archetype_select phase for next player
+    // Otherwise, stay in tank_select phase for next player
 }
 
 function startGame() {
     // Called after all players select tanks
-    // NOTE: Archetype abilities removed - all tanks have identical gameplay
 
     // Show terrain style notification
     const terrainStyleName = terrain.getTerrainStyleName();
@@ -726,7 +718,7 @@ function fireProjectile() {
         color: weapon.color || player.color,
         bounces: 0,
         // Apply extra bounces from ELASTIC WORLD event + UFO buff
-        maxBounces: weaponBounces + state.extraBounces + bounceBonus,  // No archetype bounce bonuses
+        maxBounces: weaponBounces + state.extraBounces + bounceBonus,
         trail: [],
         weaponKey: player.weapon,  // Store weapon key for explosion handling
         tankType: player.tankType, // Keep for backwards compatibility
@@ -748,7 +740,6 @@ function fireProjectile() {
     }
 
     // Apply RECOIL KICK - push tank backward from shot direction
-    // FORTRESS archetype is immune to knockback
     if (state.recoilPending && !isKnockbackImmune(player)) {
         const recoilForce = 8;
         // Recoil is opposite to shot direction
@@ -772,8 +763,7 @@ function fireRailgunBeam(player, weapon, angleRad) {
     // Get buffs
     const buffs = state.ufoBuffs[state.currentPlayer];
     const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
-    const archetypeDmgMult = 1;  // No archetype bonuses
-    const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
+    const effectiveDamage = weapon.damage * damageMultiplier;
 
     // Trace beam path with bounces
     const maxLength = weapon.maxBeamLength || 3000;
@@ -880,8 +870,7 @@ function fireRailgunBeam(player, weapon, angleRad) {
 function firePlasmaBeam(player, weapon, angleRad) {
     const buffs = state.ufoBuffs[state.currentPlayer];
     const damageMultiplier = 1 + (buffs.damage * (UFO_BUFF_TYPES.DAMAGE.multiplier - 1));
-    const archetypeDmgMult = 1;  // No archetype bonuses
-    const effectiveDamage = weapon.damage * damageMultiplier * archetypeDmgMult;
+    const effectiveDamage = weapon.damage * damageMultiplier;
 
     // Trace beam path - no bounces, stops at terrain
     const maxLength = 2500;
@@ -1263,8 +1252,6 @@ function updateProjectile(dt) {
             proj.vy += (dy / dist) * force;
         }
     }
-
-    // NOTE: HUNTER archetype homing removed - all tanks have identical gameplay
 
     // Get weapon for behavior checks
     const weapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
@@ -2285,7 +2272,7 @@ function onExplode(proj) {
                 const falloff = 1 - (dist / blastRadius);
                 const dmg = damage * falloff;
                 // Apply FORTRESS damage reduction
-                const reduction = 0;  // No archetype reductions
+                const reduction = 0;
                 const finalDmg = dmg * (1 - reduction);
                 player.health = Math.max(0, player.health - finalDmg);
                 particles.sparks(player.x, player.y, 20, '#ffaa00');
@@ -2328,7 +2315,7 @@ function onExplode(proj) {
                 const falloff = 1 - (dist / blastRadius);
                 let dmg = damage * falloff * (proj.buffedDamageMultiplier || 1);
                 // Apply FORTRESS damage reduction
-                const reduction = 0;  // No archetype reductions
+                const reduction = 0;
                 dmg *= (1 - reduction);
                 player.health = Math.max(0, player.health - dmg);
                 particles.sparks(player.x, player.y, 15, proj.color || '#ffaa00');
@@ -2398,11 +2385,10 @@ function onExplode(proj) {
         // Stage 2 projectiles explode normally (fall through)
     }
 
-    // Apply UFO buffs and archetype bonuses to damage and blast radius
+    // Apply UFO buffs to damage and blast radius
     const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
     const firingPlayerForDamage = state.players[firingPlayerIdx];
     const buffDamageMultiplier = proj.buffedDamageMultiplier || 1;
-    const archetypeDamageMultiplier = 1;  // No archetype bonuses
     const blastBonus = proj.buffedBlastBonus || 0;
     // BOUNCING_BETTY: Scale blast radius with bounces (55 → 125 max)
     let baseBlastRadius = weapon.blastRadius;
@@ -2428,7 +2414,7 @@ function onExplode(proj) {
     const effectiveBlastRadius = baseBlastRadius + blastBonus;
     // Add accumulated damage bonus for bouncing betty (20 base + bounces * 20)
     const bounceDamageBonus = proj.accumulatedDamageBonus || 0;
-    let effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier * archetypeDamageMultiplier;
+    let effectiveDamage = (weapon.damage + bounceDamageBonus) * buffDamageMultiplier;
     // Apply gravity drop scaling to damage as well
     if (proj.isGravityDrop) {
         effectiveDamage *= gravityScaleMultiplier;
@@ -2572,8 +2558,6 @@ function onExplode(proj) {
                 hitOccurred = true;
                 hitPlayer = player;
                 state.lastHitPos = { x: proj.x, y: proj.y };
-
-                // No archetype damage reduction - all tanks have identical gameplay
 
                 // Apply shield damage reduction if player has a shield
                 if (player.shield > 0) {
@@ -2977,7 +2961,7 @@ function onExplode(proj) {
                     const falloff = 1 - (dist / weapon.shockwaveRadius);
                     const shockDmg = weapon.shockwaveDamage * falloff;
                     // Apply damage reduction
-                    const reduction = 0;  // No archetype reductions
+                    const reduction = 0;
                     const finalShockDmg = shockDmg * (1 - reduction);
                     player.health = Math.max(0, player.health - finalShockDmg);
                     totalEnemyDamage += finalShockDmg;
@@ -3037,7 +3021,7 @@ function onExplode(proj) {
                             const falloff = 1 - (dist / chainRadius);
                             let dmg = chainDamage * falloff;
                             // Apply damage reduction
-                            const reduction = 0;  // No archetype reductions
+                            const reduction = 0;
                             dmg *= (1 - reduction);
                             player.health = Math.max(0, player.health - dmg);
                             particles.sparks(player.x, player.y, 20, '#ff6600');
@@ -3687,7 +3671,7 @@ function endTurn() {
             }
         });
 
-        // Apply turn-start archetype abilities to current player (MERCHANT coins)
+        // Apply turn-start abilities to current player
         const currentPlayer = state.players[state.currentPlayer];
         if (currentPlayer.health > 0) {
             applyTurnStartAbilities(currentPlayer);
@@ -5188,7 +5172,7 @@ function update(dt) {
     }
 
     // Tank selection (dynamic for 1-4 players) - 2x4 grid
-    if (state.phase === 'archetype_select') {
+    if (state.phase === 'tank_select') {
         const selectingPlayer = state.players[state.selectingPlayerIndex];
         const availableIndices = getAvailableTankIndices();
         const gridCols = 4;
@@ -5199,7 +5183,7 @@ function update(dt) {
             const selectedTank = TANKS[randomAvailableIdx];
             selectingPlayer.tankId = selectedTank.id;
             selectingPlayer.color = selectedTank.color;
-            advanceArchetypeSelection();
+            advanceTankSelection();
             input.endFrame();
             return;
         }
@@ -5287,7 +5271,7 @@ function update(dt) {
                 audio.playConfirm();
                 selectingPlayer.tankId = selectedTank.id;
                 selectingPlayer.color = selectedTank.color;
-                advanceArchetypeSelection();
+                advanceTankSelection();
             }
         }
 
@@ -5419,7 +5403,7 @@ function update(dt) {
     }
 
     // Check win conditions continuously (for void/falling deaths)
-    if (state.phase !== 'gameover' && state.phase !== 'archetype_select') {
+    if (state.phase !== 'gameover' && state.phase !== 'tank_select') {
         const winResult = checkWinCondition();
         if (winResult) {
             state.winner = winResult.winner;
@@ -6836,7 +6820,7 @@ function render() {
     }
 
     // Tank selection screen
-    if (state.phase === 'archetype_select') {
+    if (state.phase === 'tank_select') {
         renderTankSelect();
         renderer.endFrame();
         return;
@@ -7134,7 +7118,7 @@ function render() {
     // Player stats - compact horizontal strip for 5-6 players
     const statsStartX = 20;
     const statsY = 60;
-    const playerSpacing = 220;  // Wider for archetype info
+    const playerSpacing = 220;  // Wider for tank info
 
     for (let i = 0; i < state.players.length; i++) {
         const p = state.players[i];
@@ -9058,7 +9042,7 @@ function init() {
         (player, damage, x, y) => {
             if (player.health > 0) {
                 // Apply FORTRESS damage reduction
-                const reduction = 0;  // No archetype reductions
+                const reduction = 0;
                 const finalDamage = damage * (1 - reduction);
                 player.health = Math.max(0, player.health - finalDamage);
                 particles.sparks(x, y, 20, '#ff0000');
