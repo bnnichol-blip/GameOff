@@ -726,7 +726,7 @@ function startGame() {
     const terrainStyleName = terrain.getTerrainStyleName();
     state.terrainStyleNotification = {
         text: terrainStyleName.toUpperCase(),
-        timer: 3.0  // Show for 3 seconds
+        timer: 6.0  // Show for 6 seconds
     };
 
     // Roll initial glitch event for round 1
@@ -8832,16 +8832,16 @@ function render() {
         const notif = state.terrainStyleNotification;
         // Fade in for first 0.5s, then fade out in last 1s
         let alpha = 1;
-        if (notif.timer > 2.5) {
-            alpha = (3.0 - notif.timer) * 2;  // Fade in
+        if (notif.timer > 5.5) {
+            alpha = (6.0 - notif.timer) * 2;  // Fade in
         } else if (notif.timer < 1.0) {
             alpha = notif.timer;  // Fade out
         }
         renderer.ctx.globalAlpha = alpha;
 
-        // Draw decorative line + text at top of screen
+        // Draw decorative line + text above the countdown timer
         const centerX = CANVAS_WIDTH / 2;
-        const textY = 80;
+        const textY = CANVAS_HEIGHT - 85;
         const lineWidth = 200;
 
         // Draw left decorative line
