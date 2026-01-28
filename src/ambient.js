@@ -6,6 +6,7 @@
 import { randomRange, randomInt, randomChoice, clamp } from './utils.js';
 import { COLORS } from './renderer.js';
 import { particles } from './particles.js';
+import { getCeilingAt } from './terrain.js';
 
 // ============================================================================
 // Feature Toggles (for debugging/performance)
@@ -17,18 +18,32 @@ const DISABLE_SPACE_BATTLE = true;   // Disable background space battle
 // Configuration
 // ============================================================================
 
+// Star field configuration (twinkling night sky)
+const STAR_CONFIG = {
+    count: 120,           // Total stars (performance-friendly)
+    minSize: 1,           // Smallest star radius
+    maxSize: 2.5,         // Largest star radius
+    twinkleSpeed: 2.5,    // How fast stars twinkle (lower = slower)
+    minAlpha: 0.3,        // Dimmest a star can get
+    maxAlpha: 1.0,        // Brightest a star can get
+    skyBottomPct: 0.55,   // Stars only in upper 55% of screen (above terrain)
+    colors: ['#ffffff', '#aaccff', '#ffddaa', '#ddddff']  // Star colors (white, blue-white, warm, cool)
+};
+
 const CLOUD_CONFIG = {
     // Two parallax layers
     farCount: 4,
     nearCount: 3,
-    farSpeed: 8,    // pixels per second
-    nearSpeed: 20,
-    farAlpha: 0.15,
-    nearAlpha: 0.25,
-    minWidth: 80,
-    maxWidth: 200,
-    minHeight: 30,
-    maxHeight: 60
+    farAlpha: 0.12,
+    nearAlpha: 0.20,
+    minWidth: 200,      // Larger clouds
+    maxWidth: 450,      // Much larger max
+    minHeight: 60,      // Taller
+    maxHeight: 140,     // Much taller
+    // Wind multiplier (clouds move with wind)
+    farWindMult: 25,    // Far clouds move slower (parallax)
+    nearWindMult: 45,   // Near clouds move faster
+    baseSpeed: 5        // Minimum drift when no wind
 };
 
 const UFO_CONFIG = {
@@ -245,43 +260,56 @@ class Cloud {
         this.canvasHeight = canvasHeight;
 
         const config = layer === 'far' ? {
-            speed: CLOUD_CONFIG.farSpeed,
+            windMult: CLOUD_CONFIG.farWindMult,
             alpha: CLOUD_CONFIG.farAlpha,
-            yRange: [50, 200]
+            yRange: [50, 250]
         } : {
-            speed: CLOUD_CONFIG.nearSpeed,
+            windMult: CLOUD_CONFIG.nearWindMult,
             alpha: CLOUD_CONFIG.nearAlpha,
-            yRange: [80, 250]
+            yRange: [100, 320]
         };
 
         this.width = randomRange(CLOUD_CONFIG.minWidth, CLOUD_CONFIG.maxWidth);
         this.height = randomRange(CLOUD_CONFIG.minHeight, CLOUD_CONFIG.maxHeight);
         this.x = randomRange(-this.width, canvasWidth);
         this.y = randomRange(config.yRange[0], config.yRange[1]);
-        this.speed = config.speed * randomRange(0.8, 1.2);
+        this.windMult = config.windMult * randomRange(0.8, 1.2);
         this.alpha = config.alpha * randomRange(0.8, 1.2);
 
-        // Cloud is made of overlapping circles
+        // Cloud is made of overlapping circles (more blobs for larger clouds)
         this.blobs = [];
-        const blobCount = randomInt(3, 6);
+        const blobCount = randomInt(4, 8);
         for (let i = 0; i < blobCount; i++) {
             this.blobs.push({
-                offsetX: randomRange(-this.width * 0.3, this.width * 0.3),
-                offsetY: randomRange(-this.height * 0.2, this.height * 0.2),
-                radius: randomRange(this.height * 0.4, this.height * 0.7)
+                offsetX: randomRange(-this.width * 0.35, this.width * 0.35),
+                offsetY: randomRange(-this.height * 0.25, this.height * 0.25),
+                radius: randomRange(this.height * 0.4, this.height * 0.8)
             });
         }
     }
 
-    update(dt) {
-        this.x += this.speed * dt;
+    update(dt, wind = 0) {
+        // Move with wind (wind value is typically -0.15 to 0.15)
+        // Multiply by windMult to get visible movement
+        const windSpeed = wind * this.windMult;
+        // Add base drift so clouds still move slightly even with no wind
+        const baseDir = this.layer === 'far' ? 1 : 1;  // Both drift right by default
+        const totalSpeed = windSpeed + CLOUD_CONFIG.baseSpeed * baseDir;
 
-        // Wrap around
+        this.x += totalSpeed * dt;
+
+        // Wrap around (handle both directions)
         if (this.x > this.canvasWidth + this.width) {
             this.x = -this.width;
             this.y = randomRange(
-                this.layer === 'far' ? 50 : 80,
-                this.layer === 'far' ? 200 : 250
+                this.layer === 'far' ? 50 : 100,
+                this.layer === 'far' ? 250 : 320
+            );
+        } else if (this.x < -this.width) {
+            this.x = this.canvasWidth + this.width;
+            this.y = randomRange(
+                this.layer === 'far' ? 50 : 100,
+                this.layer === 'far' ? 250 : 320
             );
         }
     }
@@ -1862,6 +1890,9 @@ export class AmbientSystem {
         this.dustParticles = [];
         this.glitchParticles = [];
 
+        // Star field (twinkling night sky)
+        this.stars = [];
+
         // Time tracking
         this.time = 0;
 
@@ -1873,6 +1904,9 @@ export class AmbientSystem {
         this.chaosTimer = 0;
         this.battlePaused = false;
         this.pauseTimer = 0;
+
+        // Initialize stars (night sky)
+        this.initStars();
 
         // Initialize clouds
         this.initClouds();
@@ -1891,6 +1925,52 @@ export class AmbientSystem {
     setDamageCallbacks(terrainCallback, tankCallback) {
         this.terrainDamageCallback = terrainCallback;
         this.tankDamageCallback = tankCallback;
+    }
+
+    // Initialize star field (fixed positions, twinkle via time-based math)
+    initStars() {
+        const cfg = STAR_CONFIG;
+        const skyBottom = this.canvasHeight * cfg.skyBottomPct;
+
+        for (let i = 0; i < cfg.count; i++) {
+            this.stars.push({
+                x: Math.random() * this.canvasWidth,
+                y: Math.random() * skyBottom,
+                size: cfg.minSize + Math.random() * (cfg.maxSize - cfg.minSize),
+                color: cfg.colors[Math.floor(Math.random() * cfg.colors.length)],
+                // Each star has a unique phase offset for varied twinkling
+                phase: Math.random() * Math.PI * 2,
+                // Twinkle speed variation (some stars twinkle faster than others)
+                speedMult: 0.7 + Math.random() * 0.6
+            });
+        }
+    }
+
+    // Draw twinkling stars (checks ceiling occlusion)
+    drawStars(ctx) {
+        const cfg = STAR_CONFIG;
+
+        for (const star of this.stars) {
+            // Check ceiling occlusion - skip stars blocked by cavern/ceiling terrain
+            const ceilingY = getCeilingAt(star.x);
+            if (ceilingY !== null && star.y < ceilingY) {
+                // Star is above the ceiling line (inside rock) - don't draw
+                continue;
+            }
+
+            // Calculate twinkle using sin wave (no per-star state updates needed)
+            const twinkle = Math.sin(this.time * cfg.twinkleSpeed * star.speedMult + star.phase);
+            // Map sin output (-1 to 1) to alpha range
+            const alpha = cfg.minAlpha + (twinkle * 0.5 + 0.5) * (cfg.maxAlpha - cfg.minAlpha);
+
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = star.color;
+            ctx.beginPath();
+            ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.globalAlpha = 1;
     }
 
     initClouds() {
@@ -2070,12 +2150,12 @@ export class AmbientSystem {
         // Update wind streaks
         this.updateWindStreaks(dt, wind, isWindBlast);
 
-        // Update clouds
+        // Update clouds (move with wind)
         for (const cloud of this.farClouds) {
-            cloud.update(dt);
+            cloud.update(dt, wind);
         }
         for (const cloud of this.nearClouds) {
-            cloud.update(dt);
+            cloud.update(dt, wind);
         }
 
         // Maybe spawn UFO
@@ -2409,6 +2489,11 @@ export class AmbientSystem {
     drawBackground(renderer) {
         const ctx = renderer.ctx;
         const skyBottom = this.canvasHeight * SPACE_BATTLE_CONFIG.skyBottomPct;
+
+        // =====================================================================
+        // TWINKLING STAR FIELD - Drawn first (furthest back)
+        // =====================================================================
+        this.drawStars(ctx);
 
         // =====================================================================
         // EPIC SPACE BATTLE - Layered back to front
