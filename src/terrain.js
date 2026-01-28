@@ -86,19 +86,14 @@ const TERRAIN_BASES = {
         weight: 1.0,
         generator: 'generateCanyon'
     },
-    PLATEAU: {
-        name: 'Plateau',
-        weight: 1.0,
-        generator: 'generatePlateau'
-    },
     ISLANDS: {
         name: 'Islands',
-        weight: 0.7,
+        weight: 1.0,
         generator: 'generateIslands'
     },
     CAVES: {
         name: 'Caves',
-        weight: 1.2,  // Slightly more common - dedicated cave terrain
+        weight: 1.0,
         generator: 'generateCaves'
     }
 };
@@ -109,14 +104,9 @@ const TERRAIN_FEATURES = {
         weight: 1.0,
         generator: 'applyPillars'
     },
-    BRIDGE: {
-        name: 'Bridge',
-        weight: 1.0,
-        generator: 'applyBridge'
-    },
     CAVERN: {
         name: 'Cavern',
-        weight: 1.5,  // More common - players like caves
+        weight: 1.0,
         generator: 'applyCavern'
     },
     STALACTITES: {
@@ -128,11 +118,10 @@ const TERRAIN_FEATURES = {
 
 // Compatibility matrix: which features work with which bases
 const FEATURE_COMPATIBILITY = {
-    ROLLING_HILLS: ['PILLARS', 'BRIDGE', 'CAVERN'],
-    CANYON: ['PILLARS', 'BRIDGE', 'CAVERN'],  // Added cavern - canyon with overhang
-    PLATEAU: ['PILLARS', 'CAVERN', 'STALACTITES'],
-    ISLANDS: ['BRIDGE', 'CAVERN'],  // Added cavern - floating islands with overhangs
-    CAVES: ['STALACTITES']  // Caves always have ceiling, stalactites add detail
+    ROLLING_HILLS: ['PILLARS', 'CAVERN'],
+    CANYON: ['PILLARS', 'CAVERN'],
+    ISLANDS: ['CAVERN'],
+    CAVES: ['STALACTITES']
 };
 
 // ============================================================================
@@ -231,9 +220,6 @@ export function generate(terrainWidth, terrainHeight = 900, spawnXs = [], edgeMa
         case 'CANYON':
             generateCanyon();
             break;
-        case 'PLATEAU':
-            generatePlateau();
-            break;
         case 'ISLANDS':
             generateIslands();
             break;
@@ -255,9 +241,6 @@ export function generate(terrainWidth, terrainHeight = 900, spawnXs = [], edgeMa
             case 'PILLARS':
                 applyPillars(spawnXs);
                 break;
-            case 'BRIDGE':
-                applyBridge();
-                break;
             case 'CAVERN':
                 applyCavern();
                 break;
@@ -275,6 +258,25 @@ export function generate(terrainWidth, terrainHeight = 900, spawnXs = [], edgeMa
     } else {
         // Legacy fallback for 2 players
         balanceSpawnAreas(200, terrainWidth - 200, 70);
+    }
+
+    // Spawn safety: ensure no spawn point is too low (would die to void immediately)
+    // Max safe Y is 80% of canvas height — leaves room before void rises
+    const maxSafeY = canvasHeight * 0.8;
+    for (const spawnX of spawnXs) {
+        const xi = Math.floor(spawnX);
+        if (xi >= 0 && xi < width && heights[xi] > maxSafeY) {
+            // Raise terrain at spawn and surrounding area
+            const radius = 80;
+            const targetY = maxSafeY - 40;
+            for (let x = Math.max(0, xi - radius); x <= Math.min(width - 1, xi + radius); x++) {
+                const dist = Math.abs(x - xi);
+                const blend = 1 - (dist / radius);
+                if (heights[x] > targetY) {
+                    heights[x] = heights[x] * (1 - blend) + targetY * blend;
+                }
+            }
+        }
     }
 
     // Generate Tron circuit board overlay
@@ -322,8 +324,8 @@ function generateRollingHills() {
  * Generate canyon - multi-tiered trench with jagged walls and strategic ledges
  */
 function generateCanyon() {
-    const plateauY = canvasHeight * 0.4;  // Higher base for plateaus
-    const canyonDepth = 220 + Math.random() * 100;  // 220-320px deep
+    const plateauY = canvasHeight * 0.35;  // Higher base for deeper canyon
+    const canyonDepth = 400 + Math.random() * 200;  // 400-600px deep
     const canyonWidth = 0.28 + Math.random() * 0.15;  // 28-43% of width
 
     // Create multiple tiers for the canyon
@@ -390,75 +392,6 @@ function generateCanyon() {
             const noise = Math.sin(x * 0.02 + noisePhase) * 30;
             const jagged = jaggedNoise(x, 10, 0.08);
             y = plateauY + noise + jagged;
-        }
-
-        heights[x] = Math.max(canvasHeight * 0.2, Math.min(y, canvasHeight - 100));
-    }
-}
-
-/**
- * Generate plateau - flat elevated sections connected by vertical jagged cliffs
- */
-function generatePlateau() {
-    const numPlateaus = 3 + Math.floor(Math.random() * 2);  // 3-4 plateaus
-    const plateaus = [];
-
-    // Generate plateau definitions
-    const segmentWidth = width / numPlateaus;
-    for (let i = 0; i < numPlateaus; i++) {
-        const baseHeight = canvasHeight * (0.35 + Math.random() * 0.3);  // 35-65% down
-        plateaus.push({
-            startX: i * segmentWidth,
-            endX: (i + 1) * segmentWidth,
-            height: baseHeight,
-            noise: Math.random() * Math.PI * 2
-        });
-    }
-
-    // Shuffle heights to avoid predictable staircase
-    for (let i = plateaus.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        const tempHeight = plateaus[i].height;
-        plateaus[i].height = plateaus[j].height;
-        plateaus[j].height = tempHeight;
-    }
-
-    // Generate terrain with VERTICAL jagged cliffs instead of smooth ramps
-    const cliffWidth = 15 + Math.random() * 20;  // 15-35px cliff transition (much steeper!)
-
-    for (let x = 0; x < width; x++) {
-        // Find which plateau we're on
-        let currentPlateau = plateaus[0];
-        let nextPlateau = null;
-
-        for (let i = 0; i < plateaus.length; i++) {
-            if (x >= plateaus[i].startX && x < plateaus[i].endX) {
-                currentPlateau = plateaus[i];
-                nextPlateau = plateaus[i + 1] || null;
-                break;
-            }
-        }
-
-        // Check if we're in a cliff zone
-        const distToEnd = currentPlateau.endX - x;
-        let y;
-
-        if (nextPlateau && distToEnd < cliffWidth) {
-            // In cliff zone - near-vertical with jagged face
-            const cliffProgress = 1 - (distToEnd / cliffWidth);
-            // Use very steep step function instead of smoothstep
-            // Steep but not instant - transition over 20% of cliff width
-            const steepProgress = Math.min(1, Math.max(0, (cliffProgress - 0.4) * 5));
-            const jaggedOffset = jaggedNoise(x, 10, 0.25);  // Reduced amplitude, softer cliffs
-
-            // Blend between heights with jitter
-            const baseY = currentPlateau.height * (1 - steepProgress) + nextPlateau.height * steepProgress;
-            y = baseY + jaggedOffset * (1 - Math.abs(steepProgress - 0.5) * 2);  // Max jitter at midpoint
-        } else {
-            // On plateau - mostly flat with micro-variation
-            const noise = Math.sin(x * 0.05 + currentPlateau.noise) * 10;
-            const jagged = jaggedNoise(x, 5, 0.1);
-            y = currentPlateau.height + noise + jagged;
         }
 
         heights[x] = Math.max(canvasHeight * 0.2, Math.min(y, canvasHeight - 100));
@@ -800,84 +733,6 @@ function applyPillars(spawnXs = []) {
             const adjustedTopY = topY + (1 - taperFactor) * 20;
 
             heights[x] = Math.min(heights[x], Math.max(adjustedTopY, canvasHeight * 0.2));
-        }
-    }
-}
-
-/**
- * Apply bridge - natural land bridge with EMPTY SPACE beneath
- * Uses ceiling system to create the bridge, leaving floor below open
- */
-function applyBridge() {
-    // Find two elevated points to connect
-    const searchMargin = width * 0.2;
-    let leftHighPoint = { x: 0, y: canvasHeight };
-    let rightHighPoint = { x: width, y: canvasHeight };
-
-    // Search left third for high point
-    for (let x = Math.floor(searchMargin); x < width * 0.4; x += 10) {
-        if (heights[x] < leftHighPoint.y) {
-            leftHighPoint = { x, y: heights[x] };
-        }
-    }
-
-    // Search right third for high point
-    for (let x = Math.floor(width * 0.6); x < width - searchMargin; x += 10) {
-        if (heights[x] < rightHighPoint.y) {
-            rightHighPoint = { x, y: heights[x] };
-        }
-    }
-
-    // Bridge properties
-    const bridgeY = Math.min(leftHighPoint.y, rightHighPoint.y) - 40;  // Bridge surface
-    const bridgeStartX = leftHighPoint.x;
-    const bridgeEndX = rightHighPoint.x;
-    const bridgeWidth = bridgeEndX - bridgeStartX;
-    const bridgeThickness = 30 + Math.random() * 20;  // 30-50px thick
-
-    // Only create bridge if points are far enough apart
-    if (bridgeWidth < 300) return;
-
-    // Initialize ceiling if not already done
-    if (!ceilingHeights) {
-        ceilingHeights = new Float32Array(width);
-        ceilingHeights.fill(0);
-    }
-
-    // Create bridge as a ceiling region with empty space beneath
-    ceilingRegions.push({ startX: bridgeStartX, endX: bridgeEndX });
-
-    for (let x = Math.floor(bridgeStartX); x <= Math.ceil(bridgeEndX); x++) {
-        if (x < 0 || x >= width) continue;
-
-        const bridgeProgress = (x - bridgeStartX) / bridgeWidth;
-
-        // Slight arch shape for visual interest
-        const archOffset = Math.sin(bridgeProgress * Math.PI) * 15;
-
-        // Taper at edges to blend with terrain
-        const distFromStart = x - bridgeStartX;
-        const distFromEnd = bridgeEndX - x;
-        const edgeDist = Math.min(distFromStart, distFromEnd);
-        const edgeFade = Math.min(1, edgeDist / 60);
-
-        // Bridge bottom (what you walk on) - this becomes the ceiling for the space below
-        const bridgeBottom = bridgeY + bridgeThickness + archOffset;
-
-        // Only set ceiling in the middle section (leave edges as solid terrain)
-        if (edgeFade > 0.3) {
-            // Set ceiling to create the underside of the bridge
-            ceilingHeights[x] = bridgeBottom;
-
-            // IMPORTANT: Push the floor DOWN to create empty space beneath
-            // The floor should be significantly lower than the bridge
-            const floorY = bridgeBottom + 150 + Math.random() * 50;  // 150-200px gap
-            if (heights[x] < floorY) {
-                heights[x] = floorY;
-            }
-        } else {
-            // Edge zone - solid connection to terrain
-            heights[x] = Math.min(heights[x], bridgeY + (1 - edgeFade) * 100);
         }
     }
 }

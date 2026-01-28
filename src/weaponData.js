@@ -127,7 +127,7 @@ export const WEAPONS = {
         projectileSpeed: 0.85,
         color: '#ff44ff',
         behavior: 'seekerLockOn',
-        seekStrength: 0.5,        // Strong homing after lock (doubled)
+        seekStrength: 1.0,        // Maximum homing after lock
         lockOnDelay: 0.25,        // Faster lock-on (halved)
         ignoresTerrain: true      // Keeps chasing through terrain
     },
@@ -411,7 +411,7 @@ export const WEAPONS = {
         projectileSpeed: 2.0,   // Fast upward shot
         color: '#ff6600',
         behavior: 'meteorShowerUp',
-        meteorCount: 6,
+        meteorCount: 12,
         meteorDelay: 0.3,       // Stagger between meteors
         firesStraightUp: true   // Always fires straight up
     },
@@ -642,7 +642,8 @@ export const TANKS = [
         shape: 'triangle',
         sides: 3,
         color: '#00FFFF',
-        glowColor: '#00FFFF'
+        glowColor: '#00FFFF',
+        flavor: 'Shockingly good at angles'
     },
     {
         id: 'BLAZE',
@@ -650,7 +651,8 @@ export const TANKS = [
         shape: 'square',
         sides: 4,
         color: '#FF8800',
-        glowColor: '#FFAA00'
+        glowColor: '#FFAA00',
+        flavor: 'Runs hot. Aims hotter.'
     },
     {
         id: 'PHANTOM',
@@ -658,7 +660,8 @@ export const TANKS = [
         shape: 'parallelogram',
         sides: 4,  // Skewed rectangle
         color: '#FF00FF',
-        glowColor: '#FF66FF'
+        glowColor: '#FF66FF',
+        flavor: 'Now you see me... boom.'
     },
     {
         id: 'HIVE',
@@ -666,7 +669,8 @@ export const TANKS = [
         shape: 'hexagon',
         sides: 6,
         color: '#FFD700',
-        glowColor: '#FFEE66'
+        glowColor: '#FFEE66',
+        flavor: 'The swarm approves'
     },
     {
         id: 'RAZOR',
@@ -674,7 +678,8 @@ export const TANKS = [
         shape: 'kite',
         sides: 4,  // Kite shape - elongated top
         color: '#FF3333',
-        glowColor: '#FF6666'
+        glowColor: '#FF6666',
+        flavor: 'Cuts through the competition'
     },
     {
         id: 'NOVA',
@@ -682,7 +687,8 @@ export const TANKS = [
         shape: 'star',
         sides: 5,  // 5-pointed star
         color: '#FFFFFF',
-        glowColor: '#FFFFFF'
+        glowColor: '#FFFFFF',
+        flavor: 'Born from a dying star'
     },
     {
         id: 'ORB',
@@ -690,7 +696,8 @@ export const TANKS = [
         shape: 'circle',
         sides: 0,  // Circle has no sides
         color: '#00FF00',
-        glowColor: '#66FF66'
+        glowColor: '#66FF66',
+        flavor: 'Round is the perfect shape'
     },
     {
         id: 'LUNA',
@@ -698,7 +705,8 @@ export const TANKS = [
         shape: 'crescent',
         sides: 0,  // Crescent moon shape
         color: '#AA00FF',
-        glowColor: '#CC66FF'
+        glowColor: '#CC66FF',
+        flavor: 'Lunacy is a strategy'
     }
 ];
 

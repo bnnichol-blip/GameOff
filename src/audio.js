@@ -172,6 +172,22 @@ class AudioSystem {
     // Fire Sound (release shot)
     // ========================================================================
 
+    playTimerTick() {
+        if (!this.initialized) return;
+        this.resume();
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(800, now);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        osc.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start(now);
+        osc.stop(now + 0.08);
+    }
+
     playFire() {
         if (!this.initialized) return;
         this.resume();

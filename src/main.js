@@ -88,6 +88,9 @@ const CHARGE_RATE = 0.012;      // Slower charge for more precise timing (~3 sec
 const DEBUG_SHOW_VELOCITY = false;  // Set true to show muzzle velocity debug
 const VOID_RISE_PER_ROUND = 50;  // Void rises 50px per round (~3% of arena height)
 const TANK_RADIUS = 25;
+const TANK_MOVE_SPEED = 3;        // Virtual pixels per frame
+const TANK_ROTATION_SPEED = 0.15; // Radians per frame (visual roll)
+const CLOSE_RANGE_WEAPONS = ['BIG_SPRING', 'SILLY_HAMMER', 'MAGNETIC_SLAM'];
 const TURN_DELAY_MS = 800;
 
 // Grappling hook constants
@@ -199,7 +202,8 @@ function createPlayers(numPlayers, humanCount = numPlayers) {
             coins: STARTING_COINS,
             weapon: 'MORTAR',
             voidGraceTimer: 0,    // Legacy field
-            rerollsRemaining: 1   // Cosmic Lottery rerolls (1 per player per game)
+            rerollsRemaining: 1,  // Cosmic Lottery rerolls (1 per player per game)
+            rotation: 0           // Visual rolling rotation (radians)
         });
     }
     return players;
@@ -282,6 +286,14 @@ const state = {
     // UFO buff notification
     buffNotification: null,  // { playerIndex, buffType, timer }
 
+    // Turn timer
+    turnTimer: 30,
+    turnTimerActive: false,
+    lastTickSecond: -1,
+
+    // Victory screen
+    victoryTimer: 0,
+
     // Debug visualization
     terrainDebugMode: false,  // Toggle terrain floor/ceiling debug overlay
 
@@ -299,6 +311,10 @@ const state = {
     // Dying Light tracking (per player)
     dyingStarTurns: Array.from({ length: NUM_PLAYERS }, () => 0),  // Turns remaining for dying light
     storedWeapons: Array.from({ length: NUM_PLAYERS }, () => null),  // Previous weapon before dying light
+
+    // AI movement state (close-range weapons)
+    aiMoving: false,
+    aiMoveTargetX: 0,
 
     // Turn flow safety (prevents race conditions)
     turnEndLocked: false,   // Prevents multiple endTurn() calls
@@ -2152,23 +2168,18 @@ function updateProjectile(dt) {
     // Check for UFO collision (grants buffs)
     checkUFOCollision(proj.x, proj.y, proj.radius);
 
-    // BOUNCING BETTY - explode on enemy contact
-    const bettyWeapon = proj.weaponKey ? WEAPONS[proj.weaponKey] : null;
-    if (bettyWeapon && bettyWeapon.behavior === 'bouncingBetty' && bettyWeapon.explodesOnEnemyContact) {
-        const firingPlayer = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
-        for (let i = 0; i < state.players.length; i++) {
-            if (i === firingPlayer) continue;  // Don't hit self
-            const player = state.players[i];
-            if (player.health <= 0) continue;
+    // UNIVERSAL TANK HURTBOX — all projectiles detonate on direct tank hit
+    const firingPlayerIdx = proj.firedByPlayer !== undefined ? proj.firedByPlayer : state.currentPlayer;
+    for (let i = 0; i < state.players.length; i++) {
+        if (i === firingPlayerIdx) continue;  // Don't hit self
+        const player = state.players[i];
+        if (player.health <= 0) continue;
 
-            const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
-            if (dist < proj.radius + TANK_RADIUS) {
-                // Direct enemy contact - explode!
-                particles.sparks(proj.x, proj.y, 25, '#ff8888');
-                onExplode(proj);
-                state.projectile = null;
-                return;
-            }
+        const dist = Math.sqrt((proj.x - player.x) ** 2 + (proj.y - player.y) ** 2);
+        if (dist < proj.radius + TANK_RADIUS) {
+            onExplode(proj);
+            state.projectile = null;
+            return;
         }
     }
 
@@ -4030,6 +4041,7 @@ function endTurn() {
     if (winResult) {
         state.winner = winResult.winner;
         state.phase = 'gameover';
+        state.victoryTimer = 0;
         // Revert event on game over
         if (state.activeEvent) {
             events.revertEvent(state);
@@ -4342,10 +4354,20 @@ function generateLotteryCards() {
  */
 function aiSelectBestCard(cards) {
     const rarityOrder = { legendary: 4, epic: 3, rare: 2, common: 1 };
+    const ai = getCurrentPlayer();
+
+    // Check if any enemy is within close range
+    const nearbyEnemy = state.players.some((p, i) =>
+        i !== state.currentPlayer && p.health > 0 && Math.abs(p.x - ai.x) < 300
+    );
 
     return cards.reduce((best, card) => {
-        const bestRank = rarityOrder[best.rarity] || 0;
-        const cardRank = rarityOrder[card.rarity] || 0;
+        let bestRank = rarityOrder[best.rarity] || 0;
+        let cardRank = rarityOrder[card.rarity] || 0;
+
+        // Bonus for close-range weapons when enemies are nearby
+        if (nearbyEnemy && CLOSE_RANGE_WEAPONS.includes(card.weaponKey)) cardRank += 1;
+        if (nearbyEnemy && CLOSE_RANGE_WEAPONS.includes(best.weaponKey)) bestRank += 1;
 
         if (cardRank > bestRank) return card;
         if (cardRank === bestRank && card.damage > best.damage) return card;
@@ -4378,6 +4400,7 @@ function startLottery() {
     if (player.health <= 0) {
         // Move directly to aiming (will skip in update)
         state.phase = 'aiming';
+        state.turnTimer = 30; state.turnTimerActive = true; state.lastTickSecond = -1;
         if (player.isAI) {
             prepareAITurn();
         }
@@ -4395,6 +4418,7 @@ function startLottery() {
 
         // Skip to aiming
         state.phase = 'aiming';
+        state.turnTimer = 30; state.turnTimerActive = true; state.lastTickSecond = -1;
         prepareAITurn();
         return;
     }
@@ -4566,6 +4590,7 @@ function updateLottery(dt) {
                 state.lottery.active = false;
                 state.lottery.animationPhase = 'none';
                 state.phase = 'aiming';
+                state.turnTimer = 30; state.turnTimerActive = true; state.lastTickSecond = -1;
             }
             break;
     }
@@ -5194,6 +5219,18 @@ function prepareAITurn() {
         }
     }
 
+    // Close-range weapons: move toward target instead of aiming
+    if (CLOSE_RANGE_WEAPONS.includes(ai.weapon) && target) {
+        state.aiMoving = true;
+        state.aiMoveTargetX = target.x;
+        state.aiTargetAngle = (target.x > ai.x) ? 10 : 170;
+        state.aiTargetPower = 0.5;
+        state.aiThinkTime = 200;
+        console.log(`[AI] P${state.currentPlayer + 1} moving toward enemy for close-range attack`);
+        return;
+    }
+    state.aiMoving = false;
+
     // Think time before acting (0.6-1.2 seconds - faster)
     state.aiThinkTime = 600 + Math.random() * 600;
 
@@ -5252,6 +5289,32 @@ function applyEventAdjustments() {
 function updateAI(dt) {
     const ai = getCurrentPlayer();
     if (!ai.isAI || state.phase !== 'aiming') return;
+
+    // AI MOVEMENT PHASE — move toward enemy if holding close-range weapon
+    if (state.aiMoving && state.turnTimer > 27) {
+        const dx = state.aiMoveTargetX - ai.x;
+        if (Math.abs(dx) > TANK_RADIUS * 2) {
+            ai.x += Math.sign(dx) * TANK_MOVE_SPEED;
+            ai.x = clamp(ai.x, WORLD_LEFT + TANK_RADIUS, WORLD_RIGHT - TANK_RADIUS);
+            ai.y = terrain.getHeightAt(Math.floor(ai.x)) - TANK_RADIUS;
+            ai.rotation += Math.sign(dx) * TANK_ROTATION_SPEED;
+            return;
+        } else {
+            state.aiMoving = false;
+        }
+    }
+    if (state.aiMoving && state.turnTimer <= 27) {
+        state.aiMoving = false;
+    }
+
+    // Recalculate aim after movement for close-range weapons
+    if (!state.aiMoving && CLOSE_RANGE_WEAPONS.includes(ai.weapon)) {
+        const enemies = state.players.filter((p, i) => i !== state.currentPlayer && p.health > 0);
+        if (enemies.length > 0) {
+            const nearest = enemies.reduce((a, b) => Math.abs(a.x - ai.x) < Math.abs(b.x - ai.x) ? a : b);
+            state.aiTargetAngle = (nearest.x > ai.x) ? 10 : 170;
+        }
+    }
 
     // Wait for think time
     state.aiThinkTime -= dt * 1000;
@@ -5804,6 +5867,26 @@ function update(dt) {
         if (player.isAI) {
             updateAI(dt);
         } else {
+            // === TURN TIMER (human players only) ===
+            if (state.turnTimerActive) {
+                state.turnTimer -= dt;
+                const currentSecond = Math.ceil(state.turnTimer);
+                if (currentSecond <= 10 && currentSecond > 0 && currentSecond !== state.lastTickSecond) {
+                    state.lastTickSecond = currentSecond;
+                    audio.playTimerTick();
+                }
+                if (state.turnTimer <= 0) {
+                    state.turnTimer = 0;
+                    state.turnTimerActive = false;
+                    audio.stopCharge();
+                    player.charging = false;
+                    player.power = 0;
+                    endTurn();
+                    input.endFrame();
+                    return;
+                }
+            }
+
             // === GRAPPLE INPUT (G key) ===
             if (input.wasPressed('KeyG')) {
                 handleGrappleInput(player, state.currentPlayer);
@@ -5814,14 +5897,31 @@ function update(dt) {
 
             if (canAim) {
                 // Human controls
-                // METEOR_SHOWER: Lock turret to fire straight up
+                // === MOVEMENT with Left/Right arrows (first 5 seconds only) ===
+                const moveTimeLeft = state.turnTimer - 27; // 30-27=3 seconds of movement
+                if (moveTimeLeft > 0) {
+                    if (input.left) {
+                        player.x -= TANK_MOVE_SPEED;
+                        player.rotation -= TANK_ROTATION_SPEED;
+                    }
+                    if (input.right) {
+                        player.x += TANK_MOVE_SPEED;
+                        player.rotation += TANK_ROTATION_SPEED;
+                    }
+                }
+                // Clamp to world bounds and snap to terrain after movement
+                if (moveTimeLeft > 0 && (input.left || input.right)) {
+                    player.x = clamp(player.x, WORLD_LEFT + TANK_RADIUS, WORLD_RIGHT - TANK_RADIUS);
+                    player.y = terrain.getHeightAt(Math.floor(player.x)) - TANK_RADIUS;
+                }
+
+                // === AIM with Up/Down arrows ===
                 const weapon = WEAPONS[player.weapon];
                 if (weapon && weapon.behavior === 'meteorShowerUp') {
                     player.angle = 90;  // Lock straight up
                 } else {
-                    // Aim with arrow keys
-                    if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
-                    if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
+                    if (input.up) player.angle = clamp(player.angle - 2, 0, 180);
+                    if (input.down) player.angle = clamp(player.angle + 2, 0, 180);
                 }
 
                 // Charge with space (oscillates up and down for skill-based timing)
@@ -5851,14 +5951,25 @@ function update(dt) {
                 if (input.spaceReleased && player.charging && !state.projectile) {
                     audio.stopCharge();
                     audio.playFire();
+                    state.turnTimerActive = false;
                     fireProjectile();
                 }
             }
         }
     }
 
-    // Game over: Enter for rematch, Escape for title
+    // Game over: victory fireworks + input
     if (state.phase === 'gameover') {
+        state.victoryTimer += dt;
+        // Spawn firework bursts for 5 seconds
+        if (state.victoryTimer < 5 && Math.random() < dt * 3) {
+            const winnerTank = state.winner !== null ? getTankById(state.players[state.winner].tankId) : null;
+            const colors = ['#FF3333', '#FFFF00', '#00FF00', '#00FFFF', '#FF00FF', '#FFFFFF'];
+            const fwColor = Math.random() < 0.5 && winnerTank ? winnerTank.color : colors[Math.floor(Math.random() * colors.length)];
+            const fwX = 200 + Math.random() * (VIRTUAL_WIDTH - 400);
+            const fwY = 200 + Math.random() * (VIRTUAL_HEIGHT * 0.5);
+            particles.explosion(fwX, fwY, 30, fwColor, 80);
+        }
         if (input.wasPressed('Enter')) {
             console.log('[DEBUG] Enter pressed in gameover - going to mode select');
             resetToModeSelect();  // Return to mode select for player count choice
@@ -5927,6 +6038,7 @@ function update(dt) {
         if (winResult) {
             state.winner = winResult.winner;
             state.phase = 'gameover';
+            state.victoryTimer = 0;
             // Play appropriate death sound
             if (winResult.reason === 'void') {
                 audio.playVoidTouch();
@@ -8303,49 +8415,54 @@ function render() {
         const tankColor = tank ? tank.color : player.color;
         const tankSize = 30;  // Base tank size
 
-        // Tank body (shape based on tank type)
+        // Tank body (shape based on tank type) — rotated by movement
+        const ctx = renderer.ctx;
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        ctx.rotate(player.rotation || 0);
         if (tank) {
             switch (tank.shape) {
                 case 'triangle':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 3, -Math.PI / 2, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 3, -Math.PI / 2, tankColor, isActive);
                     break;
                 case 'square':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 4, Math.PI / 4, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 4, Math.PI / 4, tankColor, isActive);
                     break;
                 case 'pentagon':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 5, -Math.PI / 2, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 5, -Math.PI / 2, tankColor, isActive);
                     break;
                 case 'hexagon':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 6, 0, tankColor, isActive);
                     break;
                 case 'diamond':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 4, 0, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 4, 0, tankColor, isActive);
                     break;
                 case 'star':
-                    drawStar(renderer.ctx, player.x, player.y, tankSize, 5, tankColor, isActive);
+                    drawStar(renderer.ctx, 0, 0, tankSize, 5, tankColor, isActive);
                     break;
                 case 'circle':
-                    renderer.drawCircle(player.x, player.y, tankSize, tankColor, isActive);
+                    renderer.drawCircle(0, 0, tankSize, tankColor, isActive);
                     break;
                 case 'octagon':
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 8, Math.PI / 8, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 8, Math.PI / 8, tankColor, isActive);
                     break;
                 case 'crescent':
-                    drawCrescent(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    drawCrescent(renderer.ctx, 0, 0, tankSize, tankColor, isActive);
                     break;
                 case 'parallelogram':
-                    drawParallelogram(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    drawParallelogram(renderer.ctx, 0, 0, tankSize, tankColor, isActive);
                     break;
                 case 'kite':
-                    drawKite(renderer.ctx, player.x, player.y, tankSize, tankColor, isActive);
+                    drawKite(renderer.ctx, 0, 0, tankSize, tankColor, isActive);
                     break;
                 default:
-                    renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, tankColor, isActive);
+                    renderer.drawRegularPolygon(0, 0, tankSize, 6, 0, tankColor, isActive);
             }
         } else {
             // Fallback to hexagon if no tank selected
-            renderer.drawRegularPolygon(player.x, player.y, tankSize, 6, 0, player.color, isActive);
+            renderer.drawRegularPolygon(0, 0, tankSize, 6, 0, player.color, isActive);
         }
+        ctx.restore();
 
         // Shield indicator (glowing ring around tank when shielded)
         if (player.shield > 0) {
@@ -8473,13 +8590,13 @@ function render() {
     renderer.drawText('VOID ARTILLERY', 20, 30, COLORS.cyan, 20, 'left', true);
 
     // Turn indicator
-    const turnText = state.phase === 'gameover'
-        ? `PLAYER ${state.winner + 1} WINS!`
-        : `PLAYER ${state.currentPlayer + 1} TURN`;
     const turnColor = state.phase === 'gameover'
         ? state.players[state.winner].color
         : getCurrentPlayer().color;
-    renderer.drawText(turnText, CANVAS_WIDTH / 2, 30, turnColor, 20, 'center', true);
+    if (state.phase !== 'gameover') {
+        const turnText = `PLAYER ${state.currentPlayer + 1} TURN`;
+        renderer.drawText(turnText, CANVAS_WIDTH / 2, 30, turnColor, 20, 'center', true);
+    }
 
     // Round indicator + FPS (for debugging)
     renderer.drawText(`Round ${getCurrentRound()}`, CANVAS_WIDTH - 20, 30, COLORS.white, 14, 'right', false);
@@ -8628,10 +8745,38 @@ function render() {
         const player = getCurrentPlayer();
         const hooks = state.grapple.ammo[state.currentPlayer] || 0;
         const grappleHint = hooks > 0 ? ', G to grapple' : '';
-        const hintText = player.isAI ? 'AI is thinking...' : `Aim, HOLD SPACE to fire${grappleHint}`;
+        const hintText = player.isAI ? 'AI is thinking...' : `←→ Move, ↑↓ Aim, HOLD SPACE to fire${grappleHint}`;
         renderer.drawText(hintText, 20, CANVAS_HEIGHT - 30, '#666666', 12, 'left', false);
+
+        // Turn timer display (human players only)
+        if (!player.isAI && state.turnTimerActive) {
+            const sec = Math.ceil(state.turnTimer);
+            const timerColor = sec > 10 ? '#FFFFFF' : sec > 5 ? '#FFFF00' : '#FF3333';
+            const timerCtx = renderer.ctx;
+            timerCtx.save();
+            if (sec <= 5) {
+                const pulse = 0.6 + Math.sin(state.time * 8) * 0.4;
+                renderer.setGlow(timerColor, 20 * pulse);
+            }
+            renderer.drawText(`${sec}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 55, timerColor, 24, 'center', true);
+            if (sec <= 5) renderer.clearGlow();
+            timerCtx.restore();
+        }
     } else if (state.phase === 'gameover') {
-        renderer.drawText('ENTER: Rematch | ESC: Title', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50, COLORS.white, 16, 'center', true);
+        // Victory screen — centered tank name with pulsing glow
+        const winnerPlayer = state.players[state.winner];
+        const winnerTank = winnerPlayer.tankId ? getTankById(winnerPlayer.tankId) : null;
+        const winName = winnerTank ? winnerTank.name.toUpperCase() : `PLAYER ${state.winner + 1}`;
+        const winColor = winnerTank ? winnerTank.color : winnerPlayer.color;
+        const pulse = 1 + Math.sin(state.time * 4) * 0.1;
+        const victCtx = renderer.ctx;
+        victCtx.save();
+        renderer.setGlow(winColor, 30 * pulse);
+        renderer.drawText(`${winName} WINS!`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 20, winColor, Math.round(48 * pulse), 'center', true);
+        renderer.clearGlow();
+        renderer.drawText(`Player ${state.winner + 1}`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 20, '#888888', 18, 'center', false);
+        renderer.drawText('ENTER: Rematch  |  ESC: Title', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 60, '#AAAAAA', 14, 'center', false);
+        victCtx.restore();
     } else if (state.phase === 'awaiting_next_turn') {
         // Draw "Start Next Turn?" prompt
         const nextPlayer = state.players[state.currentPlayer];
@@ -10534,6 +10679,12 @@ function renderTankSelect() {
         // Tank name
         const nameColor = taken ? '#444444' : (isSelected ? COLORS.white : '#888888');
         renderer.drawText(tank.name.toUpperCase(), x, shapeY + 60, nameColor, isSelected && !taken ? 18 : 14, 'center', isSelected && !taken);
+
+        // Flavor text (below name, smaller and dimmed)
+        if (!taken && tank.flavor) {
+            const flavorColor = isSelected ? '#999999' : '#555555';
+            renderer.drawText(tank.flavor, x, shapeY + 78, flavorColor, 10, 'center', false);
+        }
 
         // Number key hint
         const hintColor = taken ? '#333333' : (isSelected ? tank.glowColor : '#555555');
