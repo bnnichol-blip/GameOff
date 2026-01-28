@@ -103,9 +103,6 @@ npm run build
 
 The built exe will be in `dist/VOID_ARTILLERY.exe`
 
-### Play in Browser
-Simply open `index.html` in a modern browser - no build required!
-
 ---
 
 ## Tech Stack
