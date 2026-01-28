@@ -90,6 +90,15 @@ const VOID_RISE_PER_ROUND = 50;  // Void rises 50px per round (~3% of arena heig
 const TANK_RADIUS = 25;
 const TURN_DELAY_MS = 800;
 
+// Grappling hook constants
+const GRAPPLE_HOOK_SPEED = 35;
+const GRAPPLE_HOOK_GRAVITY = 0.08;
+const GRAPPLE_MAX_RANGE = 1200;
+const GRAPPLE_HOOK_RADIUS = 8;
+const GRAPPLE_PULL_STRENGTH = 0.8;
+const GRAPPLE_MAX_PULL_SPEED = 18;
+const GRAPPLE_STARTING_AMMO = 3;
+
 // Juice constants
 const FREEZE_FRAME_MS = 0;  // Disabled - felt like lag
 const SLOW_MO_DURATION_MS = 0;  // Disabled - felt like lag
@@ -318,7 +327,13 @@ const state = {
 
     // Pause menu state
     paused: false,
-    pauseMenuIndex: 0  // 0 = Resume, 1 = Restart Match, 2 = Main Menu
+    pauseMenuIndex: 0,  // 0 = Resume, 1 = Restart Match, 2 = Main Menu
+
+    // === GRAPPLING HOOK SYSTEM ===
+    grapple: {
+        ammo: [],  // Per-player hook ammo (initialized in resetGame)
+        active: null  // { playerIndex, phase, hook: {x,y,vx,vy}, anchor: {x,y}, travelDistance, tankVx, tankVy, landingTimer }
+    }
 };
 
 // Tank type keys for selection
@@ -647,6 +662,12 @@ function resetGame() {
 
     // Reset terrain style notification
     state.terrainStyleNotification = null;
+
+    // Reset grappling hook system
+    state.grapple = {
+        ammo: Array.from({ length: NUM_PLAYERS }, () => GRAPPLE_STARTING_AMMO),
+        active: null
+    };
 
     // Select random biome for this game
     const biomeKey = BIOME_KEYS[Math.floor(Math.random() * BIOME_KEYS.length)];
@@ -5289,8 +5310,8 @@ function update(dt) {
             audio.playPurchase();
         }
 
-        // G = Give current player VOID_CANNON
-        if (input.wasPressed('KeyG')) {
+        // Y = Give current player VOID_CANNON (G is now grapple)
+        if (input.wasPressed('KeyY')) {
             const player = getCurrentPlayer();
             player.weapon = 'VOID_CANNON';
             console.log(`[DEBUG] P${state.currentPlayer + 1} got VOID CANNON`);
@@ -5543,45 +5564,55 @@ function update(dt) {
         if (player.isAI) {
             updateAI(dt);
         } else {
-            // Human controls
-            // METEOR_SHOWER: Lock turret to fire straight up
-            const weapon = WEAPONS[player.weapon];
-            if (weapon && weapon.behavior === 'meteorShowerUp') {
-                player.angle = 90;  // Lock straight up
-            } else {
-                // Aim with arrow keys
-                if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
-                if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
+            // === GRAPPLE INPUT (G key) ===
+            if (input.wasPressed('KeyG')) {
+                handleGrappleInput(player, state.currentPlayer);
             }
 
-            // Charge with space (oscillates up and down for skill-based timing)
-            if (input.space && !state.projectile && state.projectiles.length === 0) {
-                // Start charge sound when beginning to charge
-                if (!player.charging) {
-                    audio.startCharge();
-                    player.chargeDir = 1;  // Start going up
-                }
-                player.charging = true;
+            // Block weapon aiming/firing during active grapple
+            const canAim = !isGrappleBlocking();
 
-                // Oscillate power up and down
-                player.power += CHARGE_RATE * player.chargeDir;
-                if (player.power >= 1) {
-                    player.power = 1;
-                    player.chargeDir = -1;  // Reverse to go down
-                } else if (player.power <= 0.1) {
-                    player.power = 0.1;  // Don't go below 10%
-                    player.chargeDir = 1;   // Reverse to go up
+            if (canAim) {
+                // Human controls
+                // METEOR_SHOWER: Lock turret to fire straight up
+                const weapon = WEAPONS[player.weapon];
+                if (weapon && weapon.behavior === 'meteorShowerUp') {
+                    player.angle = 90;  // Lock straight up
+                } else {
+                    // Aim with arrow keys
+                    if (input.left) player.angle = clamp(player.angle + 2, 0, 180);
+                    if (input.right) player.angle = clamp(player.angle - 2, 0, 180);
                 }
 
-                // Update charge sound pitch
-                audio.updateCharge(player.power);
-            }
+                // Charge with space (oscillates up and down for skill-based timing)
+                if (input.space && !state.projectile && state.projectiles.length === 0) {
+                    // Start charge sound when beginning to charge
+                    if (!player.charging) {
+                        audio.startCharge();
+                        player.chargeDir = 1;  // Start going up
+                    }
+                    player.charging = true;
 
-            // Fire on space release
-            if (input.spaceReleased && player.charging && !state.projectile) {
-                audio.stopCharge();
-                audio.playFire();
-                fireProjectile();
+                    // Oscillate power up and down
+                    player.power += CHARGE_RATE * player.chargeDir;
+                    if (player.power >= 1) {
+                        player.power = 1;
+                        player.chargeDir = -1;  // Reverse to go down
+                    } else if (player.power <= 0.1) {
+                        player.power = 0.1;  // Don't go below 10%
+                        player.chargeDir = 1;   // Reverse to go up
+                    }
+
+                    // Update charge sound pitch
+                    audio.updateCharge(player.power);
+                }
+
+                // Fire on space release
+                if (input.spaceReleased && player.charging && !state.projectile) {
+                    audio.stopCharge();
+                    audio.playFire();
+                    fireProjectile();
+                }
             }
         }
     }
@@ -5707,6 +5738,9 @@ function update(dt) {
     updatePendingMeteors(dt);
     updateVoidCannonBeams(dt);
     updateLightningArc(dt);
+
+    // Update grappling hook system
+    updateGrapple(dt);
 
     // Check if all weapon effects have resolved and we can end the turn
     // This catches cases where endTurn() was called but effects were still pending
@@ -5983,6 +6017,492 @@ function updateBlackHoles(dt) {
 
             state.blackHoles.splice(i, 1);
         }
+    }
+}
+
+// ============================================================================
+// GRAPPLING HOOK SYSTEM
+// ============================================================================
+
+/**
+ * Launch grappling hook from player in their aim direction
+ */
+function launchGrappleHook(player, playerIndex) {
+    const angleRad = degToRad(180 - player.angle);  // Same as fireProjectile
+    const vx = Math.cos(angleRad) * GRAPPLE_HOOK_SPEED;
+    const vy = -Math.sin(angleRad) * GRAPPLE_HOOK_SPEED;
+
+    state.grapple.active = {
+        playerIndex,
+        phase: 'traveling',
+        hook: {
+            x: player.x,
+            y: player.y - 20,  // Start from top of tank
+            vx,
+            vy
+        },
+        anchor: null,
+        travelDistance: 0,
+        tankVx: 0,
+        tankVy: 0,
+        landingTimer: 0
+    };
+
+    audio.playSelect();
+    console.log(`[GRAPPLE] P${playerIndex + 1} launched hook`);
+}
+
+/**
+ * Update grapple hook while traveling - check for terrain/ceiling collision
+ */
+function updateGrappleHookTravel(dt) {
+    const grapple = state.grapple.active;
+    if (!grapple || grapple.phase !== 'traveling') return;
+
+    const hook = grapple.hook;
+    const stepSize = 5;
+    const steps = Math.ceil(GRAPPLE_HOOK_SPEED * dt * 60 / stepSize);
+
+    // Sub-step collision detection for accuracy
+    for (let s = 0; s < steps; s++) {
+        // Apply velocity
+        hook.x += hook.vx / steps;
+        hook.y += hook.vy / steps;
+
+        // Apply light gravity
+        hook.vy += GRAPPLE_HOOK_GRAVITY;
+
+        // Track distance
+        grapple.travelDistance += Math.sqrt((hook.vx / steps) ** 2 + (hook.vy / steps) ** 2);
+
+        // Check for terrain collision (floor)
+        const terrainY = terrain.getHeightAt(hook.x);
+        if (hook.y >= terrainY) {
+            // Hit terrain floor - attach!
+            hook.y = terrainY - 2;
+            grapple.anchor = { x: hook.x, y: hook.y };
+            grapple.phase = 'attached';
+            state.grapple.ammo[grapple.playerIndex]--;
+            audio.playBounce();
+            particles.sparks(hook.x, hook.y, 15, '#ffaa00');
+            console.log(`[GRAPPLE] Hook attached to terrain at ${hook.x.toFixed(0)}, ${hook.y.toFixed(0)}`);
+            return;
+        }
+
+        // Check for ceiling collision
+        if (terrain.isPointInCeiling(hook.x, hook.y)) {
+            // Hit ceiling - attach!
+            grapple.anchor = { x: hook.x, y: hook.y };
+            grapple.phase = 'attached';
+            state.grapple.ammo[grapple.playerIndex]--;
+            audio.playBounce();
+            particles.sparks(hook.x, hook.y, 15, '#ffaa00');
+            console.log(`[GRAPPLE] Hook attached to ceiling at ${hook.x.toFixed(0)}, ${hook.y.toFixed(0)}`);
+            return;
+        }
+
+        // Check for out of bounds (miss)
+        if (hook.x < WORLD_LEFT || hook.x > WORLD_RIGHT || hook.y > state.voidY || hook.y < -200) {
+            // Miss - cancel without consuming ammo
+            grapple.phase = 'idle';
+            state.grapple.active = null;
+            console.log(`[GRAPPLE] Hook missed (out of bounds)`);
+            return;
+        }
+
+        // Check for max range
+        if (grapple.travelDistance > GRAPPLE_MAX_RANGE) {
+            // Miss - too far
+            grapple.phase = 'idle';
+            state.grapple.active = null;
+            console.log(`[GRAPPLE] Hook missed (max range)`);
+            return;
+        }
+    }
+}
+
+/**
+ * Update grapple pull - spring physics pulling tank toward anchor
+ */
+function updateGrapplePull(dt) {
+    const grapple = state.grapple.active;
+    if (!grapple || grapple.phase !== 'attached') return;
+
+    const player = state.players[grapple.playerIndex];
+    const anchor = grapple.anchor;
+
+    // Calculate direction to anchor
+    const dx = anchor.x - player.x;
+    const dy = anchor.y - player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 30) {
+        // Reached anchor - auto-release with small boost
+        releaseGrapple();
+        return;
+    }
+
+    // Spring-based pull toward anchor
+    const pullX = (dx / dist) * GRAPPLE_PULL_STRENGTH;
+    const pullY = (dy / dist) * GRAPPLE_PULL_STRENGTH;
+
+    // Accumulate velocity
+    grapple.tankVx += pullX;
+    grapple.tankVy += pullY;
+
+    // Clamp to max speed
+    const speed = Math.sqrt(grapple.tankVx ** 2 + grapple.tankVy ** 2);
+    if (speed > GRAPPLE_MAX_PULL_SPEED) {
+        grapple.tankVx = (grapple.tankVx / speed) * GRAPPLE_MAX_PULL_SPEED;
+        grapple.tankVy = (grapple.tankVy / speed) * GRAPPLE_MAX_PULL_SPEED;
+    }
+
+    // Move tank
+    player.x += grapple.tankVx;
+    player.y += grapple.tankVy;
+
+    // Wall bounce
+    if (player.x < WORLD_LEFT + TANK_RADIUS) {
+        player.x = WORLD_LEFT + TANK_RADIUS;
+        grapple.tankVx *= -0.5;
+    }
+    if (player.x > WORLD_RIGHT - TANK_RADIUS) {
+        player.x = WORLD_RIGHT - TANK_RADIUS;
+        grapple.tankVx *= -0.5;
+    }
+
+    // Check if tank hit terrain during pull
+    const terrainY = terrain.getHeightAt(player.x);
+    if (player.y >= terrainY - TANK_RADIUS) {
+        // Keep tank above terrain
+        player.y = terrainY - TANK_RADIUS;
+
+        // Only land if moving downward (not being pulled up/sideways)
+        if (grapple.tankVy > 2) {
+            landGrapple();
+            return;
+        }
+        // Otherwise just slide along terrain - zero out downward velocity
+        if (grapple.tankVy > 0) {
+            grapple.tankVy = 0;
+        }
+    }
+
+    // Check ceiling collision during pull
+    if (terrain.isPointInCeiling(player.x, player.y - TANK_RADIUS)) {
+        const ceilingY = terrain.getCeilingAt(player.x);
+
+        // Detect if this is a SIDE hit vs BOTTOM hit
+        // Check if there was ceiling at previous X position
+        const prevX = player.x - grapple.tankVx;
+        const prevCeilingY = terrain.getCeilingAt(prevX);
+        const wasInCeilingHorizontally = prevCeilingY !== null && (player.y - TANK_RADIUS) <= prevCeilingY;
+
+        if (!wasInCeilingHorizontally && Math.abs(grapple.tankVx) > 0.5) {
+            // SIDE HIT - bounce horizontally, push back to previous X
+            player.x = prevX;
+            grapple.tankVx *= -0.5;  // Reverse and dampen horizontal velocity
+        } else if (ceilingY !== null) {
+            // BOTTOM HIT - push below ceiling
+            player.y = ceilingY + TANK_RADIUS + 2;
+            if (grapple.tankVy < 0) {
+                grapple.tankVy = Math.abs(grapple.tankVy) * 0.3;
+            }
+        }
+    }
+
+    // Check void death
+    if (player.y > state.voidY) {
+        player.health = 0;
+        triggerDeathExplosion(player, true);
+        state.grapple.active = null;
+        return;
+    }
+
+    // Trail particles
+    if (Math.random() < 0.3) {
+        particles.trail(player.x, player.y, '#ffaa00');
+    }
+}
+
+/**
+ * Release grapple - preserve momentum and enter flying state
+ */
+function releaseGrapple() {
+    const grapple = state.grapple.active;
+    if (!grapple) return;
+
+    const player = state.players[grapple.playerIndex];
+
+    // Preserve velocity with slight boost for satisfying feel
+    player.vx = grapple.tankVx * 1.1;
+    player.vy = grapple.tankVy * 1.1;
+
+    grapple.phase = 'flying';
+    grapple.anchor = null;
+
+    audio.playExplosion(0.2);
+    particles.sparks(player.x, player.y, 10, '#ffaa00');
+    console.log(`[GRAPPLE] Released - flying with velocity (${player.vx.toFixed(1)}, ${player.vy.toFixed(1)})`);
+}
+
+/**
+ * Update grapple flying - free movement with gravity until landing
+ */
+function updateGrappleFlying(dt) {
+    const grapple = state.grapple.active;
+    if (!grapple || grapple.phase !== 'flying') return;
+
+    const player = state.players[grapple.playerIndex];
+
+    // Apply gravity
+    player.vy += state.gravity;
+
+    // Move tank
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // Wall bounce
+    if (player.x < WORLD_LEFT + TANK_RADIUS) {
+        player.x = WORLD_LEFT + TANK_RADIUS;
+        player.vx *= -0.5;
+    }
+    if (player.x > WORLD_RIGHT - TANK_RADIUS) {
+        player.x = WORLD_RIGHT - TANK_RADIUS;
+        player.vx *= -0.5;
+    }
+
+    // Check terrain landing
+    const terrainY = terrain.getHeightAt(player.x);
+    if (player.y >= terrainY - TANK_RADIUS) {
+        player.y = terrainY - TANK_RADIUS;
+        landGrapple();
+        return;
+    }
+
+    // Check ceiling collision
+    if (terrain.isPointInCeiling(player.x, player.y - TANK_RADIUS)) {
+        const ceilingY = terrain.getCeilingAt(player.x);
+
+        // Detect if this is a SIDE hit vs BOTTOM hit
+        const prevX = player.x - player.vx;
+        const prevCeilingY = terrain.getCeilingAt(prevX);
+        const wasInCeilingHorizontally = prevCeilingY !== null && (player.y - TANK_RADIUS) <= prevCeilingY;
+
+        if (!wasInCeilingHorizontally && Math.abs(player.vx) > 0.5) {
+            // SIDE HIT - bounce horizontally, push back to previous X
+            player.x = prevX;
+            player.vx *= -0.5;  // Reverse and dampen horizontal velocity
+        } else if (ceilingY !== null) {
+            // BOTTOM HIT - push below ceiling
+            player.y = ceilingY + TANK_RADIUS + 2;
+            if (player.vy < 0) {
+                player.vy = Math.abs(player.vy) * 0.3;
+            }
+        }
+    }
+
+    // Check void death
+    if (player.y > state.voidY) {
+        player.health = 0;
+        triggerDeathExplosion(player, true);
+        state.grapple.active = null;
+        return;
+    }
+
+    // Trail particles
+    if (Math.random() < 0.2) {
+        particles.trail(player.x, player.y, '#aa6600');
+    }
+}
+
+/**
+ * Land the grapple - friction and delay before clearing state
+ */
+function landGrapple() {
+    const grapple = state.grapple.active;
+    if (!grapple) return;
+
+    const player = state.players[grapple.playerIndex];
+
+    // Apply landing friction
+    player.vx *= 0.3;
+    player.vy = 0;
+
+    grapple.phase = 'landed';
+    grapple.landingTimer = 0.3;
+
+    audio.playExplosion(0.3);
+    particles.sparks(player.x, player.y, 20, '#ffaa00');
+    console.log(`[GRAPPLE] Landed at ${player.x.toFixed(0)}`);
+}
+
+/**
+ * Update landed state - small delay then clear
+ */
+function updateGrappleLanded(dt) {
+    const grapple = state.grapple.active;
+    if (!grapple || grapple.phase !== 'landed') return;
+
+    grapple.landingTimer -= dt;
+
+    if (grapple.landingTimer <= 0) {
+        // Clear grapple - can now aim normally
+        state.grapple.active = null;
+        console.log(`[GRAPPLE] Ready to aim`);
+    }
+}
+
+/**
+ * Main grapple update dispatcher
+ */
+function updateGrapple(dt) {
+    const grapple = state.grapple.active;
+    if (!grapple) return;
+
+    switch (grapple.phase) {
+        case 'traveling':
+            updateGrappleHookTravel(dt);
+            break;
+        case 'attached':
+            updateGrapplePull(dt);
+            break;
+        case 'flying':
+            updateGrappleFlying(dt);
+            break;
+        case 'landed':
+            updateGrappleLanded(dt);
+            break;
+    }
+}
+
+/**
+ * Handle G key input for grapple
+ */
+function handleGrappleInput(player, playerIndex) {
+    const grapple = state.grapple.active;
+
+    // If no active grapple and has ammo - launch
+    if (!grapple && state.grapple.ammo[playerIndex] > 0) {
+        launchGrappleHook(player, playerIndex);
+        return true;
+    }
+
+    // If attached - release
+    if (grapple && grapple.phase === 'attached' && grapple.playerIndex === playerIndex) {
+        releaseGrapple();
+        return true;
+    }
+
+    // If flying and has ammo - chain another hook
+    if (grapple && grapple.phase === 'flying' && grapple.playerIndex === playerIndex && state.grapple.ammo[playerIndex] > 0) {
+        launchGrappleHook(player, playerIndex);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Check if grapple is blocking normal controls
+ */
+function isGrappleBlocking() {
+    const grapple = state.grapple.active;
+    if (!grapple) return false;
+    return grapple.phase === 'traveling' || grapple.phase === 'attached' || grapple.phase === 'flying';
+}
+
+// ============================================================================
+// GRAPPLE RENDERING
+// ============================================================================
+
+/**
+ * Draw bezier curve rope between two points with sag
+ */
+function drawGrappleRope(ctx, x1, y1, x2, y2, color, slack = 0.15) {
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+    const sagY = midY + dist * slack;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo(midX, sagY, x2, y2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+}
+
+/**
+ * Render grappling hook system
+ * NOTE: Canvas already has WORLD_SCALE transform applied, so use world coordinates directly
+ */
+function renderGrapple() {
+    const grapple = state.grapple.active;
+    if (!grapple) return;
+
+    const ctx = renderer.ctx;
+    const player = state.players[grapple.playerIndex];
+
+    // Use world coordinates directly (canvas has scale transform)
+    const playerX = player.x;
+    const playerY = player.y;
+
+    if (grapple.phase === 'traveling') {
+        // Draw hook traveling
+        const hookX = grapple.hook.x;
+        const hookY = grapple.hook.y;
+
+        // Rope from tank to hook
+        drawGrappleRope(ctx, playerX, playerY - 20, hookX, hookY, '#ffaa00', 0.05);
+
+        // Hook head (orange circle with glow)
+        ctx.beginPath();
+        ctx.arc(hookX, hookY, GRAPPLE_HOOK_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffaa00';
+        ctx.shadowColor = '#ffaa00';
+        ctx.shadowBlur = 15;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    if (grapple.phase === 'attached') {
+        // Draw rope to anchor
+        const anchorX = grapple.anchor.x;
+        const anchorY = grapple.anchor.y;
+
+        // Taut rope
+        drawGrappleRope(ctx, playerX, playerY - 20, anchorX, anchorY, '#ffaa00', 0.02);
+
+        // Pulsing anchor point
+        const pulse = 1 + Math.sin(state.time * 10) * 0.3;
+        const anchorRadius = 8 * pulse;
+
+        ctx.beginPath();
+        ctx.arc(anchorX, anchorY, anchorRadius, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff6600';
+        ctx.shadowColor = '#ff6600';
+        ctx.shadowBlur = 20;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    if (grapple.phase === 'flying') {
+        // Slack rope trailing behind (visual only, no anchor)
+        const trailX = playerX - player.vx * 3;
+        const trailY = playerY - player.vy * 3;
+
+        ctx.beginPath();
+        ctx.moveTo(playerX, playerY - 20);
+        ctx.lineTo(trailX, trailY);
+        ctx.strokeStyle = '#aa6600';
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.5;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
     }
 }
 
@@ -7183,6 +7703,9 @@ function render() {
     renderVoidCannonWarnings();
     renderMeteorWarnings();
 
+    // Draw grappling hook
+    renderGrapple();
+
     // Draw nuke shockwave
     if (state.nukeShockwave) {
         drawNukeShockwave(state.nukeShockwave);
@@ -7423,6 +7946,13 @@ function render() {
                 statusText += ` 🛡${Math.round(p.shield * 100)}%`;
             }
             renderer.drawText(statusText, x, statsY + 15, '#888888', 10, 'left', false);
+
+            // Grapple hooks ammo (show for active player or if they have hooks)
+            const hooks = state.grapple.ammo[i] || 0;
+            if (hooks > 0 || isActive) {
+                const hookColor = hooks > 0 ? '#ffaa00' : '#444444';
+                renderer.drawText(`HOOKS: ${hooks}`, x, statsY + 28, hookColor, 9, 'left', false);
+            }
         }
     }
 
@@ -7527,7 +8057,10 @@ function render() {
 
     // Controls hint
     if (state.phase === 'aiming') {
-        const hintText = getCurrentPlayer().isAI ? 'AI is thinking...' : '← → to aim, HOLD SPACE to charge, RELEASE to fire';
+        const player = getCurrentPlayer();
+        const hooks = state.grapple.ammo[state.currentPlayer] || 0;
+        const grappleHint = hooks > 0 ? ', G to grapple' : '';
+        const hintText = player.isAI ? 'AI is thinking...' : `Aim, HOLD SPACE to fire${grappleHint}`;
         renderer.drawText(hintText, 20, CANVAS_HEIGHT - 30, '#666666', 12, 'left', false);
     } else if (state.phase === 'gameover') {
         renderer.drawText('ENTER: Rematch | ESC: Title', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50, COLORS.white, 16, 'center', true);

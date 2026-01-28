@@ -6,6 +6,9 @@
 **Status:** Feature Complete, Polish Phase
 **Target:** Win the $300 prize
 
+> **PRIORITY FOR NEXT SESSION:** Fix ceiling collision bugs for NUKE and ORBITAL_BEACON.
+> See `CeilingCollisionDebug.md` for full analysis. Same bug pattern as Strafing Run fix.
+
 ---
 
 ## The Game
@@ -169,6 +172,15 @@ Random modifiers that activate each round:
 ### Desperation Beacons
 When orbital weapons are used, beacons fall from the sky. Players can claim them by shooting them.
 
+### Grappling Hook System
+- Each tank starts with **3 hooks** per game
+- Press **G** to launch hook toward aim direction
+- Hook attaches to terrain floor or ceiling
+- Press **G** again to release with preserved momentum
+- Can chain hooks while flying (consumes ammo)
+- Hook misses (off-screen) don't consume ammo
+- AI players skip grapple (MVP)
+
 ---
 
 ## Technical Architecture
@@ -223,13 +235,15 @@ Active during gameplay (aiming/firing phases):
 | Q | Give Quake |
 | O | Give Orbital Beacon |
 | S | Give Strafing Run |
+| Y | Give Void Cannon |
+| X | Give Void Splitter |
 | B | Spawn desperation beacon |
 | C | +500 coins |
 | H | Heal to full |
 | K | Kill next enemy |
 | V | Raise void by 100 |
 | T | Toggle terrain debug overlay |
-| 1-9 | Cycle through weapons |
+| 1-2 | Cycle through weapons |
 
 ---
 
@@ -241,6 +255,7 @@ Active during gameplay (aiming/firing phases):
 | ↑ ↓ | Fine aim adjustment |
 | Space (hold) | Charge power |
 | Space (release) | Fire |
+| G | Grapple (launch/release/chain) |
 | 1-5 | Select lottery card |
 | Enter | Confirm selection |
 | Esc | Pause/menu |
