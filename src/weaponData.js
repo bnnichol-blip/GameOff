@@ -450,6 +450,56 @@ export const WEAPONS = {
         pullRadius: 120,         // Pull range beyond beam
         pullStrength: 0.75       // Strong pull strength (buffed from 0.5)
     },
+
+    // === CLOSE-RANGE WEAPONS (Grappling Hook Synergy) ===
+    BIG_SPRING: {
+        name: 'Big Spring',
+        description: 'BOING! Massive knockback, zero damage',
+        tier: 'MID',  // Rare rarity
+        damage: 0,
+        blastRadius: 180,      // Knockback range
+        bounces: 0,
+        projectileRadius: 0,
+        projectileSpeed: 0,    // Instant (hitscan)
+        color: '#ff69b4',      // Hot pink
+        behavior: 'bigSpring',
+        instantFire: true,
+        springRange: 250,      // Max range of spring
+        knockbackForce: 55,    // MASSIVE knockback
+        pointBlankRadius: 80   // Always hit enemies this close (standing on top)
+    },
+    SILLY_HAMMER: {
+        name: 'Really Silly Hammer',
+        description: 'BONK! Swing a giant clown hammer',
+        tier: 'PREMIUM',  // Epic rarity
+        damage: 125,           // Reduced from 150
+        blastRadius: 120,      // Hammer reach
+        bounces: 0,
+        projectileRadius: 0,
+        projectileSpeed: 0,    // Instant activation
+        color: '#ff4444',      // Red
+        behavior: 'sillyHammer',
+        instantFire: true,
+        hammerRadius: 140,     // Swing reach
+        swingDuration: 0.6     // Total swing time
+    },
+    MAGNETIC_SLAM: {
+        name: 'Magnetic Slam',
+        description: 'Pull enemies close, then SLAM!',
+        tier: 'ORBITAL',  // Legendary rarity
+        damage: 9999,          // Instant kill
+        blastRadius: 200,      // Pull range
+        bounces: 0,
+        projectileRadius: 0,
+        projectileSpeed: 0,
+        color: '#cc0000',      // Deep red
+        behavior: 'magneticSlam',
+        instantFire: true,
+        pullRange: 250,        // Magnet attraction range
+        captureRadius: 100,    // Guaranteed capture radius (any side)
+        craterRadius: 180,     // Impact crater size
+        flightDuration: 1.5    // Total up/down time
+    },
 };
 
 // Weapon keys for iteration (exclude non-purchasable and orbital weapons from regular rotation)

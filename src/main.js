@@ -318,6 +318,14 @@ const state = {
     // Lightning arc for chain lightning
     lightningArc: null,  // { x1, y1, x2, y2, timer, color }
 
+    // === CLOSE-RANGE WEAPON SYSTEMS ===
+    // Active hammer swings (SILLY_HAMMER)
+    hammerSwings: [],  // { ownerIndex, phase, timer, angle, hitEnemies }
+    // Active magnetic slams (MAGNETIC_SLAM)
+    magneticSlams: [],  // { ownerIndex, phase, timer, startX, startY, capturedEnemies }
+    // Active springs (BIG_SPRING) - for visual effect
+    activeSpring: null,  // { ownerIndex, timer, endX, endY }
+
     // Biome system (visual theme)
     currentBiome: null,  // Set at game start from BIOMES
 
@@ -657,6 +665,11 @@ function resetGame() {
     state.voidCannonBeams = [];
     state.lightningArc = null;
 
+    // Reset close-range weapon systems
+    state.hammerSwings = [];
+    state.magneticSlams = [];
+    state.activeSpring = null;
+
     // Reset death notifications
     state.deathNotifications = [];
 
@@ -755,6 +768,24 @@ function fireProjectile() {
     // SCATTER SHELL - shotgun: fire 5 fragments in cone immediately
     if (weapon.behavior === 'scatterCone') {
         fireScatterShell(player, weapon, angleRad);
+        return;
+    }
+
+    // BIG SPRING - instant hitscan knockback, no damage
+    if (weapon.behavior === 'bigSpring') {
+        fireBigSpring(player, weapon, angleRad);
+        return;
+    }
+
+    // SILLY HAMMER - swing attack with invulnerability
+    if (weapon.behavior === 'sillyHammer') {
+        fireSillyHammer(player, weapon, angleRad);
+        return;
+    }
+
+    // MAGNETIC SLAM - multi-phase pull and slam
+    if (weapon.behavior === 'magneticSlam') {
+        fireMagneticSlam(player, weapon);
         return;
     }
 
@@ -1167,6 +1198,183 @@ function fireScatterShell(player, weapon, angleRad) {
     // Visual/audio feedback
     particles.sparks(player.x, player.y - 20, 20, weapon.color);
     audio.playExplosion(0.5);
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
+}
+
+/**
+ * Fire BIG SPRING - instant hitscan knockback weapon
+ * Extends a spring in aim direction, pushes enemies away with no damage
+ */
+function fireBigSpring(player, weapon, angleRad) {
+    const springRange = weapon.springRange || 250;
+    const knockbackForce = weapon.knockbackForce || 55;
+    const pointBlankRadius = weapon.pointBlankRadius || 80;  // Always hit enemies this close
+
+    // Calculate spring end point
+    const endX = player.x + Math.cos(angleRad) * springRange;
+    const endY = (player.y - 20) - Math.sin(angleRad) * springRange;
+
+    // Store spring for visual effect
+    state.activeSpring = {
+        ownerIndex: state.currentPlayer,
+        timer: 0.35,  // Visual duration
+        startX: player.x,
+        startY: player.y - 20,
+        endX: endX,
+        endY: endY,
+        color: weapon.color
+    };
+
+    // Check all enemies within cone/range and apply knockback
+    let hitCount = 0;
+    for (let i = 0; i < state.players.length; i++) {
+        if (i === state.currentPlayer) continue;  // Don't knock yourself
+        const target = state.players[i];
+        if (target.health <= 0) continue;
+
+        // Check if enemy is within spring range
+        const dx = target.x - player.x;
+        const dy = target.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist > springRange) continue;
+
+        // POINT BLANK: Always hit enemies within pointBlankRadius (standing on top)
+        const isPointBlank = dist <= pointBlankRadius;
+
+        if (!isPointBlank) {
+            // Check angle - must be roughly in aim direction (120 degree cone)
+            const angleToTarget = Math.atan2(-dy, dx);  // Negative dy because canvas Y is inverted
+            let angleDiff = Math.abs(angleToTarget - angleRad);
+            if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+
+            if (angleDiff > Math.PI / 3) continue;  // 60 degrees either side = 120 degree cone
+        }
+
+        // Apply knockback - push AWAY from the firing tank
+        const knockDir = dist > 0 ? { x: dx / dist, y: dy / dist } : { x: Math.cos(angleRad), y: -Math.sin(angleRad) };
+
+        // Falloff: stronger at close range (point blank = maximum force)
+        const falloff = isPointBlank ? 1.0 : (1 - (dist / springRange) * 0.4);  // 60-100% force
+        const force = knockbackForce * falloff;
+
+        target.vx += knockDir.x * force;
+        target.vy += knockDir.y * force * 0.7;  // Slightly more vertical launch
+
+        // Visual feedback (bigger for point blank)
+        const particleCount = isPointBlank ? 50 : 30;
+        particles.sparks(target.x, target.y, particleCount, weapon.color);
+        particles.sparks(target.x, target.y, particleCount * 0.6, '#ffffff');
+
+        hitCount++;
+    }
+
+    // Sound and visual effects
+    audio.playExplosion(0.6);
+    renderer.addScreenShake(hitCount > 0 ? 15 : 5);
+
+    if (hitCount > 0) {
+        // Show "BOING!" text
+        state.lotteryNotifications.push({
+            text: 'BOING!',
+            color: weapon.color,
+            x: player.x,
+            y: player.y - 80,
+            timer: 1.0,
+            rarity: 'rare'
+        });
+    }
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
+
+    // Schedule turn end after spring animation
+    setTimeout(() => {
+        if (state.phase === 'firing') {
+            state.activeSpring = null;
+            tryEndTurn();
+        }
+    }, 350);
+}
+
+/**
+ * Fire SILLY HAMMER - swing attack with invulnerability
+ * Creates a hammer swing that arcs in front of the tank
+ */
+function fireSillyHammer(player, weapon, angleRad) {
+    const hammerRadius = weapon.hammerRadius || 140;
+    const swingDuration = weapon.swingDuration || 0.6;
+
+    // Determine swing direction based on aim
+    // If aiming left (angle > 90), swing on left side. Otherwise right side.
+    const aimingLeft = player.angle > 90;
+
+    // Create hammer swing
+    state.hammerSwings.push({
+        ownerIndex: state.currentPlayer,
+        phase: 'windup',  // windup → swinging → recovery → done
+        timer: 0,
+        swingDuration: swingDuration,
+        hammerRadius: hammerRadius,
+        damage: weapon.damage,
+        aimingLeft: aimingLeft,
+        hitEnemies: new Set(),  // Track who we've already hit
+        x: player.x,
+        y: player.y,
+        color: weapon.color
+    });
+
+    // Make player invulnerable
+    player.invulnerable = true;
+
+    // Clear buffs
+    state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
+
+    player.power = 0;
+    player.charging = false;
+    state.phase = 'firing';
+    state.firingStartTime = performance.now();
+}
+
+/**
+ * Fire MAGNETIC SLAM - multi-phase pull and slam attack
+ * Pulls nearby enemies, flies up, crashes down for instant kill
+ */
+function fireMagneticSlam(player, weapon) {
+    const pullRange = weapon.pullRange || 250;
+    const captureRadius = weapon.captureRadius || 100;  // Guaranteed capture radius
+
+    // Create magnetic slam sequence
+    state.magneticSlams.push({
+        ownerIndex: state.currentPlayer,
+        phase: 'magnet_out',  // magnet_out → pulling → ascending → offscreen → descending → impact → done
+        timer: 0,
+        pullRange: pullRange,
+        captureRadius: captureRadius,  // Enemies within this distance MUST be captured
+        craterRadius: weapon.craterRadius || 180,
+        flightDuration: weapon.flightDuration || 1.5,
+        startX: player.x,
+        startY: player.y,
+        capturedEnemies: [],  // { playerIndex, offsetX, offsetY }
+        magnetAngle: 0,  // Magnet animation
+        tankOriginalY: player.y,
+        color: weapon.color
+    });
+
+    // Make player invulnerable
+    player.invulnerable = true;
 
     // Clear buffs
     state.ufoBuffs[state.currentPlayer] = { damage: 0, blast: 0, bounces: 0 };
@@ -3086,6 +3294,9 @@ function onExplode(proj) {
             renderer.flash(weapon.color, 0.3);
             renderer.addScreenShake(12);
 
+            // Mark that a hit occurred (needed for death explosion trigger)
+            hitOccurred = true;
+
             // Check for killing blow
             if (target.health <= 0) {
                 killingBlow = true;
@@ -3761,6 +3972,11 @@ function hasPendingEffects() {
 
     // Check for active orbital strikes (beacon called but not yet fired)
     if (state.orbitalStrikes && state.orbitalStrikes.length > 0) return true;
+
+    // Check for close-range weapon effects
+    if (state.hammerSwings && state.hammerSwings.length > 0) return true;
+    if (state.magneticSlams && state.magneticSlams.length > 0) return true;
+    if (state.activeSpring) return true;
 
     return false;
 }
@@ -5326,6 +5542,30 @@ function update(dt) {
             audio.playPurchase();
         }
 
+        // J = Give current player BIG_SPRING
+        if (input.wasPressed('KeyJ')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'BIG_SPRING';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got BIG SPRING`);
+            audio.playPurchase();
+        }
+
+        // L = Give current player SILLY_HAMMER
+        if (input.wasPressed('KeyL')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'SILLY_HAMMER';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got SILLY HAMMER`);
+            audio.playPurchase();
+        }
+
+        // F = Give current player MAGNETIC_SLAM
+        if (input.wasPressed('KeyF')) {
+            const player = getCurrentPlayer();
+            player.weapon = 'MAGNETIC_SLAM';
+            console.log(`[DEBUG] P${state.currentPlayer + 1} got MAGNETIC SLAM`);
+            audio.playPurchase();
+        }
+
         // 1 = Cycle forward through weapons, 2 = Cycle backward
         if (input.wasPressed('Digit1') || input.wasPressed('Digit2')) {
             const weaponKeys = Object.keys(WEAPONS);
@@ -5738,6 +5978,11 @@ function update(dt) {
     updatePendingMeteors(dt);
     updateVoidCannonBeams(dt);
     updateLightningArc(dt);
+
+    // Update close-range weapon systems
+    updateActiveSpring(dt);
+    updateHammerSwings(dt);
+    updateMagneticSlams(dt);
 
     // Update grappling hook system
     updateGrapple(dt);
@@ -6703,6 +6948,324 @@ function updateLightningArc(dt) {
         state.lightningArc.timer -= dt;
         if (state.lightningArc.timer <= 0) {
             state.lightningArc = null;
+        }
+    }
+}
+
+// ============================================================================
+// Close-Range Weapon System Updates
+// ============================================================================
+
+/**
+ * Update active spring visual effect
+ */
+function updateActiveSpring(dt) {
+    if (state.activeSpring) {
+        state.activeSpring.timer -= dt;
+        if (state.activeSpring.timer <= 0) {
+            state.activeSpring = null;
+        }
+    }
+}
+
+/**
+ * Update hammer swings - phase state machine
+ * WINDUP (0.15s) → SWINGING (0.3s) → RECOVERY (0.15s) → DONE
+ */
+function updateHammerSwings(dt) {
+    for (let i = state.hammerSwings.length - 1; i >= 0; i--) {
+        const swing = state.hammerSwings[i];
+        const player = state.players[swing.ownerIndex];
+
+        swing.timer += dt;
+
+        // Update swing position to follow player (in case of knockback)
+        swing.x = player.x;
+        swing.y = player.y;
+
+        const windupTime = 0.15;
+        const swingTime = 0.3;
+        const recoveryTime = 0.15;
+
+        if (swing.phase === 'windup') {
+            // Hammer raises up
+            if (swing.timer >= windupTime) {
+                swing.phase = 'swinging';
+                swing.timer = 0;
+                audio.playExplosion(0.8);  // Whoosh sound
+            }
+        } else if (swing.phase === 'swinging') {
+            // Calculate current swing angle (180 degree arc)
+            const progress = swing.timer / swingTime;
+            const startAngle = swing.aimingLeft ? Math.PI : 0;
+            const endAngle = swing.aimingLeft ? 0 : Math.PI;
+            swing.currentAngle = startAngle + (endAngle - startAngle) * progress;
+
+            // Check for enemy hits during swing
+            const hammerX = player.x + Math.cos(swing.currentAngle) * swing.hammerRadius;
+            const hammerY = player.y - Math.sin(swing.currentAngle) * swing.hammerRadius * 0.6;  // Flatter arc
+
+            for (let pi = 0; pi < state.players.length; pi++) {
+                if (pi === swing.ownerIndex) continue;
+                if (swing.hitEnemies.has(pi)) continue;  // Already hit this enemy
+                const target = state.players[pi];
+                if (target.health <= 0) continue;
+
+                // Check distance to hammer head
+                const dx = target.x - hammerX;
+                const dy = target.y - hammerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < TANK_RADIUS + 40) {  // Hammer head size
+                    swing.hitEnemies.add(pi);
+
+                    // Deal damage
+                    target.health = Math.max(0, target.health - swing.damage);
+
+                    // Award coins
+                    player.coins += Math.floor(swing.damage * COINS_PER_DAMAGE);
+
+                    // Knockback
+                    const knockDir = dist > 0 ? dx / dist : (swing.aimingLeft ? -1 : 1);
+                    target.vx += knockDir * 15;
+                    target.vy -= 8;
+
+                    // Visual effects
+                    particles.explosion(target.x, target.y, 80, '#ff4444', 40);
+                    particles.sparks(target.x, target.y, 40, '#ffff00');
+                    renderer.addScreenShake(25);
+
+                    // Show "BONK!" text
+                    state.lotteryNotifications.push({
+                        text: 'BONK!',
+                        color: '#ff4444',
+                        x: target.x,
+                        y: target.y - 60,
+                        timer: 1.2,
+                        rarity: 'epic'
+                    });
+
+                    // Check for kill
+                    if (target.health <= 0) {
+                        player.coins += KILL_BONUS;
+                        triggerDeathExplosion(target, false);
+                        audio.playKill();
+                    }
+                }
+            }
+
+            if (swing.timer >= swingTime) {
+                swing.phase = 'recovery';
+                swing.timer = 0;
+            }
+        } else if (swing.phase === 'recovery') {
+            if (swing.timer >= recoveryTime) {
+                // Done - remove invulnerability and clean up
+                player.invulnerable = false;
+                state.hammerSwings.splice(i, 1);
+                tryEndTurn();
+            }
+        }
+    }
+}
+
+/**
+ * Update magnetic slams - complex multi-phase state machine
+ * MAGNET_OUT (0.3s) → PULLING (0.5s) → ASCENDING (0.5s) → OFFSCREEN (0.2s) → DESCENDING (0.4s) → IMPACT → DONE
+ */
+function updateMagneticSlams(dt) {
+    for (let i = state.magneticSlams.length - 1; i >= 0; i--) {
+        const slam = state.magneticSlams[i];
+        const player = state.players[slam.ownerIndex];
+
+        slam.timer += dt;
+        slam.magnetAngle += dt * 5;  // Spin magnet
+
+        const magnetOutTime = 0.3;
+        const pullingTime = 0.5;
+        const ascendingTime = 0.5;
+        const offscreenTime = 0.2;
+        const descendingTime = 0.4;
+
+        if (slam.phase === 'magnet_out') {
+            // Magnet extends from tank
+            if (slam.timer >= magnetOutTime) {
+                slam.phase = 'pulling';
+                slam.timer = 0;
+            }
+        } else if (slam.phase === 'pulling') {
+            // Capture radius - enemies within this distance MUST be captured (any side)
+            const captureRadius = slam.captureRadius || 100;
+
+            // Pull enemies toward the tank
+            for (let pi = 0; pi < state.players.length; pi++) {
+                if (pi === slam.ownerIndex) continue;
+                const target = state.players[pi];
+                if (target.health <= 0) continue;
+
+                // Skip if already captured
+                if (slam.capturedEnemies.find(e => e.playerIndex === pi)) continue;
+
+                const dx = player.x - target.x;
+                const dy = player.y - target.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                // GUARANTEED CAPTURE: If within captureRadius, instantly capture (any side)
+                if (dist <= captureRadius) {
+                    slam.capturedEnemies.push({
+                        playerIndex: pi,
+                        offsetX: target.x - player.x,
+                        offsetY: target.y - player.y
+                    });
+                    // Make captured enemy invulnerable (temporarily)
+                    target.invulnerable = true;
+
+                    // Big visual feedback for capture
+                    particles.sparks(target.x, target.y, 50, '#cc0000');
+                    particles.sparks(target.x, target.y, 30, '#ff4400');
+                    renderer.addScreenShake(10);
+
+                    // Show "CAPTURED!" text
+                    state.lotteryNotifications.push({
+                        text: 'CAPTURED!',
+                        color: '#cc0000',
+                        x: target.x,
+                        y: target.y - 50,
+                        timer: 0.8,
+                        rarity: 'epic'
+                    });
+                } else if (dist < slam.pullRange && dist > 10) {
+                    // Pull toward player (for enemies outside capture radius but in pull range)
+                    const pullStrength = 12;  // Increased pull strength
+                    target.x += (dx / dist) * pullStrength;
+                    target.y += (dy / dist) * pullStrength * 0.6;
+
+                    // Pull visual
+                    if (Math.random() < 0.4) {
+                        particles.trail(target.x, target.y, '#ff0000');
+                    }
+                }
+            }
+
+            if (slam.timer >= pullingTime) {
+                slam.phase = 'ascending';
+                slam.timer = 0;
+                audio.playExplosion(0.7);
+            }
+        } else if (slam.phase === 'ascending') {
+            // Fly up off screen
+            const progress = slam.timer / ascendingTime;
+            const targetY = -200;  // Off screen
+            player.y = slam.startY + (targetY - slam.startY) * progress;
+
+            // Move captured enemies with player
+            for (const captured of slam.capturedEnemies) {
+                const target = state.players[captured.playerIndex];
+                target.x = player.x + captured.offsetX;
+                target.y = player.y + captured.offsetY;
+            }
+
+            // Dust particles
+            if (Math.random() < 0.5) {
+                particles.trail(player.x + (Math.random() - 0.5) * 40, slam.startY, '#888888');
+            }
+
+            if (slam.timer >= ascendingTime) {
+                slam.phase = 'offscreen';
+                slam.timer = 0;
+            }
+        } else if (slam.phase === 'offscreen') {
+            // Brief pause at apex
+            player.y = -200;
+            for (const captured of slam.capturedEnemies) {
+                const target = state.players[captured.playerIndex];
+                target.y = -200;
+            }
+
+            if (slam.timer >= offscreenTime) {
+                slam.phase = 'descending';
+                slam.timer = 0;
+                // Warning marker
+                particles.explosion(slam.startX, slam.startY, 100, '#ff0000', 30);
+            }
+        } else if (slam.phase === 'descending') {
+            // Crash back down
+            const progress = slam.timer / descendingTime;
+            const targetY = terrain.getHeightAt(slam.startX) - TANK_RADIUS;
+            player.y = -200 + (targetY + 200) * Math.pow(progress, 0.5);  // Accelerating descent
+
+            // Move captured enemies
+            for (const captured of slam.capturedEnemies) {
+                const target = state.players[captured.playerIndex];
+                target.x = player.x + captured.offsetX;
+                target.y = player.y + captured.offsetY;
+            }
+
+            // Building screen shake
+            renderer.addScreenShake(5 + progress * 20);
+
+            if (slam.timer >= descendingTime) {
+                slam.phase = 'impact';
+                slam.timer = 0;
+            }
+        } else if (slam.phase === 'impact') {
+            // MASSIVE IMPACT
+            const impactX = slam.startX;
+            const impactY = terrain.getHeightAt(slam.startX);
+
+            // Position player at ground
+            player.y = impactY - TANK_RADIUS;
+            player.invulnerable = false;
+
+            // Check if player landed in void (RISKY!)
+            if (player.y > state.voidY - TANK_RADIUS) {
+                // Player dies from void
+                player.health = 0;
+                triggerDeathExplosion(player, true);
+                audio.playVoidTouch();
+            }
+
+            // Kill all captured enemies (unless they'd land safely)
+            for (const captured of slam.capturedEnemies) {
+                const target = state.players[captured.playerIndex];
+                target.invulnerable = false;
+
+                // Place at impact point
+                target.x = impactX + captured.offsetX * 0.5;
+                target.y = impactY - TANK_RADIUS;
+
+                // Instant kill
+                target.health = 0;
+                player.coins += KILL_BONUS;
+                triggerDeathExplosion(target, false);
+            }
+
+            // Massive crater
+            terrain.destroy(impactX, impactY, slam.craterRadius);
+
+            // EPIC visual effects
+            particles.explosion(impactX, impactY, 300, '#ff0000', 150);
+            particles.explosion(impactX, impactY, 200, '#ffaa00', 100);
+            particles.explosion(impactX, impactY, 150, '#ffffff', 80);
+            particles.sparks(impactX, impactY, 100, '#ff4400');
+            renderer.addScreenShake(60);
+            renderer.flash('#ff0000', 0.6);
+            triggerChromatic(4);
+            audio.playKill();
+
+            // Show "SLAM!" text
+            state.lotteryNotifications.push({
+                text: 'SLAM!',
+                color: '#cc0000',
+                x: impactX,
+                y: impactY - 100,
+                timer: 1.5,
+                rarity: 'legendary'
+            });
+
+            // Remove slam and end turn
+            state.magneticSlams.splice(i, 1);
+            tryEndTurn();
         }
     }
 }
@@ -7702,6 +8265,11 @@ function render() {
     renderLightningArc();
     renderVoidCannonWarnings();
     renderMeteorWarnings();
+
+    // Draw close-range weapon effects
+    renderActiveSpring();
+    renderHammerSwings();
+    renderMagneticSlams();
 
     // Draw grappling hook
     renderGrapple();
@@ -9057,6 +9625,263 @@ function renderMeteorWarnings() {
     }
 }
 
+// ============================================================================
+// Close-Range Weapon Rendering
+// ============================================================================
+
+/**
+ * Render active spring (Big Spring weapon)
+ */
+function renderActiveSpring() {
+    if (!state.activeSpring) return;
+
+    const ctx = renderer.ctx;
+    const spring = state.activeSpring;
+    const progress = 1 - (spring.timer / 0.35);  // 0 → 1 as time progresses
+
+    // Spring extends quickly, then retracts
+    const extensionPhase = progress < 0.4 ? progress / 0.4 : 1 - (progress - 0.4) / 0.6;
+    const coilCount = 8;
+
+    renderer.setGlow(spring.color, 20);
+
+    // Draw coiled spring
+    ctx.strokeStyle = spring.color;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+
+    const dx = spring.endX - spring.startX;
+    const dy = spring.endY - spring.startY;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    // Perpendicular direction for coils
+    const perpX = -Math.sin(angle);
+    const perpY = Math.cos(angle);
+    const coilAmplitude = 15;
+
+    ctx.moveTo(spring.startX, spring.startY);
+
+    for (let i = 0; i <= coilCount * 2; i++) {
+        const t = (i / (coilCount * 2)) * extensionPhase;
+        const baseX = spring.startX + dx * t;
+        const baseY = spring.startY + dy * t;
+
+        // Alternate coil direction
+        const coilOffset = Math.sin(i * Math.PI) * coilAmplitude;
+        const px = baseX + perpX * coilOffset;
+        const py = baseY + perpY * coilOffset;
+
+        ctx.lineTo(px, py);
+    }
+
+    ctx.stroke();
+
+    // Draw spring tip (bright flash)
+    const tipX = spring.startX + dx * extensionPhase;
+    const tipY = spring.startY + dy * extensionPhase;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(tipX, tipY, 8 + (1 - progress) * 10, 0, Math.PI * 2);
+    ctx.fill();
+
+    renderer.clearGlow();
+}
+
+/**
+ * Render hammer swings (Really Silly Hammer)
+ */
+function renderHammerSwings() {
+    const ctx = renderer.ctx;
+
+    for (const swing of state.hammerSwings) {
+        const player = state.players[swing.ownerIndex];
+        if (!player) continue;
+
+        const hammerLength = swing.hammerRadius;
+        const hammerHeadSize = 50;
+
+        if (swing.phase === 'windup') {
+            // Hammer raising animation
+            const progress = swing.timer / 0.15;
+            const raiseAngle = swing.aimingLeft ? Math.PI * 0.8 : Math.PI * 0.2;
+            const currentAngle = raiseAngle * progress;
+
+            drawHammer(ctx, swing.x, swing.y, currentAngle, hammerLength * 0.7, hammerHeadSize * 0.8, swing.color, 0.7);
+        } else if (swing.phase === 'swinging') {
+            // Full hammer swing with trail
+            const angle = swing.currentAngle || 0;
+
+            // Draw motion trail (3 ghost hammers)
+            for (let t = 0; t < 3; t++) {
+                const trailOffset = t * 0.15;
+                const trailAngle = angle - (swing.aimingLeft ? -trailOffset : trailOffset) * Math.PI;
+                const trailAlpha = 0.2 - t * 0.06;
+                drawHammer(ctx, swing.x, swing.y, trailAngle, hammerLength, hammerHeadSize, swing.color, trailAlpha);
+            }
+
+            // Draw main hammer
+            drawHammer(ctx, swing.x, swing.y, angle, hammerLength, hammerHeadSize, swing.color, 1.0);
+        } else if (swing.phase === 'recovery') {
+            // Hammer lowering
+            const progress = swing.timer / 0.15;
+            const endAngle = swing.aimingLeft ? 0 : Math.PI;
+            const currentAngle = endAngle;
+
+            drawHammer(ctx, swing.x, swing.y, currentAngle, hammerLength * (1 - progress * 0.5), hammerHeadSize * (1 - progress * 0.3), swing.color, 1 - progress);
+        }
+    }
+}
+
+/**
+ * Helper: Draw a cartoon hammer at position with angle
+ */
+function drawHammer(ctx, x, y, angle, length, headSize, color, alpha) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Hammer handle position
+    const handleEndX = x + Math.cos(angle) * length;
+    const handleEndY = y - Math.sin(angle) * length * 0.6;
+
+    // Handle (brown)
+    renderer.setGlow('#8B4513', 10 * alpha);
+    ctx.strokeStyle = '#8B4513';
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(handleEndX, handleEndY);
+    ctx.stroke();
+
+    // Hammer head background (dark red)
+    renderer.setGlow(color, 20 * alpha);
+    ctx.fillStyle = '#880000';
+    ctx.beginPath();
+    ctx.ellipse(handleEndX, handleEndY, headSize, headSize * 0.6, angle, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Hammer head face (bright red)
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(handleEndX, handleEndY, headSize * 0.9, headSize * 0.5, angle, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Yellow stripe on hammer (clown style)
+    ctx.fillStyle = '#ffff00';
+    ctx.beginPath();
+    ctx.ellipse(handleEndX, handleEndY, headSize * 0.4, headSize * 0.2, angle, 0, Math.PI * 2);
+    ctx.fill();
+
+    renderer.clearGlow();
+    ctx.restore();
+}
+
+/**
+ * Render magnetic slams (Magnetic Slam weapon)
+ */
+function renderMagneticSlams() {
+    const ctx = renderer.ctx;
+
+    for (const slam of state.magneticSlams) {
+        const player = state.players[slam.ownerIndex];
+        if (!player) continue;
+
+        if (slam.phase === 'magnet_out' || slam.phase === 'pulling') {
+            // Draw horseshoe magnet in front of tank
+            const magnetX = player.x + 60;
+            const magnetY = player.y - 20;
+
+            // Magnet body (red U shape)
+            renderer.setGlow('#cc0000', 25);
+            ctx.strokeStyle = '#cc0000';
+            ctx.lineWidth = 20;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.arc(magnetX, magnetY, 30, Math.PI * 0.5, Math.PI * 1.5, false);
+            ctx.stroke();
+
+            // Silver tips
+            ctx.fillStyle = '#cccccc';
+            ctx.beginPath();
+            ctx.rect(magnetX - 10, magnetY - 40, 20, 15);
+            ctx.rect(magnetX - 10, magnetY + 25, 20, 15);
+            ctx.fill();
+
+            // Pull lines to captured/pulling enemies
+            if (slam.phase === 'pulling') {
+                for (let pi = 0; pi < state.players.length; pi++) {
+                    if (pi === slam.ownerIndex) continue;
+                    const target = state.players[pi];
+                    if (target.health <= 0) continue;
+
+                    const dx = player.x - target.x;
+                    const dy = player.y - target.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < slam.pullRange) {
+                        // Draw electric pull line
+                        ctx.strokeStyle = '#ff4444';
+                        ctx.lineWidth = 3;
+                        ctx.globalAlpha = 0.6;
+                        ctx.beginPath();
+                        ctx.moveTo(magnetX, magnetY);
+
+                        // Jagged line
+                        const segments = 6;
+                        for (let s = 1; s < segments; s++) {
+                            const t = s / segments;
+                            const baseX = magnetX + (target.x - magnetX) * t;
+                            const baseY = magnetY + (target.y - magnetY) * t;
+                            const jitter = (Math.random() - 0.5) * 20;
+                            ctx.lineTo(baseX + jitter, baseY + jitter);
+                        }
+                        ctx.lineTo(target.x, target.y);
+                        ctx.stroke();
+                        ctx.globalAlpha = 1;
+                    }
+                }
+            }
+
+            renderer.clearGlow();
+        } else if (slam.phase === 'ascending' || slam.phase === 'offscreen') {
+            // Draw ascending dust trail
+            for (let i = 0; i < 5; i++) {
+                const dustY = slam.startY - i * 30;
+                const alpha = 0.3 - i * 0.05;
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = '#888888';
+                ctx.beginPath();
+                ctx.arc(slam.startX + (Math.random() - 0.5) * 30, dustY, 10 + Math.random() * 10, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        } else if (slam.phase === 'descending') {
+            // Draw warning circle at impact point
+            const flash = Math.sin(state.time * 15) * 0.3 + 0.5;
+            renderer.setGlow('#ff0000', 30 * flash);
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 5;
+            ctx.globalAlpha = flash;
+            ctx.beginPath();
+            ctx.arc(slam.startX, terrain.getHeightAt(slam.startX), slam.craterRadius, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Draw descending indicator
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath();
+            ctx.moveTo(slam.startX, terrain.getHeightAt(slam.startX) - 100);
+            ctx.lineTo(slam.startX - 20, terrain.getHeightAt(slam.startX) - 140);
+            ctx.lineTo(slam.startX + 20, terrain.getHeightAt(slam.startX) - 140);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.globalAlpha = 1;
+            renderer.clearGlow();
+        }
+    }
+}
+
 /**
  * Draw expanding nuke shockwave
  */
@@ -9350,7 +10175,7 @@ function renderTitle() {
     renderer.drawText('One Button Away From Victory', centerX, centerY + 60, '#888888', 16, 'center', false);
 
     // Controls reference
-    renderer.drawText('Arrow Keys = Aim  |  HOLD Space = Charge  |  RELEASE = Fire', centerX, centerY + 100, '#666666', 14, 'center', false);
+    renderer.drawText('Arrows = Aim  |  HOLD Space = Fire  |  G = Grapple', centerX, centerY + 100, '#666666', 14, 'center', false);
 
     // Animated prompt
     const alpha = 0.5 + Math.sin(state.time * 4) * 0.5;
@@ -9491,6 +10316,7 @@ function drawStar(ctx, x, y, radius, points, color, glow = true) {
 }
 
 // Helper function to draw a crescent moon shape (Luna)
+// ~33% moon - chunky but clearly crescent-shaped
 function drawCrescent(ctx, x, y, radius, color, glow = true) {
     if (glow) {
         ctx.shadowColor = color;
@@ -9498,10 +10324,10 @@ function drawCrescent(ctx, x, y, radius, color, glow = true) {
     }
 
     ctx.beginPath();
-    // Outer arc (full moon edge)
-    ctx.arc(x, y, radius, -Math.PI * 0.7, Math.PI * 0.7, false);
-    // Inner arc (bite out of moon) - offset and smaller
-    ctx.arc(x + radius * 0.4, y, radius * 0.75, Math.PI * 0.65, -Math.PI * 0.65, true);
+    // Outer arc (full moon edge) - nearly full circle
+    ctx.arc(x, y, radius, -Math.PI * 0.85, Math.PI * 0.85, false);
+    // Inner arc (bite out of moon) - smaller and more offset for thicker crescent
+    ctx.arc(x + radius * 0.55, y, radius * 0.6, Math.PI * 0.75, -Math.PI * 0.75, true);
     ctx.closePath();
     ctx.fillStyle = color;
     ctx.fill();
